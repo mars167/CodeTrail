@@ -1,0 +1,32 @@
+[package]
+name = "code-search-cli"
+version = "0.1.0"
+edition = "2021"
+description = "确定性优先、带可靠性标注的代码搜索 CLI。"
+license = "MIT"
+
+[[bin]]
+name = "code-search"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+blake3 = "1"
+clap = { version = "4", features = ["derive", "env"] }
+ignore = "0.4"
+memmap2 = "0.9"
+notify = "8"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tree-sitter = "0.24"
+tree-sitter-rust = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-python = "0.23"
+
+[dev-dependencies]
+assert_cmd = "2"
+insta = { version = "1", features = ["json"] }
+predicates = "3"
+tempfile = "3"
