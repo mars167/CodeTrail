@@ -120,3 +120,78 @@ fn index_verify_detects_stale_files() {
         .assert()
         .code(6);
 }
+
+#[test]
+fn find_uses_fresh_index_catalog_for_candidates() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
+
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["find", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["index"]["used"], true);
+    assert_eq!(json["index"]["fresh"], true);
+    assert_eq!(
+        json["results"][0]["producer"],
+        "index_catalog_live_text_search"
+    );
+}
+
+#[test]
+fn query_falls_back_when_scan_options_do_not_match_index() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join(".hidden.txt"), "needle\n").unwrap();
+
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--hidden")
+        .args(["find", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["index"]["used"], false);
+    assert_eq!(json["results"][0]["path"], ".hidden.txt");
+    assert_eq!(json["results"][0]["producer"], "live_text_search");
+}
+
+#[test]
+fn completions_print_shell_script_without_workspace() {
+    let output = code_search()
+        .args(["--path", "/definitely/missing", "completions", "bash"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let script = String::from_utf8(output).unwrap();
+
+    assert!(script.contains("complete -F _code_search code-search"));
+    assert!(script.contains("find grep files"));
+}

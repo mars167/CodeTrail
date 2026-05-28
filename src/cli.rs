@@ -112,6 +112,10 @@ pub enum Command {
         #[command(subcommand)]
         command: HooksCommand,
     },
+    Completions {
+        #[arg(value_enum)]
+        shell: CompletionShell,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -135,4 +139,11 @@ pub enum HooksCommand {
     Install,
     Uninstall,
     Status,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum CompletionShell {
+    Bash,
+    Zsh,
+    Fish,
 }

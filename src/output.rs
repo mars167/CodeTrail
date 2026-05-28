@@ -62,6 +62,28 @@ pub fn response(
     results: Value,
     warnings: Vec<String>,
 ) -> Value {
+    response_with_index(
+        command,
+        canonical_command,
+        query,
+        snapshot_id,
+        reliability,
+        live_scan_index(),
+        results,
+        warnings,
+    )
+}
+
+pub fn response_with_index(
+    command: &str,
+    canonical_command: &str,
+    query: Value,
+    snapshot_id: &str,
+    reliability: Reliability,
+    index: Value,
+    results: Value,
+    warnings: Vec<String>,
+) -> Value {
     json!({
         "ok": true,
         "command": command,
@@ -69,14 +91,18 @@ pub fn response(
         "query": query,
         "snapshot_id": snapshot_id,
         "reliability": reliability,
-        "index": {
-            "used": false,
-            "fresh": false,
-            "fallback": true,
-            "reason": "live_scan"
-        },
+        "index": index,
         "results": results,
         "warnings": warnings
+    })
+}
+
+fn live_scan_index() -> Value {
+    json!({
+        "used": false,
+        "fresh": false,
+        "fallback": true,
+        "reason": "live_scan"
     })
 }
 

@@ -2,7 +2,7 @@ use serde_json::json;
 
 use crate::{
     cli::{Cli, Command, HooksCommand, IndexCommand},
-    index, output, search, syntax,
+    completions, index, output, search, syntax,
     workspace::{ScanOptions, Workspace},
     AppResult,
 };
@@ -15,20 +15,27 @@ pub fn run(cli: Cli) -> AppResult<i32> {
         no_ignore: cli.no_ignore,
         limit: cli.limit,
     };
-    let workspace = Workspace::discover(&cli.path)?;
     let mut exit_code = 0;
+
+    if let Command::Completions { shell } = &cli.command {
+        print!("{}", completions::script(shell));
+        return Ok(0);
+    }
+
+    let workspace = Workspace::discover(&cli.path)?;
 
     let value = match &cli.command {
         Command::Find { text, mode } => {
-            let results = search::find(&workspace, &scan_opts, text, mode, cli.context, false)?;
-            exit_code = output::no_match_exit(&results);
-            output::response(
+            let query_output = search::find(&workspace, &scan_opts, text, mode, cli.context, false)?;
+            exit_code = output::no_match_exit(&query_output.results);
+            output::response_with_index(
                 "find",
                 "find",
                 json!({ "pattern": text, "mode": mode }),
                 &workspace.snapshot_id,
                 output::source_fact(),
-                results,
+                query_output.index,
+                query_output.results,
                 Vec::new(),
             )
         }
@@ -38,54 +45,58 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             context,
         } => {
             let context = context.unwrap_or(cli.context);
-            let results = search::find(&workspace, &scan_opts, pattern, mode, context, false)?;
-            exit_code = output::no_match_exit(&results);
-            output::response(
+            let query_output = search::find(&workspace, &scan_opts, pattern, mode, context, false)?;
+            exit_code = output::no_match_exit(&query_output.results);
+            output::response_with_index(
                 "grep",
                 "find",
                 json!({ "pattern": pattern, "mode": mode, "context": context }),
                 &workspace.snapshot_id,
                 output::source_fact(),
-                results,
+                query_output.index,
+                query_output.results,
                 Vec::new(),
             )
         }
         Command::Files { pattern } => {
-            let results = search::files(&workspace, &scan_opts, pattern, false)?;
-            exit_code = output::no_match_exit(&results);
-            output::response(
+            let query_output = search::files(&workspace, &scan_opts, pattern, false)?;
+            exit_code = output::no_match_exit(&query_output.results);
+            output::response_with_index(
                 "files",
                 "files",
                 json!({ "pattern": pattern, "mode": "path_substring_or_glob" }),
                 &workspace.snapshot_id,
                 output::source_fact(),
-                results,
+                query_output.index,
+                query_output.results,
                 Vec::new(),
             )
         }
         Command::FindPath { pattern } => {
-            let results = search::files(&workspace, &scan_opts, pattern, false)?;
-            exit_code = output::no_match_exit(&results);
-            output::response(
+            let query_output = search::files(&workspace, &scan_opts, pattern, false)?;
+            exit_code = output::no_match_exit(&query_output.results);
+            output::response_with_index(
                 "find-path",
                 "files",
                 json!({ "pattern": pattern, "mode": "path_substring_or_glob" }),
                 &workspace.snapshot_id,
                 output::source_fact(),
-                results,
+                query_output.index,
+                query_output.results,
                 Vec::new(),
             )
         }
         Command::Glob { pattern } => {
-            let results = search::files(&workspace, &scan_opts, pattern, true)?;
-            exit_code = output::no_match_exit(&results);
-            output::response(
+            let query_output = search::files(&workspace, &scan_opts, pattern, true)?;
+            exit_code = output::no_match_exit(&query_output.results);
+            output::response_with_index(
                 "glob",
                 "files",
                 json!({ "pattern": pattern, "mode": "strict_glob" }),
                 &workspace.snapshot_id,
                 output::source_fact(),
-                results,
+                query_output.index,
+                query_output.results,
                 Vec::new(),
             )
         }
@@ -120,15 +131,17 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             )
         }
         Command::Refs { identifier } => {
-            let results = search::find(&workspace, &scan_opts, identifier, "literal", cli.context, true)?;
-            exit_code = output::no_match_exit(&results);
-            output::response(
+            let query_output =
+                search::find(&workspace, &scan_opts, identifier, "literal", cli.context, true)?;
+            exit_code = output::no_match_exit(&query_output.results);
+            output::response_with_index(
                 "refs",
                 "refs",
                 json!({ "identifier": identifier, "mode": "identifier_boundary_text_search" }),
                 &workspace.snapshot_id,
                 output::source_fact(),
-                results,
+                query_output.index,
+                query_output.results,
                 vec!["refs is identifier-boundary text search unless a precise occurrence index is available".to_string()],
             )
         }
@@ -315,6 +328,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 Vec::new(),
             ),
         },
+        Command::Completions { .. } => unreachable!("handled before workspace discovery"),
     };
 
     output::emit(&cli.output, &value)?;

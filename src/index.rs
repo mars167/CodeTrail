@@ -26,7 +26,17 @@ struct Manifest {
     head: Option<String>,
     dirty: bool,
     file_count: usize,
+    scan_options: IndexScanOptions,
     created_at_epoch_ms: u128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IndexScanOptions {
+    include: Vec<String>,
+    exclude: Vec<String>,
+    hidden: bool,
+    no_ignore: bool,
 }
 
 pub fn build(
@@ -68,6 +78,7 @@ pub fn build(
         head: workspace.head.clone(),
         dirty: workspace.dirty,
         file_count: records.len(),
+        scan_options: IndexScanOptions::from(opts),
         created_at_epoch_ms: now_ms(),
     };
 
@@ -127,6 +138,71 @@ pub fn status(workspace: &Workspace) -> Result<Value> {
         "manifest": manifest,
         "freshness": freshness
     }))
+}
+
+pub fn fresh_file_records(
+    workspace: &Workspace,
+    opts: &ScanOptions,
+) -> Result<Option<(Vec<FileRecord>, Value)>> {
+    let root = index_root(workspace);
+    if !root.exists() {
+        return Ok(None);
+    }
+
+    let manifest = read_manifest(&root.join("manifest.json"))?;
+    if manifest.source != "working_tree" || manifest.scan_options != IndexScanOptions::from(opts) {
+        return Ok(None);
+    }
+
+    let records = read_records(&root.join("files.jsonl"))?;
+    let freshness = freshness(workspace, &records);
+    let fresh = freshness
+        .get("staleFiles")
+        .and_then(Value::as_array)
+        .map(|items| items.is_empty())
+        .unwrap_or(false)
+        && freshness
+            .get("missingFiles")
+            .and_then(Value::as_array)
+            .map(|items| items.is_empty())
+            .unwrap_or(false);
+
+    if !fresh {
+        return Ok(None);
+    }
+
+    Ok(Some((
+        records,
+        json!({
+            "used": true,
+            "fresh": true,
+            "source": manifest.source,
+            "manifestHead": manifest.head,
+            "snapshot_id": manifest.snapshot_id,
+            "fallback": false,
+            "path": root
+        }),
+    )))
+}
+
+impl From<&ScanOptions> for IndexScanOptions {
+    fn from(opts: &ScanOptions) -> Self {
+        Self {
+            include: opts.include.clone(),
+            exclude: opts.exclude.clone(),
+            hidden: opts.hidden,
+            no_ignore: opts.no_ignore,
+        }
+    }
+}
+
+pub fn live_scan_index_meta(reason: &str) -> Value {
+    json!({
+        "used": false,
+        "fresh": false,
+        "fallback": true,
+        "reason": reason
+    })
 }
 
 pub fn verify(workspace: &Workspace) -> Result<(Value, i32)> {

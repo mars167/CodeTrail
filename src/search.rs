@@ -5,14 +5,22 @@ use globset::Glob;
 use regex::Regex;
 use serde_json::{json, Value};
 
-use crate::workspace::{language_for_path, ScanOptions, Workspace};
+use crate::{
+    index,
+    workspace::{language_for_path, FileRecord, ScanOptions, Workspace},
+};
+
+pub struct QueryOutput {
+    pub results: Value,
+    pub index: Value,
+}
 
 pub fn files(
     workspace: &Workspace,
     opts: &ScanOptions,
     pattern: &str,
     strict_glob: bool,
-) -> Result<Value> {
+) -> Result<QueryOutput> {
     let mut results = Vec::new();
     let matcher = if strict_glob || has_glob_meta(pattern) {
         Some(Glob::new(pattern)?.compile_matcher())
@@ -20,9 +28,8 @@ pub fn files(
         None
     };
 
-    let mut scan_opts = opts.clone();
-    scan_opts.limit = 0;
-    for file in workspace.scan_files(&scan_opts)? {
+    let source = candidate_files(workspace, opts)?;
+    for file in source.records {
         let matches = matcher
             .as_ref()
             .map(|glob| glob.is_match(&file.path))
@@ -33,7 +40,7 @@ pub fn files(
                 "language": file.language,
                 "size": file.size,
                 "hash": file.hash,
-                "producer": "live_file_catalog",
+                "producer": if source.index["used"].as_bool().unwrap_or(false) { "index_file_catalog" } else { "live_file_catalog" },
                 "reliability": "source_fact",
                 "exact": true
             }));
@@ -42,7 +49,10 @@ pub fn files(
             break;
         }
     }
-    Ok(Value::Array(results))
+    Ok(QueryOutput {
+        results: Value::Array(results),
+        index: source.index,
+    })
 }
 
 pub fn list(workspace: &Workspace, dir: Option<&str>, recursive: bool) -> Result<Value> {
@@ -137,18 +147,16 @@ pub fn find(
     mode: &str,
     context: u16,
     refs_mode: bool,
-) -> Result<Value> {
+) -> Result<QueryOutput> {
     let regex = match mode {
         "literal" => Regex::new(&regex::escape(pattern))?,
         "regex" => Regex::new(pattern)?,
         other => return Err(anyhow!("unsupported search mode: {other}")),
     };
 
-    let mut scan_opts = opts.clone();
-    scan_opts.limit = 0;
-    let files = workspace.scan_files(&scan_opts)?;
+    let source = candidate_files(workspace, opts)?;
     let mut results = Vec::new();
-    for file in files {
+    for file in source.records {
         let path = workspace.abs_path(&file.path);
         let content = match fs::read_to_string(&path) {
             Ok(content) => content,
@@ -167,16 +175,22 @@ pub fn find(
                 "context": context_lines(&content, range["start"]["line"].as_u64().unwrap_or(1) as usize, context),
                 "fileHash": file.hash,
                 "language": file.language,
-                "producer": if refs_mode { "identifier_boundary_text_search" } else { "live_text_search" },
+                "producer": if refs_mode { "identifier_boundary_text_search" } else if source.index["used"].as_bool().unwrap_or(false) { "index_catalog_live_text_search" } else { "live_text_search" },
                 "reliability": "source_fact",
                 "exact": true
             }));
             if opts.limit > 0 && results.len() >= opts.limit {
-                return Ok(Value::Array(results));
+                return Ok(QueryOutput {
+                    results: Value::Array(results),
+                    index: source.index,
+                });
             }
         }
     }
-    Ok(Value::Array(results))
+    Ok(QueryOutput {
+        results: Value::Array(results),
+        index: source.index,
+    })
 }
 
 pub fn changed(workspace: &Workspace) -> Result<Value> {
@@ -267,6 +281,44 @@ fn should_hide(path: &Path) -> bool {
 
 fn has_glob_meta(pattern: &str) -> bool {
     pattern.contains('*') || pattern.contains('?') || pattern.contains('[') || pattern.contains('{')
+}
+
+struct CandidateFiles {
+    records: Vec<FileRecord>,
+    index: Value,
+}
+
+fn candidate_files(workspace: &Workspace, opts: &ScanOptions) -> Result<CandidateFiles> {
+    if let Some((records, index)) = index::fresh_file_records(workspace, opts)? {
+        return Ok(CandidateFiles {
+            records: filter_records(records, opts),
+            index,
+        });
+    }
+
+    let mut scan_opts = opts.clone();
+    scan_opts.limit = 0;
+    Ok(CandidateFiles {
+        records: workspace.scan_files(&scan_opts)?,
+        index: index::live_scan_index_meta("index_missing_or_stale"),
+    })
+}
+
+fn filter_records(records: Vec<FileRecord>, opts: &ScanOptions) -> Vec<FileRecord> {
+    records
+        .into_iter()
+        .filter(|record| {
+            !opts
+                .exclude
+                .iter()
+                .any(|pattern| record.path.contains(pattern))
+                && (opts.include.is_empty()
+                    || opts
+                        .include
+                        .iter()
+                        .any(|pattern| record.path.contains(pattern)))
+        })
+        .collect()
 }
 
 fn preview_line(content: &str, byte: usize) -> String {

@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+mod completions;
 mod index;
 mod output;
 mod search;
