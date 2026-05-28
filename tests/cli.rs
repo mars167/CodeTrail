@@ -421,3 +421,134 @@ fn write_minimal_scip_json(path: &std::path::Path) {
     });
     fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
 }
+
+#[test]
+fn native_scip_import_drives_precise_defs_refs_and_symbols() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "fn needle() {}\nfn main() { needle(); }\n",
+    )
+    .unwrap();
+
+    let scip_path = dir.path().join("index.scip");
+    code_search_cli::scip::write_minimal_test_index(&scip_path).unwrap();
+
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "import-scip"])
+        .arg(&scip_path)
+        .assert()
+        .success();
+
+    // Verify occurrence DB was created
+    let scip_dir = fs::read_dir(dir.path().join(".code-search/scip"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let db_path = scip_dir.join("occurrences.db");
+    assert!(db_path.is_file());
+
+    // defs
+    let defs = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let defs_json: Value = serde_json::from_slice(&defs).unwrap();
+    assert_eq!(defs_json["reliability"]["level"], "precise_fact");
+    assert_eq!(defs_json["results"][0]["producer"], "scip");
+    assert_eq!(defs_json["results"][0]["exact"], true);
+    assert_eq!(defs_json["results"][0]["range"]["start"]["line"], 1);
+    assert_eq!(defs_json["index"]["source"], "scip_native");
+
+    // refs
+    let refs = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["refs", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let refs_json: Value = serde_json::from_slice(&refs).unwrap();
+    assert_eq!(refs_json["reliability"]["level"], "precise_fact");
+    assert_eq!(refs_json["results"][0]["producer"], "scip");
+    assert_eq!(refs_json["results"][0]["role"], "reference");
+    assert_eq!(refs_json["results"][0]["range"]["start"]["line"], 2);
+    assert_eq!(refs_json["index"]["source"], "scip_native");
+
+    // symbols
+    let symbols = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["symbols", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let symbols_json: Value = serde_json::from_slice(&symbols).unwrap();
+    assert_eq!(symbols_json["reliability"]["level"], "precise_fact");
+    assert_eq!(symbols_json["results"][0]["name"], "needle");
+}
+
+#[test]
+fn native_scip_stale_detection_simulates_staleness_by_db_removal() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "fn needle() {}\nfn main() { needle(); }\n",
+    )
+    .unwrap();
+
+    let scip_path = dir.path().join("index.scip");
+    code_search_cli::scip::write_minimal_test_index(&scip_path).unwrap();
+
+    // Import native SCIP
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "import-scip"])
+        .arg(&scip_path)
+        .assert()
+        .success();
+
+    // Remove the occurrence DB to simulate staleness
+    let scip_dir = fs::read_dir(dir.path().join(".code-search/scip"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let db_path = scip_dir.join("occurrences.db");
+    assert!(db_path.is_file());
+    fs::remove_file(&db_path).unwrap();
+
+    // After DB removal, queries MUST fall back to tree-sitter,
+    // and tree-sitter results are NEVER marked as precise
+    let defs = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let defs_json: Value = serde_json::from_slice(&defs).unwrap();
+    assert_ne!(defs_json["reliability"]["level"], "precise_fact");
+    assert_eq!(defs_json["reliability"]["level"], "parser_fact");
+    assert_eq!(defs_json["reliability"]["exact"], false);
+    assert_eq!(defs_json["results"][0]["producer"], "tree_sitter_parser");
+}

@@ -5,10 +5,14 @@ edition = "2021"
 description = "确定性优先、带可靠性标注的代码搜索 CLI。"
 license = "MIT"
 
+[lib]
+name = "code_search_cli"
+path = "src/lib.rs"
+doctest = false
+
 [[bin]]
 name = "code-search"
 path = "src/main.rs"
-
 [dependencies]
 anyhow = "1"
 blake3 = "1"
@@ -27,9 +31,17 @@ tree-sitter-typescript = "0.23"
 tree-sitter-python = "0.23"
 arrow = { version = "53", default-features = false }
 parquet = { version = "53", default-features = false, features = ["arrow"] }
+prost = "0.13"
+prost-types = "0.13"
+rusqlite = { version = "0.31", features = ["bundled"] }
+
 
 [dev-dependencies]
 assert_cmd = "2"
 insta = { version = "1", features = ["json"] }
 predicates = "3"
 tempfile = "3"
+prost = "0.13"
+
+[build-dependencies]
+prost-build = "0.13"

@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
-    index,
+    index, scip,
     workspace::{ScanOptions, Workspace},
 };
 
@@ -162,11 +162,55 @@ pub fn import_scip_json(workspace: &Workspace, path: impl AsRef<Path>) -> Result
     }))
 }
 
+/// Import a native SCIP binary protobuf index (index.scip) and build the occurrence DB.
+pub fn import_native_scip(workspace: &Workspace, path: impl AsRef<Path>) -> Result<Value> {
+    let source_path = path.as_ref();
+    let scip_index = scip::parse_native_scip(source_path).with_context(|| {
+        format!(
+            "failed to parse native SCIP index {}",
+            source_path.display()
+        )
+    })?;
+
+    let snapshot_hash = &workspace.snapshot_id;
+    let db_path = native_db_path(workspace);
+
+    scip::build_occurrences_db(&scip_index, &db_path, snapshot_hash)
+        .with_context(|| "failed to build occurrence database")?;
+
+    let occ_count: usize = scip_index
+        .documents
+        .iter()
+        .map(|d| d.occurrences.len())
+        .sum();
+    let sym_count: usize = scip_index.documents.iter().map(|d| d.symbols.len()).sum();
+
+    Ok(json!({
+        "index": {
+            "used": true,
+            "fresh": true,
+            "source": "scip_native_protobuf",
+            "path": db_path,
+            "recordCount": occ_count,
+            "definitionCount": sym_count
+        }
+    }))
+}
+
+pub fn native_db_path(workspace: &Workspace) -> std::path::PathBuf {
+    index::scip_root(workspace).join("occurrences.db")
+}
+
 pub fn symbols(
     workspace: &Workspace,
     opts: &ScanOptions,
     query: &str,
 ) -> Result<Option<PreciseQueryOutput>> {
+    // Try native occurrence DB first
+    if let Some(output) = query_native_symbols(workspace, query)? {
+        return Ok(Some(output));
+    }
+    // Fall back to old occurrence.idx format
     query_precise(workspace, opts, |record| {
         record.role == "definition" && record.name.contains(query)
     })
@@ -177,6 +221,11 @@ pub fn defs(
     opts: &ScanOptions,
     identifier: &str,
 ) -> Result<Option<PreciseQueryOutput>> {
+    // Try native occurrence DB first
+    if let Some(output) = query_native_defs(workspace, identifier)? {
+        return Ok(Some(output));
+    }
+    // Fall back to old occurrence.idx format
     query_precise(workspace, opts, |record| {
         record.role == "definition" && matches_identifier(record, identifier)
     })
@@ -187,10 +236,102 @@ pub fn refs(
     opts: &ScanOptions,
     identifier: &str,
 ) -> Result<Option<PreciseQueryOutput>> {
+    // Try native occurrence DB first
+    if let Some(output) = query_native_refs(workspace, identifier)? {
+        return Ok(Some(output));
+    }
+    // Fall back to old occurrence.idx format
     query_precise(workspace, opts, |record| {
         record.role != "definition" && matches_identifier(record, identifier)
     })
 }
+
+// ---------------------------------------------------------------------------
+// Native occurrence DB query helpers
+// ---------------------------------------------------------------------------
+
+fn query_native_defs(
+    workspace: &Workspace,
+    identifier: &str,
+) -> Result<Option<PreciseQueryOutput>> {
+    let db_path = native_db_path(workspace);
+    if !scip::occurrence_db_fresh(&db_path, &workspace.snapshot_id) {
+        return Ok(None);
+    }
+    let results = scip::query_defs(&db_path, identifier)?;
+    if results.is_empty() {
+        return Ok(Some(PreciseQueryOutput {
+            results: Value::Array(Vec::new()),
+            index: native_db_index_meta(&db_path, true),
+        }));
+    }
+    let json_results: Vec<Value> = results
+        .iter()
+        .map(|r| scip::occurrence_to_json(r))
+        .collect();
+    Ok(Some(PreciseQueryOutput {
+        results: Value::Array(json_results),
+        index: native_db_index_meta(&db_path, true),
+    }))
+}
+
+fn query_native_refs(
+    workspace: &Workspace,
+    identifier: &str,
+) -> Result<Option<PreciseQueryOutput>> {
+    let db_path = native_db_path(workspace);
+    if !scip::occurrence_db_fresh(&db_path, &workspace.snapshot_id) {
+        return Ok(None);
+    }
+    let results = scip::query_refs(&db_path, identifier)?;
+    if results.is_empty() {
+        return Ok(Some(PreciseQueryOutput {
+            results: Value::Array(Vec::new()),
+            index: native_db_index_meta(&db_path, true),
+        }));
+    }
+    let json_results: Vec<Value> = results
+        .iter()
+        .map(|r| scip::occurrence_to_json(r))
+        .collect();
+    Ok(Some(PreciseQueryOutput {
+        results: Value::Array(json_results),
+        index: native_db_index_meta(&db_path, true),
+    }))
+}
+
+fn query_native_symbols(workspace: &Workspace, query: &str) -> Result<Option<PreciseQueryOutput>> {
+    let db_path = native_db_path(workspace);
+    if !scip::occurrence_db_fresh(&db_path, &workspace.snapshot_id) {
+        return Ok(None);
+    }
+    let results = scip::query_symbols(&db_path, query)?;
+    if results.is_empty() {
+        return Ok(Some(PreciseQueryOutput {
+            results: Value::Array(Vec::new()),
+            index: native_db_index_meta(&db_path, true),
+        }));
+    }
+    let json_results: Vec<Value> = results.iter().map(|r| scip::symbol_to_json(r)).collect();
+    Ok(Some(PreciseQueryOutput {
+        results: Value::Array(json_results),
+        index: native_db_index_meta(&db_path, true),
+    }))
+}
+
+fn native_db_index_meta(db_path: &std::path::Path, fresh: bool) -> Value {
+    json!({
+        "used": true,
+        "fresh": fresh,
+        "source": "scip_native",
+        "fallback": false,
+        "path": db_path
+    })
+}
+
+// ---------------------------------------------------------------------------
+// LEGACY: Old occurrence.idx binary format (compatibility path)
+// ---------------------------------------------------------------------------
 
 fn query_precise(
     workspace: &Workspace,
