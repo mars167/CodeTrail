@@ -40,7 +40,7 @@ pub fn files(
                 "language": file.language,
                 "size": file.size,
                 "hash": file.hash,
-                "producer": if source.index["used"].as_bool().unwrap_or(false) { "index_file_catalog" } else { "live_file_catalog" },
+                "producer": if source.index["used"].as_bool().unwrap_or(false) { "text_index_file_catalog" } else { "live_file_catalog" },
                 "reliability": "source_fact",
                 "exact": true
             }));
@@ -154,7 +154,7 @@ pub fn find(
         other => return Err(anyhow!("unsupported search mode: {other}")),
     };
 
-    let source = candidate_files(workspace, opts)?;
+    let source = candidate_text_files(workspace, opts, pattern, mode)?;
     let mut results = Vec::new();
     for file in source.records {
         let path = workspace.abs_path(&file.path);
@@ -175,7 +175,7 @@ pub fn find(
                 "context": context_lines(&content, range["start"]["line"].as_u64().unwrap_or(1) as usize, context),
                 "fileHash": file.hash,
                 "language": file.language,
-                "producer": if refs_mode { "identifier_boundary_text_search" } else if source.index["used"].as_bool().unwrap_or(false) { "index_catalog_live_text_search" } else { "live_text_search" },
+                "producer": text_search_producer(refs_mode, source.index["used"].as_bool().unwrap_or(false)),
                 "reliability": "source_fact",
                 "exact": true
             }));
@@ -304,6 +304,27 @@ fn candidate_files(workspace: &Workspace, opts: &ScanOptions) -> Result<Candidat
     })
 }
 
+fn candidate_text_files(
+    workspace: &Workspace,
+    opts: &ScanOptions,
+    pattern: &str,
+    mode: &str,
+) -> Result<CandidateFiles> {
+    if let Some((records, index)) = index::fresh_text_records(workspace, opts, pattern, mode)? {
+        return Ok(CandidateFiles {
+            records: filter_records(records, opts),
+            index,
+        });
+    }
+
+    let mut scan_opts = opts.clone();
+    scan_opts.limit = 0;
+    Ok(CandidateFiles {
+        records: workspace.scan_files(&scan_opts)?,
+        index: index::live_scan_index_meta("index_missing_or_stale"),
+    })
+}
+
 fn filter_records(records: Vec<FileRecord>, opts: &ScanOptions) -> Vec<FileRecord> {
     records
         .into_iter()
@@ -319,6 +340,15 @@ fn filter_records(records: Vec<FileRecord>, opts: &ScanOptions) -> Vec<FileRecor
                         .any(|pattern| record.path.contains(pattern)))
         })
         .collect()
+}
+
+fn text_search_producer(refs_mode: bool, index_used: bool) -> &'static str {
+    match (refs_mode, index_used) {
+        (true, true) => "text_index_identifier_boundary_search",
+        (true, false) => "identifier_boundary_text_search",
+        (false, true) => "text_index_live_text_search",
+        (false, false) => "live_text_search",
+    }
 }
 
 fn preview_line(content: &str, byte: usize) -> String {

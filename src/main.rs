@@ -1,12 +1,12 @@
 mod cli;
 mod commands;
 mod completions;
-mod graph_store;
 mod index;
 mod output;
 mod scip_index;
 mod search;
 mod syntax;
+mod text_index;
 mod workspace;
 
 use anyhow::Result;

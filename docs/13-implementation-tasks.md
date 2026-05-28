@@ -19,13 +19,13 @@
 | T3 L0 source fact commands | Done | Search, path, read, git status, and changed-file commands work without requiring a prebuilt index. |
 | T4 Parser facts | Done | `symbols` and `defs` use tree-sitter fallback for Rust, Python, TypeScript, and JavaScript. |
 | T5 Relation candidates | Done | `calls` and `callers` expose tree-sitter call heuristics as `inferred_candidate`, never `exact`. |
-| T6 Index lifecycle | Non-compliant | Command entrypoints exist, but JSONL cache storage is not acceptable. Must be replaced by snapshots, gram segments, SCIP occurrence DB, and graph backend. |
+| T6 Index lifecycle | In progress | `index build/status/verify/clean` now writes `.code-search/snapshots/`, `.code-search/text/`, `.code-search/working/`, and `.code-search/staged/` with native text `.idx` segments. Source snapshot `files.parquet`/`blobs/`, SCIP occurrence DB, and graph backend remain required. |
 | T7 Git hook lifecycle | Done | Hook install/status/uninstall support staged and commit update entrypoints without making hooks authoritative. |
 | T8 Watch/serve status | Done | `watch --once`, `watch --status`, and `serve --no-watch` expose freshness/status contracts. |
-| T9 Index-backed query path | Non-compliant | Query path currently relies on JSONL cache. Target requires text gram index, SCIP occurrence DB, and Kuzu graph query paths with live source verification. |
+| T9 Index-backed query path | In progress | `find`/`grep` use fresh `text/<snapshot>/grams.idx` as a candidate prefilter and verify matches from live files. Path-specific index lookup, SCIP occurrence DB, and Kuzu graph query paths remain required. |
 | T10 Shell completions | Done | `code-search completions bash|zsh|fish` prints built-in completion scripts without requiring a workspace. |
-| T11 Precise SCIP integration | In progress | Native `index.scip` protobuf parsing and `occurrences.db` are required. SCIP JSON import is debug/import compatibility only and does not complete this task. |
-| T12 Property graph backend | In progress | KuzuDB embedded backend is required. JSONL relation records are debug/export only and do not complete this task. Relation outputs stay `inferred_candidate`. |
+| T11 Precise SCIP integration | In progress | SCIP JSON compatibility import now stores binary `scip/<snapshot>/occurrences.idx` and no JSONL. Native `index.scip` protobuf parsing plus `occurrences.db` are still required. |
+| T12 Property graph backend | Pending | KuzuDB embedded backend is required. The previous JSONL relation store has been removed from `index build` and query dispatch; relation outputs stay tree-sitter `inferred_candidate` until Kuzu exists. |
 | T13 MCP adapter | Pending | Should wrap the stable CLI query service after schema compatibility is locked. |
 | T14 Remote index/graph mode | Deferred | Remote must never override local dirty/staged state; not part of this local MVP. |
 
@@ -34,20 +34,21 @@
 1. T1-T5 are implemented, tested, committed, pushed, and architecture-compliant because they operate from live source/parser facts with explicit reliability labels.
 2. T7-T8 are implemented at command/status level and remain valid lifecycle entrypoints.
 3. T10 shell completions are implemented, tested, committed, and pushed.
-4. The existing JSON/JSONL index code is not counted as completed architecture work.
+4. T6b/T9 text index slice is implemented and tested: `index build` writes `text/<snapshot>/{docs.idx,paths.idx,grams.idx}`, `find`/`grep` use `grams.idx` for literal candidate prefilter, and `index verify` checks live file hashes before query reuse.
+5. SCIP JSON compatibility import no longer uses JSONL storage; it writes binary `occurrences.idx`, but it is not counted as complete native SCIP architecture.
 
 ## Current Follow-Up Scope
 
 1. Replace JSONL file catalog with snapshot storage: `snapshots/<snapshot_id>/files.parquet` and content-addressed `blobs/`.
-2. Replace live-scan/JSONL-backed search acceleration with `text/<snapshot_id>/grams.idx`, `docs.idx`, and `paths.idx`.
-3. Replace SCIP JSON occurrence storage with native `scip/<snapshot_id>/index.scip` protobuf parsing and `occurrences.db`.
+2. Finish text index coverage beyond the completed literal content prefilter: path index lookup, regex prefilter planning, line-offset storage in `docs.idx`, and incremental segment merge/compaction.
+3. Replace SCIP JSON compatibility import with native `scip/<snapshot_id>/index.scip` protobuf parsing and `occurrences.db`.
 4. Replace JSONL relation records with `graph/<snapshot_id>/kuzu/`.
 5. Keep JSON/JSONL only behind explicit export/debug/test-fixture paths.
 
 ## Remaining Work
 
 1. T6a: source snapshot storage with `files.parquet` and `blobs/`.
-2. T6b/T9: native gram/path index segments and query prefilter.
+2. T6b/T9 follow-up: path index lookup, regex prefilter, line-offset table, and incremental segment merge/compaction.
 3. T11: binary `index.scip` protobuf parsing and occurrence DB.
 4. T12: KuzuDB graph backend, backend trait, and impact traversal.
 5. T13: MCP adapter over the stable CLI schema.

@@ -50,14 +50,17 @@ code-search hooks status
 
 ## 当前实现状态
 
-当前 CLI 已经提供可运行的本地命令面，但索引存储层尚未达到目标架构。设计验收以 `snapshots/`、
+当前 CLI 已经提供可运行的本地命令面，并已落地目标 text index 层的第一部分：`index build`
+写入 `.code-search/snapshots/`、`.code-search/text/<snapshot>/{docs.idx,paths.idx,grams.idx}`、
+`.code-search/working/` 和 `.code-search/staged/`，`find`/`grep` 会在 freshness 校验通过后使用
+`grams.idx` 做候选预过滤。完整设计验收仍以 `snapshots/files.parquet + blobs/`、
 `text/*.idx`、`scip/index.scip + occurrences.db` 和 `graph/kuzu/` 为准；JSON/JSONL 只能作为导出、
-测试 fixture 或人工排查格式，不能作为主存储，也不能据此把索引任务标记为完成。
+测试 fixture 或显式兼容导入格式，不能作为主存储，也不能据此把索引任务标记为完成。
 
 - L0 源码事实：`find`、`grep`、`refs`、`files`、`find-path`、`glob`、`list`、`tree`、`read`、`changed`、`status`。
-- Index/Hook 生命周期：命令入口已存在；高性能多索引存储尚未完成。
+- Index/Hook 生命周期：命令入口已存在；target text `.idx` 层已开始落地，source snapshot Parquet、SCIP DB 和 Kuzu graph 尚未完成。
 - Watch/Serve 状态：`watch --once`、`watch --status`、`serve --no-watch` 输出 freshness/status 契约。
-- Precise + parser fallback：`symbols`、`defs`、`refs` 的 CLI 行为已存在；native `index.scip` protobuf 与 occurrence DB 尚未完成。
+- Precise + parser fallback：`symbols`、`defs`、`refs` 的 CLI 行为已存在；SCIP JSON 兼容导入写入二进制 `occurrences.idx`，native `index.scip` protobuf 与 occurrence DB 尚未完成。
 - 关系候选：`calls`、`callers` 行为已存在；KuzuDB property graph backend 尚未完成。
 
 默认输出为 JSON。所有结果都会携带 `snapshot_id`、`reliability`、`producer`、`exact` 或候选说明。

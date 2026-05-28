@@ -123,7 +123,52 @@ fn index_verify_detects_stale_files() {
 }
 
 #[test]
-fn find_uses_fresh_index_catalog_for_candidates() {
+fn index_build_writes_target_text_storage_layout() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
+    fs::create_dir_all(dir.path().join(".code-search/index")).unwrap();
+    fs::write(
+        dir.path().join(".code-search/index/files.jsonl"),
+        "{\"path\":\"legacy.txt\"}\n",
+    )
+    .unwrap();
+
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let code_search_dir = dir.path().join(".code-search");
+    assert!(code_search_dir.join("snapshots").is_dir());
+    assert!(code_search_dir.join("text").is_dir());
+    assert!(code_search_dir
+        .join("working")
+        .join("manifest.json")
+        .is_file());
+    assert!(!code_search_dir.join("index").exists());
+
+    let snapshot = fs::read_dir(code_search_dir.join("snapshots"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert!(snapshot.join("manifest.json").is_file());
+    let text_snapshot = fs::read_dir(code_search_dir.join("text"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert!(text_snapshot.join("docs.idx").is_file());
+    assert!(text_snapshot.join("paths.idx").is_file());
+    assert!(text_snapshot.join("grams.idx").is_file());
+}
+
+#[test]
+fn find_uses_fresh_text_index_for_candidates() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
 
@@ -147,9 +192,10 @@ fn find_uses_fresh_index_catalog_for_candidates() {
 
     assert_eq!(json["index"]["used"], true);
     assert_eq!(json["index"]["fresh"], true);
+    assert_eq!(json["index"]["source"], "text_index");
     assert_eq!(
         json["results"][0]["producer"],
-        "index_catalog_live_text_search"
+        "text_index_live_text_search"
     );
 }
 
@@ -216,6 +262,15 @@ fn imported_scip_index_drives_precise_defs_refs_and_symbols() {
         .arg(&scip_path)
         .assert()
         .success();
+
+    let scip_snapshot = fs::read_dir(dir.path().join(".code-search/scip"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert!(scip_snapshot.join("occurrences.idx").is_file());
+    assert!(!scip_snapshot.join("occurrences.jsonl").exists());
 
     let defs = code_search()
         .arg("--path")
@@ -290,7 +345,7 @@ fn defs_falls_back_to_parser_after_plain_index_build_without_scip() {
 }
 
 #[test]
-fn index_build_persists_relation_graph_for_calls_and_callers() {
+fn calls_and_callers_do_not_claim_graph_store_before_kuzu_backend_exists() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(
@@ -316,11 +371,11 @@ fn index_build_persists_relation_graph_for_calls_and_callers() {
         .stdout
         .clone();
     let calls_json: Value = serde_json::from_slice(&calls).unwrap();
-    assert_eq!(calls_json["index"]["used"], true);
+    assert_eq!(calls_json["index"]["used"], false);
     assert_eq!(calls_json["reliability"]["level"], "inferred_candidate");
     assert_eq!(
         calls_json["results"][0]["producer"],
-        "local_relation_graph_store"
+        "tree_sitter_call_heuristic"
     );
     assert_eq!(calls_json["results"][0]["target"], "beta");
 
@@ -334,10 +389,9 @@ fn index_build_persists_relation_graph_for_calls_and_callers() {
         .stdout
         .clone();
     let callers_json: Value = serde_json::from_slice(&callers).unwrap();
-    assert_eq!(callers_json["index"]["used"], true);
     assert_eq!(
         callers_json["results"][0]["producer"],
-        "local_relation_graph_store"
+        "tree_sitter_call_heuristic"
     );
     assert_eq!(callers_json["results"][0]["enclosingSymbol"], "alpha");
 }

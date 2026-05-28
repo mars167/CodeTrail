@@ -216,7 +216,8 @@ git show :path/to/file
 staged index 单独写到：
 
 ```text
-.code-search/index/staged/
+.code-search/staged/manifest.json
+.code-search/text/<staged_snapshot>/
 ```
 
 并在 `post-commit` 之后标记为对应 commit 的 verified snapshot。working tree index 和 staged index

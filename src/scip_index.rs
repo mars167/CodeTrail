@@ -1,24 +1,23 @@
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File},
-    io::{BufRead, BufReader, Write},
+    io::{Read, Write},
     path::Path,
 };
 
-use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use anyhow::{anyhow, Context, Result};
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
     index,
-    search::line_range_for_node,
     workspace::{ScanOptions, Workspace},
 };
 
 const ROLE_DEFINITION: i32 = 1;
+const OCCURRENCES_MAGIC: &[u8; 8] = b"CSOCC1\0\0";
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 struct PreciseOccurrenceRecord {
     path: String,
     language: String,
@@ -26,9 +25,17 @@ struct PreciseOccurrenceRecord {
     name: String,
     kind: String,
     role: String,
-    range: Value,
+    range: PreciseRange,
     file_hash: String,
     producer: String,
+}
+
+#[derive(Clone, Debug)]
+struct PreciseRange {
+    start_line: u32,
+    start_column: u32,
+    end_line: u32,
+    end_column: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,7 +88,7 @@ pub fn import_scip_json(workspace: &Workspace, path: impl AsRef<Path>) -> Result
     let parsed: ScipJsonIndex = serde_json::from_slice(&input)
         .with_context(|| "failed to parse SCIP JSON; binary index.scip protobuf import is not available in this build")?;
 
-    let root = index::index_root(workspace);
+    let root = index::scip_root(workspace);
     fs::create_dir_all(&root)?;
 
     let mut records = Vec::new();
@@ -131,25 +138,9 @@ pub fn import_scip_json(workspace: &Workspace, path: impl AsRef<Path>) -> Result
             .then(a.name.cmp(&b.name))
             .then(a.role.cmp(&b.role))
     });
-    write_records(&root.join("occurrences.jsonl"), &records)?;
-    write_records(
-        &root.join("declarations.jsonl"),
-        &records
-            .iter()
-            .filter(|record| record.role == "definition")
-            .cloned()
-            .collect::<Vec<_>>(),
-    )?;
-    write_records(
-        &root.join("symbols.jsonl"),
-        &records
-            .iter()
-            .filter(|record| record.role == "definition")
-            .cloned()
-            .collect::<Vec<_>>(),
-    )?;
+    write_occurrences(&root.join("occurrences.idx"), &records)?;
     fs::write(
-        root.join("scip-manifest.json"),
+        root.join("manifest.json"),
         serde_json::to_vec_pretty(&json!({
             "source": "scip_json",
             "path": source_path.to_string_lossy(),
@@ -164,6 +155,7 @@ pub fn import_scip_json(workspace: &Workspace, path: impl AsRef<Path>) -> Result
             "fresh": true,
             "source": "scip_json",
             "path": root,
+            "occurrencePath": root.join("occurrences.idx"),
             "recordCount": records.len(),
             "definitionCount": records.iter().filter(|record| record.role == "definition").count()
         }
@@ -225,9 +217,9 @@ fn fresh_records(
     workspace: &Workspace,
     opts: &ScanOptions,
 ) -> Result<Option<(Vec<PreciseOccurrenceRecord>, Value)>> {
-    let root = index::index_root(workspace);
-    let path = root.join("occurrences.jsonl");
-    if !path.exists() || !root.join("scip-manifest.json").exists() {
+    let root = index::scip_root(workspace);
+    let path = root.join("occurrences.idx");
+    if !path.exists() || !root.join("manifest.json").exists() {
         return Ok(None);
     }
 
@@ -239,7 +231,7 @@ fn fresh_records(
         .map(|file| file.path)
         .collect::<HashSet<_>>();
 
-    let records = read_records(&path)?;
+    let records = read_occurrences(&path)?;
     let mut fresh_records = Vec::new();
     for record in records {
         if !allowed_paths.contains(&record.path) {
@@ -272,20 +264,20 @@ fn current_file_hash(workspace: &Workspace, path: &str) -> Result<String> {
     Ok(format!("blake3:{}", blake3::hash(&content).to_hex()))
 }
 
-fn scip_range(range: &[usize]) -> Option<Value> {
+fn scip_range(range: &[usize]) -> Option<PreciseRange> {
     match range {
-        [start_line, start_col, end_col] => Some(line_range_for_node(
-            *start_line,
-            *start_col,
-            *start_line,
-            *end_col,
-        )),
-        [start_line, start_col, end_line, end_col] => Some(line_range_for_node(
-            *start_line,
-            *start_col,
-            *end_line,
-            *end_col,
-        )),
+        [start_line, start_col, end_col] => Some(PreciseRange {
+            start_line: to_one_based_u32(*start_line)?,
+            start_column: to_one_based_u32(*start_col)?,
+            end_line: to_one_based_u32(*start_line)?,
+            end_column: to_one_based_u32(*end_col)?,
+        }),
+        [start_line, start_col, end_line, end_col] => Some(PreciseRange {
+            start_line: to_one_based_u32(*start_line)?,
+            start_column: to_one_based_u32(*start_col)?,
+            end_line: to_one_based_u32(*end_line)?,
+            end_column: to_one_based_u32(*end_col)?,
+        }),
         _ => None,
     }
 }
@@ -320,7 +312,10 @@ fn record_to_json(record: PreciseOccurrenceRecord) -> Value {
         "symbol": record.symbol,
         "role": record.role,
         "language": record.language,
-        "range": record.range,
+        "range": {
+            "start": { "line": record.range.start_line, "column": record.range.start_column },
+            "end": { "line": record.range.end_line, "column": record.range.end_column }
+        },
         "fileHash": record.file_hash,
         "producer": record.producer,
         "reliability": "precise_fact",
@@ -328,25 +323,97 @@ fn record_to_json(record: PreciseOccurrenceRecord) -> Value {
     })
 }
 
-fn write_records(path: &Path, records: &[PreciseOccurrenceRecord]) -> Result<()> {
+fn write_occurrences(path: &Path, records: &[PreciseOccurrenceRecord]) -> Result<()> {
     let mut file = File::create(path)?;
+    file.write_all(OCCURRENCES_MAGIC)?;
+    write_u32(&mut file, records.len() as u32)?;
     for record in records {
-        serde_json::to_writer(&mut file, record)?;
-        writeln!(file)?;
+        write_string(&mut file, &record.path)?;
+        write_string(&mut file, &record.language)?;
+        write_string(&mut file, &record.symbol)?;
+        write_string(&mut file, &record.name)?;
+        write_string(&mut file, &record.kind)?;
+        write_string(&mut file, &record.role)?;
+        write_u32(&mut file, record.range.start_line)?;
+        write_u32(&mut file, record.range.start_column)?;
+        write_u32(&mut file, record.range.end_line)?;
+        write_u32(&mut file, record.range.end_column)?;
+        write_string(&mut file, &record.file_hash)?;
+        write_string(&mut file, &record.producer)?;
     }
     Ok(())
 }
 
-fn read_records(path: &Path) -> Result<Vec<PreciseOccurrenceRecord>> {
-    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let reader = BufReader::new(file);
-    let mut records = Vec::new();
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        records.push(serde_json::from_str(&line)?);
+fn read_occurrences(path: &Path) -> Result<Vec<PreciseOccurrenceRecord>> {
+    let mut file =
+        File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    read_magic(&mut file, OCCURRENCES_MAGIC)?;
+    let count = read_u32(&mut file)? as usize;
+    let mut records = Vec::with_capacity(count);
+    for _ in 0..count {
+        let path = read_string(&mut file)?;
+        let language = read_string(&mut file)?;
+        let symbol = read_string(&mut file)?;
+        let name = read_string(&mut file)?;
+        let kind = read_string(&mut file)?;
+        let role = read_string(&mut file)?;
+        let range = PreciseRange {
+            start_line: read_u32(&mut file)?,
+            start_column: read_u32(&mut file)?,
+            end_line: read_u32(&mut file)?,
+            end_column: read_u32(&mut file)?,
+        };
+        let file_hash = read_string(&mut file)?;
+        let producer = read_string(&mut file)?;
+        records.push(PreciseOccurrenceRecord {
+            path,
+            language,
+            symbol,
+            name,
+            kind,
+            role,
+            range,
+            file_hash,
+            producer,
+        });
     }
     Ok(records)
+}
+
+fn to_one_based_u32(value: usize) -> Option<u32> {
+    value.checked_add(1)?.try_into().ok()
+}
+
+fn read_magic(file: &mut File, expected: &[u8; 8]) -> Result<()> {
+    let mut actual = [0u8; 8];
+    file.read_exact(&mut actual)?;
+    if &actual != expected {
+        return Err(anyhow!("invalid SCIP occurrence magic"));
+    }
+    Ok(())
+}
+
+fn write_string(file: &mut File, value: &str) -> Result<()> {
+    let bytes = value.as_bytes();
+    write_u32(file, bytes.len() as u32)?;
+    file.write_all(bytes)?;
+    Ok(())
+}
+
+fn read_string(file: &mut File) -> Result<String> {
+    let len = read_u32(file)? as usize;
+    let mut bytes = vec![0u8; len];
+    file.read_exact(&mut bytes)?;
+    Ok(String::from_utf8(bytes)?)
+}
+
+fn write_u32(file: &mut File, value: u32) -> Result<()> {
+    file.write_all(&value.to_le_bytes())?;
+    Ok(())
+}
+
+fn read_u32(file: &mut File) -> Result<u32> {
+    let mut bytes = [0u8; 4];
+    file.read_exact(&mut bytes)?;
+    Ok(u32::from_le_bytes(bytes))
 }

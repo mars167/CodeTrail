@@ -107,7 +107,7 @@ code-search hooks uninstall
 code-search hooks status
 ```
 
-索引命令用于创建、存储、验证和刷新 `.code-search/index/` 下的本地缓存。它保留旧项目中
+索引命令用于创建、存储、验证和刷新 `.code-search/` 下的本地 snapshot 与派生索引。它保留旧项目中
 “由 git hook 自动维护索引”的工作流，但索引只作为可验证缓存，不作为不可挑战的事实来源。
 
 建议 hook 行为：

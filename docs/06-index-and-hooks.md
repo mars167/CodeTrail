@@ -70,7 +70,7 @@ JSON/JSONL 禁止作为主索引存储。它们只允许用于 `code-search inde
 
 | Hook | 行为 |
 | --- | --- |
-| `pre-commit` | 基于 staged snapshot 增量构建索引，写入 `.code-search/index/staged/`。 |
+| `pre-commit` | 基于 staged snapshot 增量构建索引，写入 `.code-search/staged/manifest.json` 和对应 `text/<snapshot>/`。 |
 | `post-commit` | 将 staged 索引标记为新 commit 的已验证快照，必要时同步到 working tree 索引。 |
 | `post-checkout` | 切换分支或文件后校验 manifest，按变更文件增量刷新。 |
 | `post-merge` | merge 后根据变更文件增量更新索引并记录冲突/partial parse 警告。 |
@@ -94,7 +94,7 @@ code-search index update       # 基于 git diff / 文件 mtime 增量更新
 code-search index status       # 输出 freshness 和健康状态
 code-search index verify       # 校验 manifest 与当前文件是否一致
 code-search index clean        # 清理索引
-code-search index import-scip <index.scip.json>  # 导入 SCIP JSON occurrence
+code-search index import-scip <index.scip.json>  # 兼容导入 SCIP JSON，写入二进制 occurrences.idx；native index.scip 仍是目标
 
 code-search hooks install
 code-search hooks uninstall
@@ -119,7 +119,8 @@ code-search hooks status
   "index": {
     "used": true,
     "fresh": true,
-    "source": "working_tree",
+    "source": "text_index",
+    "snapshotSource": "working_tree",
     "manifestHead": "abc123",
     "fallback": false
   }
