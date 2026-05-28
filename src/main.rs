@@ -3,6 +3,7 @@ mod commands;
 mod completions;
 mod index;
 mod output;
+mod scip_index;
 mod search;
 mod syntax;
 mod workspace;

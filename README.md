@@ -43,6 +43,7 @@ code-search serve
 code-search index build
 code-search index update
 code-search index status
+code-search index import-scip <index.scip.json>
 code-search hooks install
 code-search hooks status
 ```
@@ -52,9 +53,9 @@ code-search hooks status
 当前 CLI 已经提供可运行的本地命令面：
 
 - L0 源码事实：`find`、`grep`、`refs`、`files`、`find-path`、`glob`、`list`、`tree`、`read`、`changed`、`status`。
-- Index/Hook 生命周期：`index build/update/status/verify/clean`、`hooks install/uninstall/status`。
+- Index/Hook 生命周期：`index build/update/status/verify/clean/import-scip`、`hooks install/uninstall/status`。
 - Watch/Serve 状态：`watch --once`、`watch --status`、`serve --no-watch` 输出 freshness/status 契约。
-- Parser fallback：`symbols`、`defs` 使用 tree-sitter parser facts。
+- Precise + parser fallback：`symbols`、`defs`、`refs` 优先使用导入的 SCIP JSON occurrence；不可用时回退到 tree-sitter/text fallback。
 - 关系候选：`calls`、`callers` 使用 tree-sitter call heuristic，并明确标注 `inferred_candidate`。
 
 默认输出为 JSON。所有结果都会携带 `snapshot_id`、`reliability`、`producer`、`exact` 或候选说明。

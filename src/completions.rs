@@ -44,7 +44,7 @@ fn bash() -> String {
   cur="${{COMP_WORDS[COMP_CWORD]}}"
   prev="${{COMP_WORDS[COMP_CWORD-1]}}"
   commands="{commands}"
-  index_cmds="build update status verify clean"
+  index_cmds="build update status verify clean import-scip"
   hooks_cmds="install uninstall status"
   shells="bash zsh fish"
 
@@ -82,7 +82,7 @@ fn zsh() -> String {
 _code_search() {{
   local -a commands index_cmds hooks_cmds shells
   commands=({commands})
-  index_cmds=(build update status verify clean)
+  index_cmds=(build update status verify clean import-scip)
   hooks_cmds=(install uninstall status)
   shells=(bash zsh fish)
 
@@ -127,7 +127,7 @@ fn fish() -> String {
     for command in COMMANDS {
         lines.push(format!("complete -c code-search -f -a {command}"));
     }
-    lines.push("complete -c code-search -n '__fish_seen_subcommand_from index' -a 'build update status verify clean'".to_string());
+    lines.push("complete -c code-search -n '__fish_seen_subcommand_from index' -a 'build update status verify clean import-scip'".to_string());
     lines.push("complete -c code-search -n '__fish_seen_subcommand_from hooks' -a 'install uninstall status'".to_string());
     lines.push(
         "complete -c code-search -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish'"

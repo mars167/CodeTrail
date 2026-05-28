@@ -132,6 +132,9 @@ pub enum IndexCommand {
     Status,
     Verify,
     Clean,
+    ImportScip {
+        path: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]

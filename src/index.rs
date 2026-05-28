@@ -84,6 +84,7 @@ pub fn build(
 
     write_manifest(&tmp.join("manifest.json"), &manifest)?;
     write_records(&tmp.join("files.jsonl"), &records)?;
+    File::create(tmp.join("occurrences.jsonl"))?;
     File::create(tmp.join("symbols.jsonl"))?;
     File::create(tmp.join("declarations.jsonl"))?;
     File::create(tmp.join("relations.jsonl"))?;
@@ -347,7 +348,7 @@ pub fn serve_status(workspace: &Workspace, no_watch: bool) -> Value {
     })
 }
 
-fn index_root(workspace: &Workspace) -> PathBuf {
+pub(crate) fn index_root(workspace: &Workspace) -> PathBuf {
     workspace.root.join(".code-search").join("index")
 }
 

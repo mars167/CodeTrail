@@ -2,7 +2,7 @@ use serde_json::json;
 
 use crate::{
     cli::{Cli, Command, HooksCommand, IndexCommand},
-    completions, index, output, search, syntax,
+    completions, index, output, scip_index, search, syntax,
     workspace::{ScanOptions, Workspace},
     AppResult,
 };
@@ -131,6 +131,21 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             )
         }
         Command::Refs { identifier } => {
+            if let Some(precise) = scip_index::refs(&workspace, &scan_opts, identifier)? {
+                return emit_response(
+                    &cli.output,
+                    output::response_with_index(
+                        "refs",
+                        "refs",
+                        json!({ "identifier": identifier, "producer": "scip" }),
+                        &workspace.snapshot_id,
+                        output::precise_fact(),
+                        precise.index,
+                        precise.results,
+                        Vec::new(),
+                    ),
+                );
+            }
             let query_output =
                 search::find(&workspace, &scan_opts, identifier, "literal", cli.context, true)?;
             exit_code = output::no_match_exit(&query_output.results);
@@ -146,6 +161,21 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             )
         }
         Command::Symbols { query } => {
+            if let Some(precise) = scip_index::symbols(&workspace, &scan_opts, query)? {
+                return emit_response(
+                    &cli.output,
+                    output::response_with_index(
+                        "symbols",
+                        "symbols",
+                        json!({ "query": query, "producer": "scip" }),
+                        &workspace.snapshot_id,
+                        output::precise_fact(),
+                        precise.index,
+                        precise.results,
+                        Vec::new(),
+                    ),
+                );
+            }
             let (results, warnings) = syntax::symbols(&workspace, &scan_opts, query)?;
             exit_code = output::no_match_exit(&results);
             output::response(
@@ -159,6 +189,21 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             )
         }
         Command::Defs { identifier } => {
+            if let Some(precise) = scip_index::defs(&workspace, &scan_opts, identifier)? {
+                return emit_response(
+                    &cli.output,
+                    output::response_with_index(
+                        "defs",
+                        "defs",
+                        json!({ "identifier": identifier, "producer": "scip" }),
+                        &workspace.snapshot_id,
+                        output::precise_fact(),
+                        precise.index,
+                        precise.results,
+                        Vec::new(),
+                    ),
+                );
+            }
             let (results, warnings) = syntax::defs(&workspace, &scan_opts, identifier)?;
             exit_code = output::no_match_exit(&results);
             output::response(
@@ -298,6 +343,15 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 json!([index::clean(&workspace)?]),
                 Vec::new(),
             ),
+            IndexCommand::ImportScip { path } => output::response(
+                "index import-scip",
+                "index import-scip",
+                json!({ "path": path, "format": "scip_json" }),
+                &workspace.snapshot_id,
+                output::freshness(),
+                json!([scip_index::import_scip_json(&workspace, path)?]),
+                Vec::new(),
+            ),
         },
         Command::Hooks { command } => match command {
             HooksCommand::Install => output::response(
@@ -332,5 +386,11 @@ pub fn run(cli: Cli) -> AppResult<i32> {
     };
 
     output::emit(&cli.output, &value)?;
+    Ok(exit_code)
+}
+
+fn emit_response(format: &crate::cli::OutputFormat, value: serde_json::Value) -> AppResult<i32> {
+    let exit_code = output::no_match_exit(&value["results"]);
+    output::emit(format, &value)?;
     Ok(exit_code)
 }

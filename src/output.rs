@@ -34,6 +34,15 @@ pub fn parser_fact() -> Reliability {
     }
 }
 
+pub fn precise_fact() -> Reliability {
+    Reliability {
+        level: "precise_fact",
+        source: "scip_occurrence_index",
+        exact: true,
+        llm_instruction: "这些结果来自 precise code intelligence index。修改前仍应使用 code-search read 验证源码范围。",
+    }
+}
+
 pub fn inferred_candidate() -> Reliability {
     Reliability {
         level: "inferred_candidate",

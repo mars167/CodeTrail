@@ -1,6 +1,7 @@
 use std::fs;
 
 use assert_cmd::Command;
+use serde_json::json;
 use serde_json::Value;
 use tempfile::tempdir;
 
@@ -194,4 +195,127 @@ fn completions_print_shell_script_without_workspace() {
 
     assert!(script.contains("complete -F _code_search code-search"));
     assert!(script.contains("find grep files"));
+}
+
+#[test]
+fn imported_scip_index_drives_precise_defs_refs_and_symbols() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "fn needle() {}\nfn main() { needle(); }\n",
+    )
+    .unwrap();
+    let scip_path = dir.path().join("index.scip.json");
+    write_minimal_scip_json(&scip_path);
+
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "import-scip"])
+        .arg(&scip_path)
+        .assert()
+        .success();
+
+    let defs = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let defs_json: Value = serde_json::from_slice(&defs).unwrap();
+    assert_eq!(defs_json["reliability"]["level"], "precise_fact");
+    assert_eq!(defs_json["results"][0]["producer"], "scip");
+    assert_eq!(defs_json["results"][0]["exact"], true);
+    assert_eq!(defs_json["results"][0]["range"]["start"]["line"], 1);
+
+    let refs = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["refs", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let refs_json: Value = serde_json::from_slice(&refs).unwrap();
+    assert_eq!(refs_json["reliability"]["level"], "precise_fact");
+    assert_eq!(refs_json["results"][0]["producer"], "scip");
+    assert_eq!(refs_json["results"][0]["role"], "reference");
+    assert_eq!(refs_json["results"][0]["range"]["start"]["line"], 2);
+
+    let symbols = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["symbols", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let symbols_json: Value = serde_json::from_slice(&symbols).unwrap();
+    assert_eq!(symbols_json["reliability"]["level"], "precise_fact");
+    assert_eq!(symbols_json["results"][0]["name"], "needle");
+}
+
+#[test]
+fn defs_falls_back_to_parser_after_plain_index_build_without_scip() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/lib.rs"), "fn needle() {}\n").unwrap();
+
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let defs = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let defs_json: Value = serde_json::from_slice(&defs).unwrap();
+
+    assert_eq!(defs_json["reliability"]["level"], "parser_fact");
+    assert_eq!(defs_json["results"][0]["producer"], "tree_sitter_parser");
+}
+
+fn write_minimal_scip_json(path: &std::path::Path) {
+    let value = json!({
+        "documents": [
+            {
+                "relativePath": "src/lib.rs",
+                "language": "rust",
+                "occurrences": [
+                    {
+                        "range": [0, 3, 0, 9],
+                        "symbol": "local 1",
+                        "symbolRoles": 1
+                    },
+                    {
+                        "range": [1, 12, 1, 18],
+                        "symbol": "local 1",
+                        "symbolRoles": 0
+                    }
+                ],
+                "symbols": [
+                    {
+                        "symbol": "local 1",
+                        "displayName": "needle",
+                        "kind": "function"
+                    }
+                ]
+            }
+        ]
+    });
+    fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
 }

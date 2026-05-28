@@ -100,6 +100,7 @@ code-search index update
 code-search index status
 code-search index verify
 code-search index clean
+code-search index import-scip <index.scip.json>
 
 code-search hooks install
 code-search hooks uninstall

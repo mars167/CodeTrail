@@ -73,6 +73,7 @@ code-search index update       # 基于 git diff / 文件 mtime 增量更新
 code-search index status       # 输出 freshness 和健康状态
 code-search index verify       # 校验 manifest 与当前文件是否一致
 code-search index clean        # 清理索引
+code-search index import-scip <index.scip.json>  # 导入 SCIP JSON occurrence
 
 code-search hooks install
 code-search hooks uninstall
