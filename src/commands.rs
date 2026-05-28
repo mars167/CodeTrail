@@ -1,0 +1,322 @@
+use serde_json::json;
+
+use crate::{
+    cli::{Cli, Command, HooksCommand, IndexCommand},
+    index, output, search, syntax,
+    workspace::{ScanOptions, Workspace},
+    AppResult,
+};
+
+pub fn run(cli: Cli) -> AppResult<i32> {
+    let scan_opts = ScanOptions {
+        include: cli.include.clone(),
+        exclude: cli.exclude.clone(),
+        hidden: cli.hidden,
+        no_ignore: cli.no_ignore,
+        limit: cli.limit,
+    };
+    let workspace = Workspace::discover(&cli.path)?;
+    let mut exit_code = 0;
+
+    let value = match &cli.command {
+        Command::Find { text, mode } => {
+            let results = search::find(&workspace, &scan_opts, text, mode, cli.context, false)?;
+            exit_code = output::no_match_exit(&results);
+            output::response(
+                "find",
+                "find",
+                json!({ "pattern": text, "mode": mode }),
+                &workspace.snapshot_id,
+                output::source_fact(),
+                results,
+                Vec::new(),
+            )
+        }
+        Command::Grep {
+            pattern,
+            mode,
+            context,
+        } => {
+            let context = context.unwrap_or(cli.context);
+            let results = search::find(&workspace, &scan_opts, pattern, mode, context, false)?;
+            exit_code = output::no_match_exit(&results);
+            output::response(
+                "grep",
+                "find",
+                json!({ "pattern": pattern, "mode": mode, "context": context }),
+                &workspace.snapshot_id,
+                output::source_fact(),
+                results,
+                Vec::new(),
+            )
+        }
+        Command::Files { pattern } => {
+            let results = search::files(&workspace, &scan_opts, pattern, false)?;
+            exit_code = output::no_match_exit(&results);
+            output::response(
+                "files",
+                "files",
+                json!({ "pattern": pattern, "mode": "path_substring_or_glob" }),
+                &workspace.snapshot_id,
+                output::source_fact(),
+                results,
+                Vec::new(),
+            )
+        }
+        Command::FindPath { pattern } => {
+            let results = search::files(&workspace, &scan_opts, pattern, false)?;
+            exit_code = output::no_match_exit(&results);
+            output::response(
+                "find-path",
+                "files",
+                json!({ "pattern": pattern, "mode": "path_substring_or_glob" }),
+                &workspace.snapshot_id,
+                output::source_fact(),
+                results,
+                Vec::new(),
+            )
+        }
+        Command::Glob { pattern } => {
+            let results = search::files(&workspace, &scan_opts, pattern, true)?;
+            exit_code = output::no_match_exit(&results);
+            output::response(
+                "glob",
+                "files",
+                json!({ "pattern": pattern, "mode": "strict_glob" }),
+                &workspace.snapshot_id,
+                output::source_fact(),
+                results,
+                Vec::new(),
+            )
+        }
+        Command::List { dir, recursive } => output::response(
+            "list",
+            "list",
+            json!({ "dir": dir, "recursive": recursive }),
+            &workspace.snapshot_id,
+            output::source_fact(),
+            search::list(&workspace, dir.as_deref(), *recursive)?,
+            Vec::new(),
+        ),
+        Command::Tree { dir, depth } => output::response(
+            "tree",
+            "tree",
+            json!({ "dir": dir, "depth": depth }),
+            &workspace.snapshot_id,
+            output::source_fact(),
+            search::tree(&workspace, dir.as_deref(), *depth)?,
+            Vec::new(),
+        ),
+        Command::Read { target } => {
+            let result = search::read(&workspace, target)?;
+            output::response(
+                "read",
+                "read",
+                json!({ "target": target }),
+                &workspace.snapshot_id,
+                output::source_fact(),
+                json!([result]),
+                Vec::new(),
+            )
+        }
+        Command::Refs { identifier } => {
+            let results = search::find(&workspace, &scan_opts, identifier, "literal", cli.context, true)?;
+            exit_code = output::no_match_exit(&results);
+            output::response(
+                "refs",
+                "refs",
+                json!({ "identifier": identifier, "mode": "identifier_boundary_text_search" }),
+                &workspace.snapshot_id,
+                output::source_fact(),
+                results,
+                vec!["refs is identifier-boundary text search unless a precise occurrence index is available".to_string()],
+            )
+        }
+        Command::Symbols { query } => {
+            let (results, warnings) = syntax::symbols(&workspace, &scan_opts, query)?;
+            exit_code = output::no_match_exit(&results);
+            output::response(
+                "symbols",
+                "symbols",
+                json!({ "query": query, "producer": "tree_sitter_parser" }),
+                &workspace.snapshot_id,
+                output::parser_fact(),
+                results,
+                warnings,
+            )
+        }
+        Command::Defs { identifier } => {
+            let (results, warnings) = syntax::defs(&workspace, &scan_opts, identifier)?;
+            exit_code = output::no_match_exit(&results);
+            output::response(
+                "defs",
+                "defs",
+                json!({ "identifier": identifier, "producer": "tree_sitter_parser_fallback", "fallbackReason": "precise_scip_index_unavailable" }),
+                &workspace.snapshot_id,
+                output::parser_fact(),
+                results,
+                warnings,
+            )
+        }
+        Command::Calls { identifier } => {
+            let (results, warnings) = syntax::calls(&workspace, &scan_opts, identifier)?;
+            exit_code = output::no_match_exit(&results);
+            output::response(
+                "calls",
+                "calls",
+                json!({ "identifier": identifier, "producer": "tree_sitter_call_heuristic" }),
+                &workspace.snapshot_id,
+                output::inferred_candidate(),
+                results,
+                warnings,
+            )
+        }
+        Command::Callers { identifier } => {
+            let (results, warnings) = syntax::callers(&workspace, &scan_opts, identifier)?;
+            exit_code = output::no_match_exit(&results);
+            output::response(
+                "callers",
+                "callers",
+                json!({ "identifier": identifier, "producer": "tree_sitter_call_heuristic" }),
+                &workspace.snapshot_id,
+                output::inferred_candidate(),
+                results,
+                warnings,
+            )
+        }
+        Command::Changed => output::response(
+            "changed",
+            "changed",
+            json!({}),
+            &workspace.snapshot_id,
+            output::source_fact(),
+            search::changed(&workspace)?,
+            Vec::new(),
+        ),
+        Command::Status => output::response(
+            "status",
+            "status",
+            json!({}),
+            &workspace.snapshot_id,
+            output::source_fact(),
+            json!([search::status(&workspace)]),
+            Vec::new(),
+        ),
+        Command::Watch { once, status } => {
+            let results = if *once {
+                json!([index::build(&workspace, &scan_opts, false, true, false)?])
+            } else {
+                json!([index::watch_status(&workspace)])
+            };
+            output::response(
+                "watch",
+                "watch",
+                json!({ "once": once, "status": status }),
+                &workspace.snapshot_id,
+                output::freshness(),
+                results,
+                if !once && !status {
+                    vec!["long-running watcher daemon mode is intentionally not started in non-interactive command execution; use watch --once or serve wrappers".to_string()]
+                } else {
+                    Vec::new()
+                },
+            )
+        }
+        Command::Serve { no_watch } => output::response(
+            "serve",
+            "serve",
+            json!({ "noWatch": no_watch }),
+            &workspace.snapshot_id,
+            output::freshness(),
+            json!([index::serve_status(&workspace, *no_watch)]),
+            vec!["HTTP/MCP adapters are expected to wrap the same CLI query service after JSON schema stabilization".to_string()],
+        ),
+        Command::Index { command } => match command {
+            IndexCommand::Build {
+                staged,
+                changed,
+                force,
+            } => output::response(
+                "index build",
+                "index build",
+                json!({ "staged": staged, "changed": changed, "force": force }),
+                &workspace.snapshot_id,
+                output::freshness(),
+                json!([index::build(&workspace, &scan_opts, *staged, *changed, *force)?]),
+                Vec::new(),
+            ),
+            IndexCommand::Update => output::response(
+                "index update",
+                "index update",
+                json!({}),
+                &workspace.snapshot_id,
+                output::freshness(),
+                json!([index::build(&workspace, &scan_opts, false, true, false)?]),
+                Vec::new(),
+            ),
+            IndexCommand::Status => output::response(
+                "index status",
+                "index status",
+                json!({}),
+                &workspace.snapshot_id,
+                output::freshness(),
+                json!([index::status(&workspace)?]),
+                Vec::new(),
+            ),
+            IndexCommand::Verify => {
+                let (result, code) = index::verify(&workspace)?;
+                exit_code = code;
+                output::response(
+                    "index verify",
+                    "index verify",
+                    json!({}),
+                    &workspace.snapshot_id,
+                    output::freshness(),
+                    json!([result]),
+                    Vec::new(),
+                )
+            }
+            IndexCommand::Clean => output::response(
+                "index clean",
+                "index clean",
+                json!({}),
+                &workspace.snapshot_id,
+                output::freshness(),
+                json!([index::clean(&workspace)?]),
+                Vec::new(),
+            ),
+        },
+        Command::Hooks { command } => match command {
+            HooksCommand::Install => output::response(
+                "hooks install",
+                "hooks install",
+                json!({}),
+                &workspace.snapshot_id,
+                output::freshness(),
+                index::hooks_install(&workspace)?,
+                Vec::new(),
+            ),
+            HooksCommand::Uninstall => output::response(
+                "hooks uninstall",
+                "hooks uninstall",
+                json!({}),
+                &workspace.snapshot_id,
+                output::freshness(),
+                index::hooks_uninstall(&workspace)?,
+                Vec::new(),
+            ),
+            HooksCommand::Status => output::response(
+                "hooks status",
+                "hooks status",
+                json!({}),
+                &workspace.snapshot_id,
+                output::freshness(),
+                index::hooks_status(&workspace)?,
+                Vec::new(),
+            ),
+        },
+    };
+
+    output::emit(&cli.output, &value)?;
+    Ok(exit_code)
+}

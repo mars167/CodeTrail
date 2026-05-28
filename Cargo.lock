@@ -195,6 +195,7 @@ dependencies = [
  "assert_cmd",
  "blake3",
  "clap",
+ "globset",
  "ignore",
  "insta",
  "memmap2",

@@ -2,6 +2,16 @@
 
 > 当前设计准绳见 `docs/00-design-summary.md`。本文只展开实现顺序。
 
+## 当前实现状态
+
+截至 2026-05-28，CLI 已完成一个可运行的本地实现：
+
+- 阶段 1 的源码事实命令已可用，并输出统一 JSON 与可靠性契约。
+- 阶段 2 的 index/hook/watch 生命周期已落地为本地 JSONL index、hook 安装脚本、freshness verify 和 watcher/status reconcile 入口。
+- 阶段 3 已通过 tree-sitter fallback 提供 `symbols` 与 `defs`。
+- 阶段 4 已通过 tree-sitter call heuristic 提供 `calls` 与 `callers` 候选结果，永不标记为 exact。
+- 阶段 5 的 MCP/远程适配尚未作为独立服务实现；当前 `serve` 暴露的是同一 CLI query service 的状态契约，后续适配器应复用该命令层 schema。
+
 ## 阶段 0：设计骨架
 
 - 创建 Rust binary crate。

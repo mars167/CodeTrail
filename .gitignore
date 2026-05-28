@@ -1,4 +1,5 @@
 /target/
+/.code-search/
 
 # Local editor and OS files
 .DS_Store
