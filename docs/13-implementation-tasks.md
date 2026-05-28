@@ -1,6 +1,7 @@
 # Implementation Task Breakdown
 
 > Status snapshot: 2026-05-28. This document tracks implementation progress against the current design docs.
+> Agent team / MR execution plan: `docs/14-agent-team-mr-plan.md`.
 
 ## Progress Legend
 
