@@ -5,6 +5,7 @@ mod index;
 mod output;
 mod scip_index;
 mod search;
+mod snapshot_store;
 mod syntax;
 mod text_index;
 mod workspace;

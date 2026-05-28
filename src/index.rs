@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    text_index,
+    snapshot_store, text_index,
     workspace::{read_staged_blob, staged_tree, tracked_files, FileRecord, ScanOptions, Workspace},
 };
 
@@ -48,14 +48,6 @@ pub fn build(
     changed: bool,
     force: bool,
 ) -> Result<Value> {
-    let records = if staged {
-        staged_records(workspace)?
-    } else {
-        let mut scan_opts = opts.clone();
-        scan_opts.limit = 0;
-        workspace.scan_files(&scan_opts)?
-    };
-
     let snapshot_id = if staged {
         format!(
             "staged:{}",
@@ -65,6 +57,32 @@ pub fn build(
         workspace.snapshot_id.clone()
     };
     let snapshot_key = snapshot_key(&snapshot_id);
+
+    let root = storage_root(workspace);
+    let snapshot_parent = root.join("snapshots");
+    let text_parent = root.join("text");
+    fs::create_dir_all(&snapshot_parent)?;
+    fs::create_dir_all(&text_parent)?;
+
+    let snapshot_target = snapshot_parent.join(&snapshot_key);
+    let text_target = text_parent.join(&snapshot_key);
+    let snapshot_tmp = snapshot_parent.join(format!("{snapshot_key}.tmp"));
+    let text_tmp = text_parent.join(format!("{snapshot_key}.tmp"));
+
+    remove_dir_if_exists(&snapshot_tmp)?;
+    remove_dir_if_exists(&text_tmp)?;
+    fs::create_dir_all(&snapshot_tmp)?;
+    let blobs_dir = snapshot_tmp.join("blobs");
+    fs::create_dir_all(&blobs_dir)?;
+
+    let records = if staged {
+        staged_records(workspace, Some(&blobs_dir))?
+    } else {
+        let mut scan_opts = opts.clone();
+        scan_opts.limit = 0;
+        workspace.scan_files(&scan_opts)?
+    };
+
     let manifest = Manifest {
         schema_version: INDEX_SCHEMA_VERSION,
         tool_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -79,22 +97,13 @@ pub fn build(
         created_at_epoch_ms: now_ms(),
     };
 
-    let root = storage_root(workspace);
-    let snapshot_parent = root.join("snapshots");
-    let text_parent = root.join("text");
-    fs::create_dir_all(&snapshot_parent)?;
-    fs::create_dir_all(&text_parent)?;
-    remove_dir_if_exists(&root.join("index"))?;
-
-    let snapshot_target = snapshot_parent.join(&snapshot_key);
-    let text_target = text_parent.join(&snapshot_key);
-    let snapshot_tmp = snapshot_parent.join(format!("{snapshot_key}.tmp"));
-    let text_tmp = text_parent.join(format!("{snapshot_key}.tmp"));
-
-    remove_dir_if_exists(&snapshot_tmp)?;
-    remove_dir_if_exists(&text_tmp)?;
-    fs::create_dir_all(&snapshot_tmp)?;
     write_manifest(&snapshot_tmp.join("manifest.json"), &manifest)?;
+
+    if staged {
+        snapshot_store::write_files_parquet(&snapshot_tmp.join("files.parquet"), &records)?;
+    } else {
+        snapshot_store::build_snapshot(&snapshot_tmp, &records, &workspace.root)?;
+    }
     text_index::write(&text_tmp, workspace, &records, !staged)?;
 
     remove_dir_if_exists(&snapshot_target)?;
@@ -136,24 +145,20 @@ pub fn status(workspace: &Workspace) -> Result<Value> {
         }));
     }
     let manifest = read_manifest(&manifest_path)?;
+    let snapshot_path = snapshot_dir(workspace, &manifest.snapshot_key);
     let text_path = text_dir(workspace, &manifest.snapshot_key);
-    let records = text_index::read_docs(&text_path.join("docs.idx"))?;
-    let freshness = freshness(workspace, &records);
-    let fresh = freshness
-        .get("staleFiles")
-        .and_then(Value::as_array)
-        .map(|items| items.is_empty())
-        .unwrap_or(false)
-        && freshness
-            .get("missingFiles")
-            .and_then(Value::as_array)
-            .map(|items| items.is_empty())
-            .unwrap_or(false);
+    let snap_fresh = snapshot_store::verify_snapshot(&snapshot_path, &workspace.root)?;
+    let fresh = snap_fresh.stale_files.is_empty() && snap_fresh.missing_files.is_empty();
+    let freshness = json!({
+        "freshCount": snap_fresh.fresh_count,
+        "staleFiles": snap_fresh.stale_files,
+        "missingFiles": snap_fresh.missing_files
+    });
     Ok(json!({
         "exists": true,
         "fresh": fresh,
         "path": root,
-        "snapshotPath": snapshot_dir(workspace, &manifest.snapshot_key),
+        "snapshotPath": snapshot_path,
         "textPath": text_path,
         "manifest": manifest,
         "freshness": freshness
@@ -421,21 +426,11 @@ fn fresh_text_snapshot(
         return Ok(None);
     }
 
+    let snapshot_path = snapshot_dir(workspace, &manifest.snapshot_key);
     let text_path = text_dir(workspace, &manifest.snapshot_key);
-    let records = text_index::read_docs(&text_path.join("docs.idx"))?;
-    let freshness = freshness(workspace, &records);
-    let fresh = freshness
-        .get("staleFiles")
-        .and_then(Value::as_array)
-        .map(|items| items.is_empty())
-        .unwrap_or(false)
-        && freshness
-            .get("missingFiles")
-            .and_then(Value::as_array)
-            .map(|items| items.is_empty())
-            .unwrap_or(false);
-
-    if !fresh {
+    let records = snapshot_store::read_files_parquet(&snapshot_path.join("files.parquet"))?;
+    let snap_fresh = snapshot_store::verify_snapshot(&snapshot_path, &workspace.root)?;
+    if !snap_fresh.stale_files.is_empty() || !snap_fresh.missing_files.is_empty() {
         return Ok(None);
     }
 
@@ -468,7 +463,7 @@ fn text_index_meta(
     value
 }
 
-fn staged_records(workspace: &Workspace) -> Result<Vec<FileRecord>> {
+fn staged_records(workspace: &Workspace, blobs_dir: Option<&Path>) -> Result<Vec<FileRecord>> {
     let files = tracked_files(&workspace.root)?;
     let mut records = Vec::new();
     for path in files {
@@ -479,11 +474,16 @@ fn staged_records(workspace: &Workspace) -> Result<Vec<FileRecord>> {
         if content.iter().take(8192).any(|byte| *byte == 0) {
             continue;
         }
+        let hash = format!("blake3:{}", blake3::hash(&content).to_hex());
+        let hash_hex = hash.strip_prefix("blake3:").unwrap_or(&hash);
+        if let Some(dir) = blobs_dir {
+            snapshot_store::write_blob(dir, hash_hex, &content)?;
+        }
         records.push(FileRecord {
             language: crate::workspace::language_for_path(Path::new(&path)).to_string(),
             size: content.len() as u64,
             mtime_ms: 0,
-            hash: format!("blake3:{}", blake3::hash(&content).to_hex()),
+            hash,
             path,
         });
     }
@@ -501,45 +501,6 @@ fn write_manifest(path: &Path, manifest: &Manifest) -> Result<()> {
 fn read_manifest(path: &Path) -> Result<Manifest> {
     let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     Ok(serde_json::from_reader(file)?)
-}
-
-#[allow(non_snake_case)]
-fn freshness(workspace: &Workspace, records: &[FileRecord]) -> Value {
-    let mut fresh = Vec::new();
-    let mut staleFiles = Vec::new();
-    let mut missingFiles = Vec::new();
-    for record in records {
-        let path = workspace.abs_path(&record.path);
-        if !path.exists() {
-            missingFiles.push(json!({ "path": record.path, "reason": "missing" }));
-            continue;
-        }
-        match fs::read(&path) {
-            Ok(content) => {
-                let hash = format!("blake3:{}", blake3::hash(&content).to_hex());
-                if hash == record.hash {
-                    fresh.push(record.path.clone());
-                } else {
-                    staleFiles.push(json!({
-                        "path": record.path,
-                        "reason": "file_hash_mismatch",
-                        "expected": record.hash,
-                        "actual": hash
-                    }));
-                }
-            }
-            Err(error) => staleFiles.push(json!({
-                "path": record.path,
-                "reason": "read_error",
-                "message": error.to_string()
-            })),
-        }
-    }
-    json!({
-        "freshCount": fresh.len(),
-        "staleFiles": staleFiles,
-        "missingFiles": missingFiles
-    })
 }
 
 fn now_ms() -> u128 {
