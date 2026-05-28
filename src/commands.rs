@@ -2,7 +2,7 @@ use serde_json::json;
 
 use crate::{
     cli::{Cli, Command, HooksCommand, IndexCommand},
-    completions, index, output, scip_index, search, syntax,
+    completions, graph_store, index, output, scip_index, search, syntax,
     workspace::{ScanOptions, Workspace},
     AppResult,
 };
@@ -217,6 +217,21 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             )
         }
         Command::Calls { identifier } => {
+            if let Some(graph) = graph_store::calls(&workspace, &scan_opts, identifier)? {
+                return emit_response(
+                    &cli.output,
+                    output::response_with_index(
+                        "calls",
+                        "calls",
+                        json!({ "identifier": identifier, "producer": "local_relation_graph_store" }),
+                        &workspace.snapshot_id,
+                        output::inferred_candidate(),
+                        graph.index,
+                        graph.results,
+                        graph.warnings,
+                    ),
+                );
+            }
             let (results, warnings) = syntax::calls(&workspace, &scan_opts, identifier)?;
             exit_code = output::no_match_exit(&results);
             output::response(
@@ -230,6 +245,21 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             )
         }
         Command::Callers { identifier } => {
+            if let Some(graph) = graph_store::callers(&workspace, &scan_opts, identifier)? {
+                return emit_response(
+                    &cli.output,
+                    output::response_with_index(
+                        "callers",
+                        "callers",
+                        json!({ "identifier": identifier, "producer": "local_relation_graph_store" }),
+                        &workspace.snapshot_id,
+                        output::inferred_candidate(),
+                        graph.index,
+                        graph.results,
+                        graph.warnings,
+                    ),
+                );
+            }
             let (results, warnings) = syntax::callers(&workspace, &scan_opts, identifier)?;
             exit_code = output::no_match_exit(&results);
             output::response(

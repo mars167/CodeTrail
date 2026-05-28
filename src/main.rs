@@ -1,6 +1,7 @@
 mod cli;
 mod commands;
 mod completions;
+mod graph_store;
 mod index;
 mod output;
 mod scip_index;

@@ -1,6 +1,7 @@
 use std::{fs, path::Path};
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tree_sitter::{Language, Node, Parser};
 
@@ -21,14 +22,16 @@ struct Symbol {
     warning: Option<String>,
 }
 
-#[derive(Clone, Debug)]
-struct CallCandidate {
-    path: String,
-    language: String,
-    target: String,
-    enclosing_symbol: Option<String>,
-    range: Value,
-    producer: String,
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CallCandidate {
+    pub path: String,
+    pub language: String,
+    pub target: String,
+    pub enclosing_symbol: Option<String>,
+    pub range: Value,
+    pub file_hash: String,
+    pub producer: String,
 }
 
 pub fn symbols(
@@ -141,7 +144,7 @@ fn collect_symbols(
     Ok(symbols)
 }
 
-fn collect_calls(
+pub(crate) fn collect_calls(
     workspace: &Workspace,
     opts: &ScanOptions,
     warnings: &mut Vec<String>,
@@ -171,6 +174,7 @@ fn collect_calls(
             tree.root_node(),
             &file.path,
             &file.language,
+            &file.hash,
             content.as_bytes(),
             &mut calls,
         );
@@ -216,6 +220,7 @@ fn walk_calls(
     node: Node,
     path: &str,
     language: &str,
+    file_hash: &str,
     source: &[u8],
     calls: &mut Vec<CallCandidate>,
 ) {
@@ -231,6 +236,7 @@ fn walk_calls(
                     target: target.trim().to_string(),
                     enclosing_symbol: enclosing_symbol(node, source),
                     range: point_range(node),
+                    file_hash: file_hash.to_string(),
                     producer: "tree_sitter_call_heuristic".to_string(),
                 });
             }
@@ -239,7 +245,7 @@ fn walk_calls(
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_calls(child, path, language, source, calls);
+        walk_calls(child, path, language, file_hash, source, calls);
     }
 }
 
@@ -321,6 +327,7 @@ fn call_to_json(call: CallCandidate) -> Value {
         "enclosingSymbol": call.enclosing_symbol,
         "language": call.language,
         "range": call.range,
+        "fileHash": call.file_hash,
         "producer": call.producer,
         "reliability": "inferred_candidate",
         "exact": false,
@@ -335,7 +342,7 @@ fn call_to_json(call: CallCandidate) -> Value {
     })
 }
 
-fn last_identifier(target: &str) -> &str {
+pub(crate) fn last_identifier(target: &str) -> &str {
     target
         .rsplit(|ch: char| !(ch == '_' || ch.is_ascii_alphanumeric()))
         .find(|part| !part.is_empty())

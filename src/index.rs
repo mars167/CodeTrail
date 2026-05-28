@@ -9,8 +9,9 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::workspace::{
-    read_staged_blob, staged_tree, tracked_files, FileRecord, ScanOptions, Workspace,
+use crate::{
+    graph_store,
+    workspace::{read_staged_blob, staged_tree, tracked_files, FileRecord, ScanOptions, Workspace},
 };
 
 const INDEX_SCHEMA_VERSION: u32 = 1;
@@ -87,7 +88,12 @@ pub fn build(
     File::create(tmp.join("occurrences.jsonl"))?;
     File::create(tmp.join("symbols.jsonl"))?;
     File::create(tmp.join("declarations.jsonl"))?;
-    File::create(tmp.join("relations.jsonl"))?;
+    let graph_warnings = if staged {
+        File::create(tmp.join("relations.jsonl"))?;
+        Vec::new()
+    } else {
+        graph_store::write_relations(&tmp.join("relations.jsonl"), workspace, opts)?
+    };
     File::create(tmp.join("warnings.jsonl"))?;
 
     if root.exists() {
@@ -104,7 +110,8 @@ pub fn build(
             "fileCount": manifest.file_count,
             "changedOnly": changed,
             "force": force,
-            "path": root
+            "path": root,
+            "relationWarnings": graph_warnings
         }
     }))
 }

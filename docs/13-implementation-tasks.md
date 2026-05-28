@@ -23,10 +23,17 @@
 | T8 Watch/serve status | Done | `watch --once`, `watch --status`, and `serve --no-watch` expose freshness/status contracts. |
 | T9 Index-backed query path | Done | Fresh index file catalog feeds `files`, `find`, `grep`, and `refs` only when scan options match; matches still use live source verification. |
 | T10 Shell completions | Done | `code-search completions bash|zsh|fish` prints built-in completion scripts without requiring a workspace. |
-| T11 Precise SCIP integration | In progress | SCIP JSON occurrence import is implemented for `symbols`, `defs`, and `refs`; binary `index.scip` protobuf parsing still needs the SCIP/protobuf dependency path. |
-| T12 Property graph backend | Pending | Requires a real graph store abstraction and backend; current relation commands remain heuristic candidates. |
+| T11 Precise SCIP integration | In progress | T11a SCIP JSON occurrence import is Done for `symbols`, `defs`, and `refs`; T11b binary `index.scip` protobuf parsing remains pending. |
+| T12 Property graph backend | In progress | T12a local relation graph store is Done; T12b backend abstraction and T12c multi-hop impact traversal remain pending. Relation outputs stay `inferred_candidate`. |
 | T13 MCP adapter | Pending | Should wrap the stable CLI query service after schema compatibility is locked. |
 | T14 Remote index/graph mode | Deferred | Remote must never override local dirty/staged state; not part of this local MVP. |
+
+## Completed Slices
+
+1. T1-T10 are implemented, tested, committed, and pushed.
+2. T11a SCIP JSON occurrence import is implemented, tested, committed, and pushed.
+3. `symbols`, `defs`, and `refs` prefer fresh precise occurrence records and fall back only when the precise store is unavailable or stale.
+4. T12a local relation graph store is implemented: `index build` writes relation records and `calls`/`callers` query the fresh store before parser fallback.
 
 ## Current Follow-Up Scope
 
@@ -34,5 +41,12 @@
 2. Source verification remains live, so the index improves candidate selection but does not become the fact source.
 3. Shell completion generation is available without expanding runtime dependencies.
 4. SCIP JSON occurrence import now populates precise local occurrence/declaration stores.
-5. `symbols`, `defs`, and `refs` prefer fresh precise occurrence records and fall back only when the precise store is unavailable or stale.
-6. CLI integration tests cover index-backed query behavior, completion generation, and precise SCIP JSON lookup.
+5. CLI integration tests cover index-backed query behavior, completion generation, precise SCIP JSON lookup, and graph-store relation lookup.
+
+## Remaining Work
+
+1. T11b: binary `index.scip` protobuf parsing for native SCIP files.
+2. T12b: graph backend abstraction beyond JSONL relation records.
+3. T12c: impact traversal and multi-hop graph queries.
+4. T13: MCP adapter over the stable CLI schema.
+5. T14: remote index/graph mode, intentionally deferred until local dirty/staged semantics are fully protected.

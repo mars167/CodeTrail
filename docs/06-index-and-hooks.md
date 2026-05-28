@@ -88,7 +88,8 @@ code-search hooks status
 2. 查找 `.code-search/index/manifest.json`。
 3. 对候选文件做 freshness 校验。
 4. freshness 通过时使用索引中的 file/symbol/declaration 缓存。
-5. freshness 失败时读取当前文件实时扫描，并在响应中写入 fallback 原因。
+5. `calls`/`callers` 在 graph manifest 和 relation hash 都 fresh 时使用本地 relation graph store。
+6. freshness 失败时读取当前文件实时扫描，并在响应中写入 fallback 原因。
 
 响应中应包含：
 

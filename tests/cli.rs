@@ -289,6 +289,59 @@ fn defs_falls_back_to_parser_after_plain_index_build_without_scip() {
     assert_eq!(defs_json["results"][0]["producer"], "tree_sitter_parser");
 }
 
+#[test]
+fn index_build_persists_relation_graph_for_calls_and_callers() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "fn alpha() {\n    beta();\n}\n\nfn beta() {}\n",
+    )
+    .unwrap();
+
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let calls = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["calls", "alpha"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let calls_json: Value = serde_json::from_slice(&calls).unwrap();
+    assert_eq!(calls_json["index"]["used"], true);
+    assert_eq!(calls_json["reliability"]["level"], "inferred_candidate");
+    assert_eq!(
+        calls_json["results"][0]["producer"],
+        "local_relation_graph_store"
+    );
+    assert_eq!(calls_json["results"][0]["target"], "beta");
+
+    let callers = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["callers", "beta"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let callers_json: Value = serde_json::from_slice(&callers).unwrap();
+    assert_eq!(callers_json["index"]["used"], true);
+    assert_eq!(
+        callers_json["results"][0]["producer"],
+        "local_relation_graph_store"
+    );
+    assert_eq!(callers_json["results"][0]["enclosingSymbol"], "alpha");
+}
+
 fn write_minimal_scip_json(path: &std::path::Path) {
     let value = json!({
         "documents": [

@@ -56,7 +56,7 @@ code-search hooks status
 - Index/Hook 生命周期：`index build/update/status/verify/clean/import-scip`、`hooks install/uninstall/status`。
 - Watch/Serve 状态：`watch --once`、`watch --status`、`serve --no-watch` 输出 freshness/status 契约。
 - Precise + parser fallback：`symbols`、`defs`、`refs` 优先使用导入的 SCIP JSON occurrence；不可用时回退到 tree-sitter/text fallback。
-- 关系候选：`calls`、`callers` 使用 tree-sitter call heuristic，并明确标注 `inferred_candidate`。
+- 关系候选：`index build` 会写入本地 relation graph store；`calls`、`callers` 优先读取 fresh graph store，否则回退 tree-sitter call heuristic，并始终标注 `inferred_candidate`。
 
 默认输出为 JSON。所有结果都会携带 `snapshot_id`、`reliability`、`producer`、`exact` 或候选说明。
 
