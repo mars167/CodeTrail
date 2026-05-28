@@ -1,6 +1,5 @@
 use std::{
     fs::{self, File},
-    io::Write,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -10,11 +9,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
+    scheduler::IndexScheduler,
     snapshot_store, text_index,
-    workspace::{read_staged_blob, staged_tree, tracked_files, FileRecord, ScanOptions, Workspace},
+    workspace::{FileRecord, ScanOptions, Workspace},
 };
-
-const INDEX_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,124 +43,26 @@ pub fn build(
     workspace: &Workspace,
     opts: &ScanOptions,
     staged: bool,
-    changed: bool,
-    force: bool,
+    _changed: bool,
+    _force: bool,
 ) -> Result<Value> {
-    let snapshot_id = if staged {
-        format!(
-            "staged:{}",
-            staged_tree(&workspace.root).unwrap_or_else(|| "unknown".to_string())
-        )
-    } else {
-        workspace.snapshot_id.clone()
-    };
-    let snapshot_key = snapshot_key(&snapshot_id);
-
-    let root = storage_root(workspace);
-    let snapshot_parent = root.join("snapshots");
-    let text_parent = root.join("text");
-    fs::create_dir_all(&snapshot_parent)?;
-    fs::create_dir_all(&text_parent)?;
-
-    let snapshot_target = snapshot_parent.join(&snapshot_key);
-    let text_target = text_parent.join(&snapshot_key);
-    let snapshot_tmp = snapshot_parent.join(format!("{snapshot_key}.tmp"));
-    let text_tmp = text_parent.join(format!("{snapshot_key}.tmp"));
-
-    remove_dir_if_exists(&snapshot_tmp)?;
-    remove_dir_if_exists(&text_tmp)?;
-    fs::create_dir_all(&snapshot_tmp)?;
-    let blobs_dir = snapshot_tmp.join("blobs");
-    fs::create_dir_all(&blobs_dir)?;
-
-    let records = if staged {
-        staged_records(workspace, Some(&blobs_dir))?
-    } else {
-        let mut scan_opts = opts.clone();
-        scan_opts.limit = 0;
-        workspace.scan_files(&scan_opts)?
-    };
-
-    let manifest = Manifest {
-        schema_version: INDEX_SCHEMA_VERSION,
-        tool_version: env!("CARGO_PKG_VERSION").to_string(),
-        repo_root: workspace.root.to_string_lossy().to_string(),
-        snapshot_id: snapshot_id.clone(),
-        snapshot_key: snapshot_key.clone(),
-        source: if staged { "staged" } else { "working_tree" }.to_string(),
-        head: workspace.head.clone(),
-        dirty: workspace.dirty,
-        file_count: records.len(),
-        scan_options: IndexScanOptions::from(opts),
-        created_at_epoch_ms: now_ms(),
-    };
-
-    write_manifest(&snapshot_tmp.join("manifest.json"), &manifest)?;
-
-    if staged {
-        snapshot_store::write_files_parquet(&snapshot_tmp.join("files.parquet"), &records)?;
-    } else {
-        snapshot_store::build_snapshot(&snapshot_tmp, &records, &workspace.root)?;
-    }
-    text_index::write(&text_tmp, workspace, &records, !staged)?;
-
-    remove_dir_if_exists(&snapshot_target)?;
-    remove_dir_if_exists(&text_target)?;
-    fs::rename(&snapshot_tmp, &snapshot_target)?;
-    fs::rename(&text_tmp, &text_target)?;
-
-    let active_dir = active_dir(workspace, staged);
-    fs::create_dir_all(&active_dir)?;
-    write_manifest(&active_dir.join("manifest.json"), &manifest)?;
-
-    Ok(json!({
-        "index": {
-            "used": true,
-            "fresh": true,
-            "source": "text_index",
-            "snapshotSource": manifest.source,
-            "snapshot_id": manifest.snapshot_id,
-            "snapshotKey": manifest.snapshot_key,
-            "fileCount": manifest.file_count,
-            "changedOnly": changed,
-            "force": force,
-            "path": root,
-            "snapshotPath": snapshot_target,
-            "textPath": text_target
-        }
-    }))
+    let scheduler = IndexScheduler::new(&workspace.root);
+    scheduler.build_all(opts, staged)
 }
 
 pub fn status(workspace: &Workspace) -> Result<Value> {
-    let root = storage_root(workspace);
-    let manifest_path = active_manifest_path(workspace, false);
-    if !manifest_path.exists() {
-        return Ok(json!({
-            "exists": false,
-            "fresh": false,
-            "path": root,
-            "reason": "index_missing"
-        }));
-    }
-    let manifest = read_manifest(&manifest_path)?;
-    let snapshot_path = snapshot_dir(workspace, &manifest.snapshot_key);
-    let text_path = text_dir(workspace, &manifest.snapshot_key);
-    let snap_fresh = snapshot_store::verify_snapshot(&snapshot_path, &workspace.root)?;
-    let fresh = snap_fresh.stale_files.is_empty() && snap_fresh.missing_files.is_empty();
-    let freshness = json!({
-        "freshCount": snap_fresh.fresh_count,
-        "staleFiles": snap_fresh.stale_files,
-        "missingFiles": snap_fresh.missing_files
-    });
-    Ok(json!({
-        "exists": true,
-        "fresh": fresh,
-        "path": root,
-        "snapshotPath": snapshot_path,
-        "textPath": text_path,
-        "manifest": manifest,
-        "freshness": freshness
-    }))
+    let scheduler = IndexScheduler::new(&workspace.root);
+    scheduler.status()
+}
+
+pub fn update(workspace: &Workspace) -> Result<Value> {
+    let scheduler = IndexScheduler::new(&workspace.root);
+    scheduler.update()
+}
+
+pub fn compact(workspace: &Workspace) -> Result<Value> {
+    let scheduler = IndexScheduler::new(&workspace.root);
+    scheduler.compact()
 }
 
 pub fn fresh_file_records(
@@ -258,7 +158,7 @@ pub fn hooks_install(workspace: &Workspace) -> Result<Value> {
         ),
         (
             "post-commit",
-            "#!/bin/sh\ncode-search index build >/dev/null 2>&1 || true\n",
+            "#!/bin/sh\ncode-search index update >/dev/null 2>&1 || true\n",
         ),
         (
             "post-checkout",
@@ -405,13 +305,6 @@ fn snapshot_key(snapshot_id: &str) -> String {
         .collect()
 }
 
-fn remove_dir_if_exists(path: &Path) -> Result<()> {
-    if path.exists() {
-        fs::remove_dir_all(path)?;
-    }
-    Ok(())
-}
-
 fn fresh_text_snapshot(
     workspace: &Workspace,
     opts: &ScanOptions,
@@ -461,41 +354,6 @@ fn text_index_meta(
         value["candidateCount"] = json!(candidate_count);
     }
     value
-}
-
-fn staged_records(workspace: &Workspace, blobs_dir: Option<&Path>) -> Result<Vec<FileRecord>> {
-    let files = tracked_files(&workspace.root)?;
-    let mut records = Vec::new();
-    for path in files {
-        let content = match read_staged_blob(&workspace.root, &path) {
-            Ok(content) => content,
-            Err(_) => continue,
-        };
-        if content.iter().take(8192).any(|byte| *byte == 0) {
-            continue;
-        }
-        let hash = format!("blake3:{}", blake3::hash(&content).to_hex());
-        let hash_hex = hash.strip_prefix("blake3:").unwrap_or(&hash);
-        if let Some(dir) = blobs_dir {
-            snapshot_store::write_blob(dir, hash_hex, &content)?;
-        }
-        records.push(FileRecord {
-            language: crate::workspace::language_for_path(Path::new(&path)).to_string(),
-            size: content.len() as u64,
-            mtime_ms: 0,
-            hash,
-            path,
-        });
-    }
-    records.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(records)
-}
-
-fn write_manifest(path: &Path, manifest: &Manifest) -> Result<()> {
-    let mut file = File::create(path)?;
-    serde_json::to_writer_pretty(&mut file, manifest)?;
-    writeln!(file)?;
-    Ok(())
 }
 
 fn read_manifest(path: &Path) -> Result<Manifest> {

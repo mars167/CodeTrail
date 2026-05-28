@@ -132,6 +132,7 @@ pub enum IndexCommand {
     Status,
     Verify,
     Clean,
+    Compact,
     ImportScip {
         path: String,
     },
