@@ -392,7 +392,7 @@ Remote 约束：
 
 ## 对当前文档的修正
 
-此前“JSONL + manifest 足够”的说法只适合过渡实现，不是目标架构。目标架构应该直接按多索引系统设计：
+此前“JSONL + manifest 足够”的说法是错误架构，不应出现在可验收方案中。目标架构必须直接按多索引系统设计：
 
 - text index 类似 Blackbird/Zoekt；
 - precise code intelligence 类似 SCIP；

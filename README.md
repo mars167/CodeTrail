@@ -48,15 +48,17 @@ code-search hooks install
 code-search hooks status
 ```
 
-## 当前实现
+## 当前实现状态
 
-当前 CLI 已经提供可运行的本地命令面：
+当前 CLI 已经提供可运行的本地命令面，但索引存储层尚未达到目标架构。设计验收以 `snapshots/`、
+`text/*.idx`、`scip/index.scip + occurrences.db` 和 `graph/kuzu/` 为准；JSON/JSONL 只能作为导出、
+测试 fixture 或人工排查格式，不能作为主存储，也不能据此把索引任务标记为完成。
 
 - L0 源码事实：`find`、`grep`、`refs`、`files`、`find-path`、`glob`、`list`、`tree`、`read`、`changed`、`status`。
-- Index/Hook 生命周期：`index build/update/status/verify/clean/import-scip`、`hooks install/uninstall/status`。
+- Index/Hook 生命周期：命令入口已存在；高性能多索引存储尚未完成。
 - Watch/Serve 状态：`watch --once`、`watch --status`、`serve --no-watch` 输出 freshness/status 契约。
-- Precise + parser fallback：`symbols`、`defs`、`refs` 优先使用导入的 SCIP JSON occurrence；不可用时回退到 tree-sitter/text fallback。
-- 关系候选：`index build` 会写入本地 relation graph store；`calls`、`callers` 优先读取 fresh graph store，否则回退 tree-sitter call heuristic，并始终标注 `inferred_candidate`。
+- Precise + parser fallback：`symbols`、`defs`、`refs` 的 CLI 行为已存在；native `index.scip` protobuf 与 occurrence DB 尚未完成。
+- 关系候选：`calls`、`callers` 行为已存在；KuzuDB property graph backend 尚未完成。
 
 默认输出为 JSON。所有结果都会携带 `snapshot_id`、`reliability`、`producer`、`exact` 或候选说明。
 

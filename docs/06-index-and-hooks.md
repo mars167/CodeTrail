@@ -20,29 +20,50 @@ tree-sitter 解析结果。
 
 ```text
 .code-search/
-  index/
-    manifest.json
-    files.jsonl
-    symbols.jsonl
-    declarations.jsonl
-    relations.jsonl
-    warnings.jsonl
-    staged/
+  snapshots/
+    <snapshot_id>/
       manifest.json
-      symbols.jsonl
+      files.parquet
+      blobs/
+  text/
+    <snapshot_id>/
+      grams.idx
+      docs.idx
+      paths.idx
+  scip/
+    <snapshot_id>/
+      index.scip
+      occurrences.db
+  graph/
+    <snapshot_id>/
+      kuzu/
+      export/
+        nodes.parquet
+        edges.parquet
+  working/
+    manifest.json
+  staged/
+    manifest.json
 ```
 
 说明：
 
-- `manifest.json`：索引版本、工具版本、repo root、HEAD、dirty 状态、schema version。
-- `files.jsonl`：文件清单、大小、mtime、内容 hash、语言、ignore 状态。
-- `symbols.jsonl`：tree-sitter 抽取的 symbol 列表。
-- `declarations.jsonl`：声明范围、body 范围、签名摘要。
-- `relations.jsonl`：best-effort calls/callers 候选，必须标注 `inferred_candidate`。
-- `warnings.jsonl`：unsupported language、parser error、partial parse 等警告。
-- `staged/`：`pre-commit` 使用的 staged snapshot 索引，不能与 working tree 索引混用。
+- `snapshots/<snapshot_id>/manifest.json`：索引版本、工具版本、repo root、HEAD、dirty 状态、schema version。
+- `snapshots/<snapshot_id>/files.parquet`：文件清单、大小、mtime、内容 hash、语言、ignore 状态。
+- `snapshots/<snapshot_id>/blobs/`：可验证 snapshot blob 或内容寻址缓存。
+- `text/<snapshot_id>/grams.idx`：n-gram/trigram 倒排，用于 literal、substring 和 regex prefilter。
+- `text/<snapshot_id>/docs.idx`：doc id、path、language、line offsets、file hash。
+- `text/<snapshot_id>/paths.idx`：路径搜索索引。
+- `scip/<snapshot_id>/index.scip`：native SCIP protobuf 文件。
+- `scip/<snapshot_id>/occurrences.db`：用于 `defs`、`refs`、`symbols` 的本地 occurrence store。
+- `graph/<snapshot_id>/kuzu/`：默认 embedded KuzuDB property graph，用于结构查询和多跳遍历。
+- `graph/<snapshot_id>/export/`：Parquet/CSV 导出，不是查询主存储。
+- `working/` 与 `staged/`：未提交状态 overlay，不能与 commit snapshot 混用。
 
-`.code-search/index/` 默认不要求提交到 Git。后续如果需要共享索引，可以单独设计 `pack/unpack`
+JSON/JSONL 禁止作为主索引存储。它们只允许用于 `code-search index export`、测试 fixture、人工排查和迁移，
+不能作为 `find`、`refs`、`symbols`、`calls`、`callers` 的主查询路径。
+
+`.code-search/` 默认不要求提交到 Git。后续如果需要共享索引，可以单独设计 `pack/unpack`
 或 artifact 缓存，但不能替代本地 snapshot/freshness 校验。
 
 ## Hook 触发点
@@ -85,10 +106,10 @@ code-search hooks status
 搜索命令的决策顺序：
 
 1. 读取命令参数和 file set。
-2. 查找 `.code-search/index/manifest.json`。
+2. 查找目标 snapshot 的 manifest。
 3. 对候选文件做 freshness 校验。
-4. freshness 通过时使用索引中的 file/symbol/declaration 缓存。
-5. `calls`/`callers` 在 graph manifest 和 relation hash 都 fresh 时使用本地 relation graph store。
+4. freshness 通过时使用对应索引层：text gram index、SCIP occurrence DB 或 Kuzu graph。
+5. `calls`/`callers` 在 graph snapshot 和 relation source hash 都 fresh 时使用 Kuzu graph backend。
 6. freshness 失败时读取当前文件实时扫描，并在响应中写入 fallback 原因。
 
 响应中应包含：

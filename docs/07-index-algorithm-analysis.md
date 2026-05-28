@@ -139,7 +139,7 @@ JSONL 适合作为 debug/export 格式，但不应该是目标架构的主存储
 - 图遍历需要邻接结构、路径查询和事务；
 - hook 增量更新需要 segment/transaction，而不是整文件重写。
 
-JSONL 应保留为：
+JSONL 不进入索引设计，只能由显式 export 或测试工具生成，用于：
 
 - `code-search index export`；
 - snapshot test fixture；
@@ -197,12 +197,13 @@ index update
 
 ```text
 segments/
-  000001.jsonl
-  000002.jsonl
-  tombstones.jsonl
+  000001.idx
+  000002.idx
+  tombstones.idx
 ```
 
-segment 模式能避免每次 hook 重写大文件。
+segment 是二进制索引段，包含 postings、doc table delta、symbol/occurrence delta 或 graph delta。
+JSONL 不能作为增量 segment；它只能由 `index export` 从真实索引派生出来用于调试或迁移。
 
 ### Staged Snapshot
 

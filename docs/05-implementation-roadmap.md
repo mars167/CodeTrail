@@ -4,10 +4,11 @@
 
 ## 当前实现状态
 
-截至 2026-05-28，CLI 已完成一个可运行的本地实现：
+截至 2026-05-28，CLI 已完成一个可运行的命令面，但索引存储层尚未达到目标架构。任何以 JSONL
+作为主索引存储的代码只能视为不合格实现，不能作为路线图阶段完成依据。
 
 - 阶段 1 的源码事实命令已可用，并输出统一 JSON 与可靠性契约。
-- 阶段 2 的 index/hook/watch 生命周期已落地为本地 JSONL index、hook 安装脚本、freshness verify 和 watcher/status reconcile 入口。
+- 阶段 2 只有 index/hook/watch 命令入口、hook 安装脚本、freshness verify 和 watcher/status reconcile 入口可用；目标存储布局和高性能索引尚未完成。
 - 阶段 3 已通过 tree-sitter fallback 提供 `symbols` 与 `defs`。
 - 阶段 4 已通过 tree-sitter call heuristic 提供 `calls` 与 `callers` 候选结果，永不标记为 exact。
 - 阶段 5 的 MCP/远程适配尚未作为独立服务实现；当前 `serve` 暴露的是同一 CLI query service 的状态契约，后续适配器应复用该命令层 schema。
@@ -37,7 +38,12 @@
 
 ## 阶段 2：IndexScheduler、Hook 与 Watcher 生命周期
 
-- 实现 `.code-search/index/` 存储布局。
+- 实现目标存储布局：`snapshots/<snapshot_id>/`、`text/<snapshot_id>/`、`scip/<snapshot_id>/`、
+  `graph/<snapshot_id>/`、`working/`、`staged/`。
+- 实现 source snapshot 文件事实层：`manifest.json`、`files.parquet`、content-addressed `blobs/`。
+- 实现 text gram index：`grams.idx`、`docs.idx`、`paths.idx`。
+- 实现 SCIP/code-intel index：native `index.scip` protobuf 读取和 `occurrences.db`。
+- 实现 graph backend：默认 KuzuDB embedded property graph。
 - 实现统一 `IndexScheduler`，接收 manual command、git hook、watcher change set。
 - 实现 `index build`、`index update`、`index status`、`index verify`、`index clean`。
 - 实现 `hooks install`、`hooks uninstall`、`hooks status`。
@@ -52,6 +58,7 @@
 - `index status` 能清楚解释哪些文件新鲜、哪些文件过期、为什么过期；
 - staged 索引和 working-tree 索引不会混淆。
 - watcher 只更新 worktree overlay，事件丢失时能标记 stale 并 reconcile。
+- 主索引查询不扫描 JSONL；JSONL 只允许作为 `index export`、测试 fixture 或人工排查输出。
 
 ## 阶段 3：解析器事实
 
