@@ -126,12 +126,6 @@ fn index_verify_detects_stale_files() {
 fn index_build_writes_target_text_storage_layout() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
-    fs::create_dir_all(dir.path().join(".code-search/index")).unwrap();
-    fs::write(
-        dir.path().join(".code-search/index/files.jsonl"),
-        "{\"path\":\"legacy.txt\"}\n",
-    )
-    .unwrap();
 
     code_search()
         .arg("--path")
@@ -147,7 +141,6 @@ fn index_build_writes_target_text_storage_layout() {
         .join("working")
         .join("manifest.json")
         .is_file());
-    assert!(!code_search_dir.join("index").exists());
 
     let snapshot = fs::read_dir(code_search_dir.join("snapshots"))
         .unwrap()
@@ -156,6 +149,8 @@ fn index_build_writes_target_text_storage_layout() {
         .unwrap()
         .path();
     assert!(snapshot.join("manifest.json").is_file());
+    assert!(snapshot.join("files.parquet").is_file());
+    assert!(snapshot.join("blobs").is_dir());
     let text_snapshot = fs::read_dir(code_search_dir.join("text"))
         .unwrap()
         .next()
