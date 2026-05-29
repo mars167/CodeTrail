@@ -346,7 +346,13 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             IndexCommand::ImportScip { path } => {
                 let input = std::fs::read(path)
                     .unwrap_or_default();
-                let value = if !input.is_empty() && input[0] == b'{' {
+                // Skip leading whitespace/BOM to detect JSON format
+                let is_json = {
+                    let bytes = &input[..];
+                    let pos = bytes.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(bytes.len());
+                    !bytes[pos..].is_empty() && bytes[pos..][0] == b'{'
+                };
+                let value = if is_json {
                     // JSON format (compatibility)
                     scip_index::import_scip_json(&workspace, path)?
                 } else {

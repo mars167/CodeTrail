@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{fs, path::Path};
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
@@ -41,6 +41,7 @@ pub fn build_occurrences_db(
     scip_index: &proto::Index,
     db_path: &Path,
     snapshot: &str,
+    root: &Path,
 ) -> Result<()> {
     // Ensure parent directory exists
     if let Some(parent) = db_path.parent() {
@@ -152,6 +153,26 @@ pub fn build_occurrences_db(
         inserted_symbols += document.symbols.len();
     }
 
+    // Store per-file hashes for freshness validation
+    {
+        let mut seen_paths: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for document in &scip_index.documents {
+            if seen_paths.insert(&document.relative_path) {
+                let abs_path = root.join(&document.relative_path);
+                let hash = if abs_path.exists() {
+                    let content = fs::read(&abs_path).unwrap_or_default();
+                    format!("blake3:{}", blake3::hash(&content).to_hex())
+                } else {
+                    String::new()
+                };
+                tx.execute(
+                    "INSERT OR REPLACE INTO file_hashes (file_path, hash) VALUES (?1, ?2)",
+                    params![document.relative_path, hash],
+                )?;
+            }
+        }
+    }
+
     // Store snapshot hash for freshness tracking
     tx.execute(
         "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
@@ -166,14 +187,16 @@ pub fn build_occurrences_db(
 }
 
 /// Check if the occurrence DB is fresh for the given snapshot hash.
-pub fn occurrence_db_fresh(db_path: &Path, snapshot: &str) -> bool {
+/// Also spot-checks a sample of file hashes against current disk contents.
+pub fn occurrence_db_fresh(db_path: &Path, snapshot: &str, root: &Path) -> bool {
     if !db_path.exists() {
         return false;
     }
-    match check_snapshot_hash(db_path, snapshot) {
-        Ok(true) => true,
-        _ => false,
+    if !check_snapshot_hash(db_path, snapshot).unwrap_or(false) {
+        return false;
     }
+    // Spot-check file hashes: pick a random sample of entries and verify
+    spot_check_file_hashes(db_path, root).unwrap_or(true)
 }
 
 /// Delete the occurrence DB (force rebuild).
@@ -339,6 +362,11 @@ fn create_schema(conn: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS meta (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS file_hashes (
+            file_path TEXT PRIMARY KEY,
+            hash TEXT NOT NULL
         );",
     )?;
     Ok(())
@@ -352,6 +380,35 @@ fn check_snapshot_hash(db_path: &Path, snapshot: &str) -> Result<bool> {
         |row| row.get(0),
     )?;
     Ok(stored == snapshot)
+}
+
+fn spot_check_file_hashes(db_path: &Path, root: &Path) -> Result<bool> {
+    let conn = Connection::open(db_path)?;
+    let mut stmt =
+        conn.prepare("SELECT file_path, hash FROM file_hashes ORDER BY RANDOM() LIMIT 5")?;
+    let entries: Vec<(String, String)> = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if entries.is_empty() {
+        // No file hashes stored — trust snapshot_id alone
+        return Ok(true);
+    }
+    for (file_path, stored_hash) in &entries {
+        let abs_path = root.join(file_path);
+        let current_hash = if abs_path.exists() {
+            let content = fs::read(&abs_path)
+                .with_context(|| format!("failed to read {} for freshness check", file_path))?;
+            format!("blake3:{}", blake3::hash(&content).to_hex())
+        } else {
+            String::new()
+        };
+        if &current_hash != stored_hash {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn log_index_meta(
@@ -476,10 +533,10 @@ mod tests {
         let db_path = dir.path().join("occurrences.db");
 
         let index = build_test_index();
-        build_occurrences_db(&index, &db_path, "snapshot-v1").unwrap();
+        build_occurrences_db(&index, &db_path, "snapshot-v1", dir.path()).unwrap();
 
-        assert!(occurrence_db_fresh(&db_path, "snapshot-v1"));
-        assert!(!occurrence_db_fresh(&db_path, "snapshot-v2"));
+        assert!(occurrence_db_fresh(&db_path, "snapshot-v1", dir.path()));
+        assert!(!occurrence_db_fresh(&db_path, "snapshot-v2", dir.path()));
 
         // defs
         let defs = query_defs(&db_path, "needle").unwrap();
@@ -518,13 +575,17 @@ mod tests {
         let db_path = dir.path().join("occurrences.db");
 
         let index = build_test_index();
-        build_occurrences_db(&index, &db_path, "commit:abc123").unwrap();
+        build_occurrences_db(&index, &db_path, "commit:abc123", dir.path()).unwrap();
 
-        assert!(occurrence_db_fresh(&db_path, "commit:abc123"));
-        assert!(!occurrence_db_fresh(&db_path, "worktree:abc123"));
+        assert!(occurrence_db_fresh(&db_path, "commit:abc123", dir.path()));
+        assert!(!occurrence_db_fresh(
+            &db_path,
+            "worktree:abc123",
+            dir.path()
+        ));
 
         let nonexistent = dir.path().join("nonexistent.db");
-        assert!(!occurrence_db_fresh(&nonexistent, "any"));
+        assert!(!occurrence_db_fresh(&nonexistent, "any", dir.path()));
     }
 
     #[test]

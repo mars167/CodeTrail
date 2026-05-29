@@ -11,7 +11,8 @@ use serde_json::{json, Value};
 
 use crate::{
     index, scip,
-    workspace::{ScanOptions, Workspace},
+    scip::store::{OccurrenceResult, SymbolResult},
+    workspace::{matches_filters, ScanOptions, Workspace},
 };
 
 const ROLE_DEFINITION: i32 = 1;
@@ -175,7 +176,7 @@ pub fn import_native_scip(workspace: &Workspace, path: impl AsRef<Path>) -> Resu
     let snapshot_hash = &workspace.snapshot_id;
     let db_path = native_db_path(workspace);
 
-    scip::build_occurrences_db(&scip_index, &db_path, snapshot_hash)
+    scip::build_occurrences_db(&scip_index, &db_path, snapshot_hash, &workspace.root)
         .with_context(|| "failed to build occurrence database")?;
 
     let occ_count: usize = scip_index
@@ -207,7 +208,7 @@ pub fn symbols(
     query: &str,
 ) -> Result<Option<PreciseQueryOutput>> {
     // Try native occurrence DB first
-    if let Some(output) = query_native_symbols(workspace, query)? {
+    if let Some(output) = query_native_symbols(workspace, opts, query)? {
         return Ok(Some(output));
     }
     // Fall back to old occurrence.idx format
@@ -222,7 +223,7 @@ pub fn defs(
     identifier: &str,
 ) -> Result<Option<PreciseQueryOutput>> {
     // Try native occurrence DB first
-    if let Some(output) = query_native_defs(workspace, identifier)? {
+    if let Some(output) = query_native_defs(workspace, opts, identifier)? {
         return Ok(Some(output));
     }
     // Fall back to old occurrence.idx format
@@ -237,7 +238,7 @@ pub fn refs(
     identifier: &str,
 ) -> Result<Option<PreciseQueryOutput>> {
     // Try native occurrence DB first
-    if let Some(output) = query_native_refs(workspace, identifier)? {
+    if let Some(output) = query_native_refs(workspace, opts, identifier)? {
         return Ok(Some(output));
     }
     // Fall back to old occurrence.idx format
@@ -252,13 +253,15 @@ pub fn refs(
 
 fn query_native_defs(
     workspace: &Workspace,
+    opts: &ScanOptions,
     identifier: &str,
 ) -> Result<Option<PreciseQueryOutput>> {
     let db_path = native_db_path(workspace);
-    if !scip::occurrence_db_fresh(&db_path, &workspace.snapshot_id) {
+    if !scip::occurrence_db_fresh(&db_path, &workspace.snapshot_id, &workspace.root) {
         return Ok(None);
     }
-    let results = scip::query_defs(&db_path, identifier)?;
+    let mut results = scip::query_defs(&db_path, identifier)?;
+    filter_and_limit(&mut results, opts);
     if results.is_empty() {
         return Ok(Some(PreciseQueryOutput {
             results: Value::Array(Vec::new()),
@@ -277,13 +280,15 @@ fn query_native_defs(
 
 fn query_native_refs(
     workspace: &Workspace,
+    opts: &ScanOptions,
     identifier: &str,
 ) -> Result<Option<PreciseQueryOutput>> {
     let db_path = native_db_path(workspace);
-    if !scip::occurrence_db_fresh(&db_path, &workspace.snapshot_id) {
+    if !scip::occurrence_db_fresh(&db_path, &workspace.snapshot_id, &workspace.root) {
         return Ok(None);
     }
-    let results = scip::query_refs(&db_path, identifier)?;
+    let mut results = scip::query_refs(&db_path, identifier)?;
+    filter_and_limit(&mut results, opts);
     if results.is_empty() {
         return Ok(Some(PreciseQueryOutput {
             results: Value::Array(Vec::new()),
@@ -300,12 +305,17 @@ fn query_native_refs(
     }))
 }
 
-fn query_native_symbols(workspace: &Workspace, query: &str) -> Result<Option<PreciseQueryOutput>> {
+fn query_native_symbols(
+    workspace: &Workspace,
+    opts: &ScanOptions,
+    query: &str,
+) -> Result<Option<PreciseQueryOutput>> {
     let db_path = native_db_path(workspace);
-    if !scip::occurrence_db_fresh(&db_path, &workspace.snapshot_id) {
+    if !scip::occurrence_db_fresh(&db_path, &workspace.snapshot_id, &workspace.root) {
         return Ok(None);
     }
-    let results = scip::query_symbols(&db_path, query)?;
+    let mut results = scip::query_symbols(&db_path, query)?;
+    filter_symbol_results(&mut results, opts);
     if results.is_empty() {
         return Ok(Some(PreciseQueryOutput {
             results: Value::Array(Vec::new()),
@@ -327,6 +337,20 @@ fn native_db_index_meta(db_path: &std::path::Path, fresh: bool) -> Value {
         "fallback": false,
         "path": db_path
     })
+}
+
+fn filter_and_limit(results: &mut Vec<OccurrenceResult>, opts: &ScanOptions) {
+    results.retain(|r| matches_filters(&r.path, &opts.include, &opts.exclude));
+    if opts.limit > 0 && results.len() > opts.limit {
+        results.truncate(opts.limit);
+    }
+}
+
+fn filter_symbol_results(results: &mut Vec<SymbolResult>, opts: &ScanOptions) {
+    results.retain(|r| matches_filters(&r.path, &opts.include, &opts.exclude));
+    if opts.limit > 0 && results.len() > opts.limit {
+        results.truncate(opts.limit);
+    }
 }
 
 // ---------------------------------------------------------------------------
