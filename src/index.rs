@@ -341,31 +341,41 @@ pub fn hooks_status(workspace: &Workspace) -> Result<Value> {
 }
 
 pub fn watch_status(workspace: &Workspace) -> Value {
-    json!({
-        "watcher": {
-            "running": false,
-            "root": workspace.root,
-            "snapshot": workspace.snapshot_id,
-            "queueLength": 0,
-            "stale": false,
-            "lastEventAt": null,
-            "lastReconcileAt": now_ms(),
-            "mode": "status_only",
-            "note": "This CLI currently exposes a reconcile/status loop; long-running daemon mode is represented by code-search serve."
+    // Try to initialize watcher and get its status
+    let watcher_status = match crate::watcher::Watcher::start(&workspace.root) {
+        Ok(watcher) => watcher.status(),
+        Err(_) => {
+            json!({
+                "running": false,
+                "root": workspace.root,
+                "snapshot": workspace.snapshot_id,
+                "queueLength": 0,
+                "stale": false,
+                "lastEventAt": null,
+                "lastReconcileAt": null,
+                "mode": "status_only",
+                "note": "Failed to initialize watcher"
+            })
         }
+    };
+
+    json!({
+        "watcher": watcher_status
     })
 }
 
 pub fn serve_status(workspace: &Workspace, no_watch: bool) -> Value {
+    let query_service = json!({
+        "running": false,
+        "root": workspace.root,
+        "snapshot": workspace.snapshot_id,
+        "watchEnabled": !no_watch,
+        "mode": "cli_query_service",
+        "note": "The stable CLI/JSON query layer is available. HTTP/MCP adapters should wrap the same command service once schema compatibility is locked."
+    });
+
     json!({
-        "service": {
-            "running": false,
-            "root": workspace.root,
-            "snapshot": workspace.snapshot_id,
-            "watchEnabled": !no_watch,
-            "mode": "cli_query_service",
-            "note": "The stable CLI/JSON query layer is available. HTTP/MCP adapters should wrap the same command service once schema compatibility is locked."
-        }
+        "service": query_service
     })
 }
 

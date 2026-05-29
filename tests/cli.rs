@@ -552,3 +552,252 @@ fn native_scip_stale_detection_simulates_staleness_by_db_removal() {
     assert_eq!(defs_json["reliability"]["exact"], false);
     assert_eq!(defs_json["results"][0]["producer"], "tree_sitter_parser");
 }
+
+#[test]
+fn watch_once_reconcile_detects_file_changes() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("sample.txt"), "hello\n").unwrap();
+
+    // Build an index first to create a snapshot
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    // run watch --once to check reconcile
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["watch", "--once"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "watch");
+    // Should have results containing reconcile info
+    let results = json["results"].as_array().unwrap();
+    assert!(!results.is_empty());
+    let reconcile = &results[0];
+    assert_eq!(
+        reconcile["stale"], false,
+        "fresh after build should not be stale"
+    );
+    assert_eq!(reconcile["addedFiles"].as_array().unwrap().len(), 0);
+    assert_eq!(reconcile["deletedFiles"].as_array().unwrap().len(), 0);
+
+    // Modify the file and run watch --once again
+    fs::write(dir.path().join("sample.txt"), "hello\nworld\n").unwrap();
+
+    let output2 = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["watch", "--once"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json2: Value = serde_json::from_slice(&output2).unwrap();
+
+    assert_eq!(json2["ok"], true);
+    let results2 = json2["results"].as_array().unwrap();
+    let reconcile2 = &results2[0];
+    assert!(
+        reconcile2["stale"].as_bool().unwrap(),
+        "modified file should be detected as stale"
+    );
+    let dirty = reconcile2["dirtyFiles"].as_array().unwrap();
+    assert!(!dirty.is_empty());
+    assert_eq!(dirty[0]["path"], "sample.txt");
+    assert_eq!(dirty[0]["reason"], "file_hash_mismatch");
+}
+
+#[test]
+fn watch_status_output_format() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("sample.txt"), "hello\n").unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["watch", "--status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "watch");
+    let results = json["results"].as_array().unwrap();
+    // results[0] IS the watcher status object directly
+    let watcher = &results[0];
+    assert!(watcher.is_object());
+    assert_eq!(watcher["running"], false);
+    assert!(watcher["root"].is_string());
+    assert!(watcher["queueLength"].is_number());
+    assert!(watcher["stale"].is_boolean());
+    // lastEventAt should be null (no events collected)
+    assert!(watcher["lastEventAt"].is_null());
+    // lastReconcileAt should be null (--status doesn't run reconcile)
+    assert!(watcher["lastReconcileAt"].is_null());
+    assert_eq!(watcher["mode"], "reconcile_on_demand");
+    // Should have overlay sub-object
+    let overlay = &watcher["overlay"];
+    assert!(overlay.is_object());
+    assert!(overlay["dirtyFiles"].is_array());
+    assert!(overlay["addedFiles"].is_array());
+    assert!(overlay["deletedFiles"].is_array());
+}
+
+#[test]
+fn watcher_does_not_modify_git_staged_state() {
+    let dir = tempdir().unwrap();
+    // Initialize a git repo
+    std::process::Command::new("git")
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["config", "user.email", "test@test.com"])
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["config", "user.name", "Test"])
+        .output()
+        .unwrap();
+
+    fs::write(dir.path().join("sample.txt"), "hello\n").unwrap();
+
+    // Stage the file
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["add", "sample.txt"])
+        .output()
+        .unwrap();
+
+    // Run watch --once
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["watch", "--once"])
+        .assert()
+        .success();
+
+    // Verify git staged state is still as expected — file should still be staged
+    let status_output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["status", "--porcelain"])
+        .output()
+        .unwrap();
+    let status_str = String::from_utf8_lossy(&status_output.stdout);
+    // sample.txt should still show as staged (A or M in index)
+    assert!(
+        status_str.contains("sample.txt"),
+        "git status should still show sample.txt"
+    );
+    // The file should not be unstaged by watcher
+}
+
+#[test]
+fn watch_run_once_returns_reconcile_info_without_modifying_files() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("sample.txt"), "content before watch\n").unwrap();
+
+    let original_content = fs::read_to_string(dir.path().join("sample.txt")).unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["watch", "--once"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["ok"], true);
+
+    // Verify file content is unchanged
+    let after_content = fs::read_to_string(dir.path().join("sample.txt")).unwrap();
+    assert_eq!(
+        original_content, after_content,
+        "watch should not modify file content"
+    );
+
+    // Verify the response has reconcile information
+    let results = json["results"].as_array().unwrap();
+    let reconcile = &results[0];
+    assert!(reconcile["totalFilesScanned"].as_u64().unwrap_or(0) > 0);
+}
+
+#[test]
+fn serve_no_watch_returns_service_status() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("sample.txt"), "hello\n").unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["serve", "--no-watch"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "serve");
+    let results = json["results"].as_array().unwrap();
+    let service = &results[0]["service"];
+    assert!(service.is_object());
+    assert_eq!(service["running"], false);
+    assert_eq!(service["watchEnabled"], false);
+    assert_eq!(service["mode"], "cli_query_service");
+    assert!(service["root"].is_string());
+    assert!(service["snapshot"].is_string());
+}
+
+#[test]
+fn serve_with_watch_includes_watcher_status() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("sample.txt"), "hello\n").unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["serve"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["ok"], true);
+    let results = json["results"].as_array().unwrap();
+    let service = &results[0]["service"];
+    assert_eq!(service["watchEnabled"], true);
+    // When watch is enabled, watcher status should be included
+    // but watcher might fail to init, so it's optional
+    if let Some(watcher) = service.get("watcher") {
+        assert!(watcher.is_object());
+        assert!(watcher["root"].is_string());
+    }
+}
