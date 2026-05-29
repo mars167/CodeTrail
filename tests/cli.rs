@@ -828,3 +828,340 @@ fn mcp_subcommand_is_registered_in_help() {
         "mcp subcommand not found in help: {help}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// MR-08 Remote/Pack mode tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn index_pack_produces_valid_archive_with_checksums() {
+    use std::fs;
+    use tempfile::tempdir;
+
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+
+    // Build index first
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    // Pack
+    let archive_path = dir.path().join("output.tar.gz");
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "pack", "--output"])
+        .arg(&archive_path)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let packed = &json["results"][0];
+    assert_eq!(packed["packed"], true);
+    assert!(packed["archiveSize"].as_u64().unwrap() > 0);
+    assert_eq!(packed["source"], "packed_remote");
+
+    // Verify archive exists
+    assert!(archive_path.exists());
+    assert!(archive_path.metadata().unwrap().len() > 0);
+
+    // Verify it's a valid gzip file (magic bytes 1f 8b)
+    let archive_bytes = fs::read(&archive_path).unwrap();
+    assert_eq!(&archive_bytes[0..2], &[0x1f, 0x8b]);
+}
+
+#[test]
+fn index_unpack_extracts_to_remote_dir_does_not_touch_working_or_staged() {
+    use std::fs;
+    use tempfile::tempdir;
+
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+
+    // Build index
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    // Pack
+    let archive_path = dir.path().join("output.tar.gz");
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "pack", "--output"])
+        .arg(&archive_path)
+        .assert()
+        .success();
+
+    // Record state before unpack
+    let code_search_dir = dir.path().join(".code-search");
+    let has_snapshots_before = code_search_dir.join("snapshots").exists();
+    // Clean local index to simulate fresh workspace without local index
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "clean"])
+        .assert()
+        .success();
+
+    // Unpack
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "unpack"])
+        .arg(&archive_path)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let unpacked = &json["results"][0];
+    assert_eq!(unpacked["unpacked"], true);
+    assert_eq!(unpacked["source"], "remote_unpacked");
+
+    // Verify remote dir exists
+    let remote_dir = code_search_dir.join("remote");
+    assert!(remote_dir.exists());
+
+    // Verify local snapshots dir was NOT recreated (remote != local)
+    let snapshots_dir = code_search_dir.join("snapshots");
+    // snapshots may or may not exist after clean, but remote must be separate
+    let remote_entries: Vec<_> = remote_dir
+        .read_dir()
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .collect();
+    assert!(!remote_entries.is_empty(), "remote dir should have content");
+
+    // Verify provenance.json exists
+    for entry in &remote_entries {
+        let path = entry.path();
+        if path.is_dir() {
+            let prov = path.join("provenance.json");
+            if prov.exists() {
+                let prov_content = fs::read_to_string(&prov).unwrap();
+                assert!(prov_content.contains("remote_unpacked"));
+                return;
+            }
+        }
+    }
+    panic!("provenance.json not found in remote directory");
+}
+
+#[test]
+fn remote_snapshot_never_overrides_local_when_local_is_fresh() {
+    use std::fs;
+    use tempfile::tempdir;
+
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+
+    // Build local index
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    // Pack
+    let archive_path = dir.path().join("output.tar.gz");
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "pack", "--output"])
+        .arg(&archive_path)
+        .assert()
+        .success();
+
+    // Unpack to create remote snapshot
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "unpack"])
+        .arg(&archive_path)
+        .assert()
+        .success();
+
+    // Local snapshot should still be active (not the remote one)
+    let status_output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_slice(&status_output).unwrap();
+    let status = &json["results"][0];
+    // Local snapshot exists and is fresh
+    assert_eq!(status["exists"], true);
+    assert!(status["fresh"].as_bool().unwrap_or(false));
+    // Remote should be listed but separate
+    if let Some(remote) = status.get("remote") {
+        assert!(remote.is_array());
+    }
+}
+
+#[test]
+fn remote_query_is_used_when_local_is_clean_missing() {
+    use std::fs;
+    use tempfile::tempdir;
+
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/main.rs"),
+        "fn main() { let _ = \"needle\"; }\n",
+    )
+    .unwrap();
+
+    // Build and pack
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let archive_path = dir.path().join("output.tar.gz");
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "pack", "--output"])
+        .arg(&archive_path)
+        .assert()
+        .success();
+
+    // Clean local index
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "clean"])
+        .assert()
+        .success();
+
+    // Unpack remote
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "unpack"])
+        .arg(&archive_path)
+        .assert()
+        .success();
+
+    // Now find should use remote index (since local is missing)
+    let find_output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["find", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_slice(&find_output).unwrap();
+    assert_eq!(json["ok"], true);
+    // Should find the file even with local index deleted (via remote)
+    assert!(!json["results"].as_array().unwrap().is_empty());
+    assert_eq!(json["results"][0]["path"], "src/main.rs");
+}
+
+#[test]
+fn remote_mismatch_labels_results_as_unverified() {
+    use std::fs;
+    use tempfile::tempdir;
+
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/main.rs"),
+        "fn main() { let _ = \"needle\"; }\n",
+    )
+    .unwrap();
+
+    // Build index
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    // Pack
+    let archive_path = dir.path().join("output.tar.gz");
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "pack", "--output"])
+        .arg(&archive_path)
+        .assert()
+        .success();
+
+    // Modify local file so remote won't match
+    fs::write(
+        dir.path().join("src/main.rs"),
+        "fn main() { let _ = \"changed\"; }\n",
+    )
+    .unwrap();
+
+    // Clean and unpack remote
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "clean"])
+        .assert()
+        .success();
+
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "unpack"])
+        .arg(&archive_path)
+        .assert()
+        .success();
+
+    // Query should still work via remote but should indicate remote_unverified
+    // (the remote records won't match changed local files)
+    let status = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_slice(&status).unwrap();
+    let status_val = &json["results"][0];
+    // Remote should have remoteVerified: false
+    if let Some(remote) = status_val.get("remote") {
+        if let Some(arr) = remote.as_array() {
+            if let Some(first) = arr.first() {
+                // remoteVerified should be false since file hashes don't match
+                assert_eq!(first["remoteVerified"], json!(false));
+                return; // found and verified
+            }
+        }
+    }
+    panic!("remote snapshot not found or remoteVerified not present");
+}

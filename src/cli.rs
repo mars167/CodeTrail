@@ -136,8 +136,14 @@ pub enum IndexCommand {
     ImportScip {
         path: String,
     },
+    Pack {
+        #[arg(long, default_value = "output.tar.gz")]
+        output: String,
+    },
+    Unpack {
+        path: String,
+    },
 }
-
 #[derive(Debug, Subcommand)]
 pub enum HooksCommand {
     Install,
