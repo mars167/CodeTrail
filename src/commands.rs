@@ -26,7 +26,8 @@ pub fn run(cli: Cli) -> AppResult<i32> {
 
     let value = match &cli.command {
         Command::Find { text, mode } => {
-            let query_output = search::find(&workspace, &scan_opts, text, mode, cli.context, false)?;
+            let query_output =
+                search::find(&workspace, &scan_opts, text, mode, cli.context, false)?;
             exit_code = output::no_match_exit(&query_output.results);
             output::response_with_index(
                 "find",
@@ -146,8 +147,14 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                     ),
                 );
             }
-            let query_output =
-                search::find(&workspace, &scan_opts, identifier, "literal", cli.context, true)?;
+            let query_output = search::find(
+                &workspace,
+                &scan_opts,
+                identifier,
+                "literal",
+                cli.context,
+                true,
+            )?;
             exit_code = output::no_match_exit(&query_output.results);
             output::response_with_index(
                 "refs",
@@ -307,10 +314,18 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             Vec::new(),
         ),
         Command::Watch { once, status } => {
+            let mut watcher = crate::watcher::Watcher::start(&workspace.root)?;
+
             let results = if *once {
-                json!([index::build(&workspace, &scan_opts, false, true, false)?])
+                // Run one reconcile pass, detect file changes against snapshot
+                let reconcile_result = watcher.run_once()?;
+                json!([serde_json::to_value(&reconcile_result)?])
+            } else if *status {
+                // Show watcher state (initialized but not running long-lived daemon)
+                json!([watcher.status()])
             } else {
-                json!([index::watch_status(&workspace)])
+                // Default: show status with note about daemon mode
+                json!([watcher.status()])
             };
             output::response(
                 "watch",
@@ -320,21 +335,33 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 output::freshness(),
                 results,
                 if !once && !status {
-                    vec!["long-running watcher daemon mode is intentionally not started in non-interactive command execution; use watch --once or serve wrappers".to_string()]
+                    vec!["long-running watcher daemon mode is intentionally not started in non-interactive command execution; use watch --once for reconcile or watch --status for state".to_string()]
                 } else {
                     Vec::new()
                 },
             )
         }
-        Command::Serve { no_watch } => output::response(
-            "serve",
-            "serve",
-            json!({ "noWatch": no_watch }),
-            &workspace.snapshot_id,
-            output::freshness(),
-            json!([index::serve_status(&workspace, *no_watch)]),
-            vec!["HTTP/MCP adapters are expected to wrap the same CLI query service after JSON schema stabilization".to_string()],
-        ),
+        Command::Serve { no_watch } => {
+            // Show query service status with optional watcher info
+            let mut service_value = index::serve_status(&workspace, *no_watch);
+            if !no_watch {
+                // When watch is enabled, include watcher status
+                if let Ok(watcher) = crate::watcher::Watcher::start(&workspace.root) {
+                    if let Some(service) = service_value.get_mut("service") {
+                        service["watcher"] = watcher.status();
+                    }
+                }
+            }
+            output::response(
+                "serve",
+                "serve",
+                json!({ "noWatch": no_watch }),
+                &workspace.snapshot_id,
+                output::freshness(),
+                json!([service_value]),
+                vec!["HTTP/MCP adapters are expected to wrap the same CLI query service after JSON schema stabilization".to_string()],
+            )
+        }
         Command::Index { command } => match command {
             IndexCommand::Build {
                 staged,
@@ -346,7 +373,9 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 json!({ "staged": staged, "changed": changed, "force": force }),
                 &workspace.snapshot_id,
                 output::freshness(),
-                json!([index::build(&workspace, &scan_opts, *staged, *changed, *force)?]),
+                json!([index::build(
+                    &workspace, &scan_opts, *staged, *changed, *force
+                )?]),
                 Vec::new(),
             ),
             IndexCommand::Update => output::response(
@@ -390,12 +419,14 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 Vec::new(),
             ),
             IndexCommand::ImportScip { path } => {
-                let input = std::fs::read(path)
-                    .unwrap_or_default();
+                let input = std::fs::read(path).unwrap_or_default();
                 // Skip leading whitespace/BOM to detect JSON format
                 let is_json = {
                     let bytes = &input[..];
-                    let pos = bytes.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(bytes.len());
+                    let pos = bytes
+                        .iter()
+                        .position(|b| !b.is_ascii_whitespace())
+                        .unwrap_or(bytes.len());
                     !bytes[pos..].is_empty() && bytes[pos..][0] == b'{'
                 };
                 let value = if is_json {

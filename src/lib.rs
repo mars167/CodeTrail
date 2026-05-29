@@ -10,6 +10,7 @@ pub mod search;
 pub mod snapshot_store;
 pub mod syntax;
 pub mod text_index;
+pub mod watcher;
 pub mod workspace;
 
 pub mod graph;
