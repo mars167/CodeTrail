@@ -36,6 +36,9 @@ prost-types = "0.13"
 rusqlite = { version = "0.31", features = ["bundled"] }
 petgraph = { version = "0.6", features = ["serde"] }
 bincode = "1"
+flate2 = "1"
+tar = "0.4"
+sha2 = "0.10"
 
 
 [dev-dependencies]

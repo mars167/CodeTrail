@@ -1,13 +1,17 @@
 use std::{
     fs::{self, File},
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{anyhow, Context, Result};
+use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::{
     graph, snapshot_store, text_index,
@@ -143,12 +147,17 @@ pub fn status(workspace: &Workspace) -> Result<Value> {
     let root = storage_root(workspace);
     let manifest_path = active_manifest_path(workspace, false);
     if !manifest_path.exists() {
-        return Ok(json!({
+        let remote = remote_status(workspace)?;
+        let mut result = json!({
             "exists": false,
             "fresh": false,
             "path": root,
             "reason": "index_missing"
-        }));
+        });
+        if !remote.as_array().is_some_and(|a| a.is_empty()) {
+            result["remote"] = remote;
+        }
+        return Ok(result);
     }
     let manifest = read_manifest(&manifest_path)?;
     let snapshot_path = snapshot_dir(workspace, &manifest.snapshot_key);
@@ -160,7 +169,8 @@ pub fn status(workspace: &Workspace) -> Result<Value> {
         "staleFiles": snap_fresh.stale_files,
         "missingFiles": snap_fresh.missing_files
     });
-    Ok(json!({
+    let remote = remote_status(workspace)?;
+    let mut result = json!({
         "exists": true,
         "fresh": fresh,
         "path": root,
@@ -168,15 +178,21 @@ pub fn status(workspace: &Workspace) -> Result<Value> {
         "textPath": text_path,
         "manifest": manifest,
         "freshness": freshness
-    }))
+    });
+    if !remote.as_array().is_some_and(|a| a.is_empty()) {
+        result["remote"] = remote;
+    }
+    Ok(result)
 }
 
 pub fn fresh_file_records(
     workspace: &Workspace,
     opts: &ScanOptions,
 ) -> Result<Option<(Vec<FileRecord>, Value)>> {
+    // Try local fresh snapshot first
     let Some((manifest, records, text_path)) = fresh_text_snapshot(workspace, opts)? else {
-        return Ok(None);
+        // Fall back to remote snapshots
+        return remote_fallback_text_records(workspace, None);
     };
 
     Ok(Some((
@@ -191,8 +207,10 @@ pub fn fresh_text_records(
     pattern: &str,
     mode: &str,
 ) -> Result<Option<(Vec<FileRecord>, Value)>> {
+    // Try local fresh snapshot first
     let Some((manifest, records, text_path)) = fresh_text_snapshot(workspace, opts)? else {
-        return Ok(None);
+        // Fall back to remote snapshots with trigram prefilter
+        return remote_fallback_text_records(workspace, Some((pattern, mode)));
     };
 
     let candidate_ids = text_index::candidate_ids(&text_path.join("grams.idx"), pattern, mode)?;
@@ -211,6 +229,59 @@ pub fn fresh_text_records(
         filtered,
         text_index_meta(&manifest, text_path, prefilter, candidate_count),
     )))
+}
+/// Fall back to remote snapshots when local text index is not fresh or missing.
+fn remote_fallback_text_records(
+    workspace: &Workspace,
+    filter: Option<(&str, &str)>,
+) -> Result<Option<(Vec<FileRecord>, Value)>> {
+    let remote_snapshots = discover_remote_snapshots(workspace)?;
+    for (snapshot_key, remote_dir) in &remote_snapshots {
+        let text_dir = remote_text_dir(workspace, snapshot_key);
+        let docs_path = text_dir.join("docs.idx");
+        if !docs_path.exists() {
+            continue;
+        }
+
+        let records = match text_index::read_docs(&docs_path) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        // Apply trigram prefilter if requested
+        let filtered = if let Some((pattern, mode)) = filter {
+            let grams_path = text_dir.join("grams.idx");
+            let candidate_ids = text_index::candidate_ids(&grams_path, pattern, mode)?;
+            match candidate_ids {
+                Some(ids) => records
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(doc_id, record)| ids.contains(&doc_id).then_some(record))
+                    .collect::<Vec<_>>(),
+                None => records,
+            }
+        } else {
+            records
+        };
+
+        let verified = remote_snapshot_matches_local(workspace, remote_dir).unwrap_or(false);
+
+        let index_meta = json!({
+            "used": true,
+            "fresh": verified,
+            "source": "text_index:remote",
+            "fallback": false,
+            "remote_verified": verified,
+            "remote_snapshot_key": snapshot_key,
+            "snapshot_id": snapshot_key,
+            "snapshotKey": snapshot_key,
+            "path": text_dir,
+        });
+
+        return Ok(Some((filtered, index_meta)));
+    }
+
+    Ok(None)
 }
 
 impl From<&ScanOptions> for IndexScanOptions {
@@ -541,6 +612,405 @@ fn now_ms() -> u128 {
         .unwrap_or(0)
 }
 
+// ---------------------------------------------------------------------------
+// Remote pack / unpack
+// ---------------------------------------------------------------------------
+
+/// Pack the current snapshot into a portable .tar.gz archive.
+pub fn pack(workspace: &Workspace, output_path: &str) -> Result<Value> {
+    let active_manifest_path = active_manifest_path(workspace, false);
+    if !active_manifest_path.exists() {
+        return Err(anyhow!(
+            "no local index exists; run 'code-search index build' first"
+        ));
+    }
+
+    let manifest = read_manifest(&active_manifest_path)?;
+    let snapshot_dir = snapshot_dir(workspace, &manifest.snapshot_key);
+    let text_dir = text_dir(workspace, &manifest.snapshot_key);
+    let scip_d = scip_root(workspace);
+    let graph_d = graph::graph_dir(workspace);
+
+    let mut entries: Vec<ArchiveEntry> = Vec::new();
+
+    // Top-level pack manifest
+    let pack_manifest = json!({
+        "schemaVersion": INDEX_SCHEMA_VERSION,
+        "snapshot_id": manifest.snapshot_id,
+        "snapshotKey": manifest.snapshot_key,
+        "timestamp": now_ms(),
+        "source": "packed_remote",
+        "toolVersion": env!("CARGO_PKG_VERSION"),
+        "originalRepoRoot": manifest.repo_root,
+        "head": manifest.head,
+        "dirty": manifest.dirty,
+        "fileCount": manifest.file_count,
+    });
+    let pack_manifest_bytes = serde_json::to_vec_pretty(&pack_manifest)?;
+    entries.push(ArchiveEntry {
+        name: "manifest.json".to_string(),
+        content: pack_manifest_bytes,
+    });
+
+    // files.parquet
+    let files_parquet = snapshot_dir.join("files.parquet");
+    if files_parquet.exists() {
+        let content = fs::read(&files_parquet)?;
+        entries.push(ArchiveEntry {
+            name: "files.parquet".to_string(),
+            content,
+        });
+    }
+
+    // text index segments
+    for seg_name in &["docs.idx", "paths.idx", "grams.idx"] {
+        let seg_path = text_dir.join(seg_name);
+        if seg_path.exists() {
+            let rel = format!("text/{seg_name}");
+            let content = fs::read(&seg_path)?;
+            entries.push(ArchiveEntry { name: rel, content });
+        }
+    }
+
+    // scip occurrence database
+    let scip_db = scip_d.join("occurrences.db");
+    if scip_db.exists() {
+        let content = fs::read(&scip_db)?;
+        entries.push(ArchiveEntry {
+            name: "scip/occurrences.db".to_string(),
+            content,
+        });
+    }
+
+    // graph petgraph.bin
+    let graph_bin = graph_d.join("petgraph.bin");
+    if graph_bin.exists() {
+        let content = fs::read(&graph_bin)?;
+        entries.push(ArchiveEntry {
+            name: "graph/petgraph.bin".to_string(),
+            content,
+        });
+    }
+
+    // Build checksums.txt
+    let mut checksums = String::new();
+    for entry in &entries {
+        let mut hasher = Sha256::new();
+        hasher.update(&entry.content);
+        let hash = format!("{:x}", hasher.finalize());
+        checksums.push_str(&format!("{hash}  {}\n", entry.name));
+    }
+    entries.push(ArchiveEntry {
+        name: "checksums.txt".to_string(),
+        content: checksums.as_bytes().to_vec(),
+    });
+
+    // Create .tar.gz
+    let archive_data = build_tar_gz(&entries)?;
+
+    // Write to output
+    if output_path == "-" || output_path.is_empty() {
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        std::io::Write::write_all(&mut handle, &archive_data)?;
+    } else {
+        let output = PathBuf::from(output_path);
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&output, &archive_data)?;
+    }
+
+    Ok(json!([{
+        "packed": true,
+        "archiveSize": archive_data.len(),
+        "entryCount": entries.len(),
+        "snapshot_id": manifest.snapshot_id,
+        "source": "packed_remote",
+        "output": output_path
+    }]))
+}
+
+/// Unpack a .tar.gz archive into `.code-search/remote/<snapshot_id>/`.
+/// NEVER overwrites local snapshots or modifies working/staged directories.
+pub fn unpack(workspace: &Workspace, archive_path: &str) -> Result<Value> {
+    // Read archive
+    let archive_data =
+        fs::read(archive_path).with_context(|| format!("failed to read archive {archive_path}"))?;
+
+    // Decompress and parse tar
+    let decoder = GzDecoder::new(&archive_data[..]);
+    let mut archive = tar::Archive::new(decoder);
+    let mut entries: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
+    for entry_result in archive.entries()? {
+        let mut entry = entry_result?;
+        let path = entry.path()?.to_string_lossy().to_string();
+        let mut content = Vec::new();
+        entry.read_to_end(&mut content)?;
+        entries.insert(path, content);
+    }
+
+    // Verify checksums
+    let checksums_data = entries
+        .get("checksums.txt")
+        .ok_or_else(|| anyhow!("archive missing checksums.txt"))?;
+    let checksums_str = String::from_utf8(checksums_data.clone())
+        .with_context(|| "checksums.txt is not valid UTF-8")?;
+    let expected_checksums = parse_checksums(&checksums_str)?;
+
+    for (path, expected_hash) in &expected_checksums {
+        if path == "checksums.txt" {
+            continue;
+        }
+        let content = entries
+            .get(path.as_str())
+            .ok_or_else(|| anyhow!("archive missing entry: {path}"))?;
+        let mut hasher = Sha256::new();
+        hasher.update(content);
+        let actual_hash = format!("{:x}", hasher.finalize());
+        if &actual_hash != expected_hash {
+            return Err(anyhow!(
+                "checksum mismatch for '{}': expected {}, got {}",
+                path,
+                expected_hash,
+                actual_hash
+            ));
+        }
+    }
+
+    // Read pack manifest
+    let pack_manifest_data = entries
+        .get("manifest.json")
+        .ok_or_else(|| anyhow!("archive missing manifest.json"))?;
+    let pack_manifest: Value = serde_json::from_slice(pack_manifest_data)
+        .with_context(|| "failed to parse manifest.json")?;
+
+    let schema_version: u32 = pack_manifest["schemaVersion"].as_u64().unwrap_or(0) as u32;
+    if schema_version != INDEX_SCHEMA_VERSION {
+        return Err(anyhow!(
+            "schema version mismatch: archive has {}, expected {}",
+            schema_version,
+            INDEX_SCHEMA_VERSION
+        ));
+    }
+
+    let snapshot_id = pack_manifest["snapshot_id"]
+        .as_str()
+        .ok_or_else(|| anyhow!("pack manifest missing snapshot_id"))?
+        .to_string();
+    let snapshot_key = snapshot_key(&snapshot_id);
+
+    // Determine remote target directory: .code-search/remote/<snapshot_key>/
+    let remote_dir = remote_dir(workspace, &snapshot_key);
+
+    // CRITICAL: never overwrite if already exists
+    if remote_dir.exists() {
+        return Err(anyhow!(
+            "remote snapshot '{}' already exists at {}; remove it first with 'index clean' if needed",
+            snapshot_key,
+            remote_dir.display()
+        ));
+    }
+
+    fs::create_dir_all(&remote_dir)?;
+
+    // Extract files to remote dir
+    for (path, content) in &entries {
+        if path == "checksums.txt" || path == "manifest.json" {
+            continue;
+        }
+        let dest = remote_dir.join(path);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&dest, content)?;
+    }
+
+    // Write provenance manifest
+    let provenance = json!({
+        "schemaVersion": INDEX_SCHEMA_VERSION,
+        "source": "remote_unpacked",
+        "snapshot_id": snapshot_id,
+        "snapshotKey": snapshot_key,
+        "unpackedAt": now_ms(),
+        "archivePath": archive_path,
+        "originalRepoRoot": pack_manifest.get("originalRepoRoot"),
+        "originalHead": pack_manifest.get("head"),
+        "originalDirty": pack_manifest.get("dirty"),
+        "fileCount": pack_manifest.get("fileCount"),
+        "toolVersion": pack_manifest.get("toolVersion"),
+        "warning": "This is a remote-imported snapshot. It does NOT represent local working/staged state."
+    });
+
+    write_manifest(
+        &remote_dir.join("manifest.json"),
+        &Manifest {
+            schema_version: INDEX_SCHEMA_VERSION,
+            tool_version: env!("CARGO_PKG_VERSION").to_string(),
+            repo_root: workspace.root.to_string_lossy().to_string(),
+            snapshot_id: snapshot_id.clone(),
+            snapshot_key: snapshot_key.clone(),
+            source: "remote_unpacked".to_string(),
+            head: pack_manifest["head"].as_str().map(|s| s.to_string()),
+            dirty: pack_manifest["dirty"].as_bool().unwrap_or(false),
+            file_count: pack_manifest["fileCount"].as_u64().unwrap_or(0) as usize,
+            scan_options: IndexScanOptions {
+                include: Vec::new(),
+                exclude: Vec::new(),
+                hidden: false,
+                no_ignore: false,
+            },
+            created_at_epoch_ms: now_ms(),
+        },
+    )?;
+
+    // Write provenance json alongside
+    let provenance_path = remote_dir.join("provenance.json");
+    fs::write(&provenance_path, serde_json::to_vec_pretty(&provenance)?)?;
+
+    Ok(json!([{
+        "unpacked": true,
+        "remote_snapshot_id": snapshot_id,
+        "remote_snapshot_key": snapshot_key,
+        "remoteDir": remote_dir,
+        "entryCount": entries.len() - 2,
+        "source": "remote_unpacked",
+        "warning": "Remote snapshots live in .code-search/remote/ and will not override local state"
+    }]))
+}
+
+/// Discover any remote unpacked snapshots.
+pub fn discover_remote_snapshots(workspace: &Workspace) -> Result<Vec<(String, PathBuf)>> {
+    let remote_root = remote_root(workspace);
+    if !remote_root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut snapshots = Vec::new();
+    for entry in fs::read_dir(&remote_root)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            let dir = entry.path();
+            let manifest_path = dir.join("manifest.json");
+            if manifest_path.exists() {
+                if let Ok(manifest) = read_manifest(&manifest_path) {
+                    if manifest.source == "remote_unpacked" {
+                        snapshots.push((entry.file_name().to_string_lossy().to_string(), dir));
+                    }
+                }
+            }
+        }
+    }
+    Ok(snapshots)
+}
+
+/// Check if a remote snapshot's file records match current local files.
+pub fn remote_snapshot_matches_local(workspace: &Workspace, remote_dir: &Path) -> Result<bool> {
+    let files_parquet = remote_dir.join("files.parquet");
+    if !files_parquet.exists() {
+        return Ok(false);
+    }
+
+    let snap_fresh = snapshot_store::verify_snapshot(remote_dir, &workspace.root)?;
+    Ok(snap_fresh.stale_files.is_empty() && snap_fresh.missing_files.is_empty())
+}
+
+/// Get the remote text directory for a given snapshot key.
+pub fn remote_text_dir(workspace: &Workspace, snapshot_key: &str) -> PathBuf {
+    remote_dir(workspace, snapshot_key).join("text")
+}
+
+/// Get the remote scip directory for a given snapshot key.
+pub fn remote_scip_dir(workspace: &Workspace, snapshot_key: &str) -> PathBuf {
+    remote_dir(workspace, snapshot_key).join("scip")
+}
+
+/// Get the remote graph directory for a given snapshot key.
+pub fn remote_graph_dir(workspace: &Workspace, snapshot_key: &str) -> PathBuf {
+    remote_dir(workspace, snapshot_key).join("graph")
+}
+
+// ---------------------------------------------------------------------------
+// Internal archive helpers
+// ---------------------------------------------------------------------------
+
+struct ArchiveEntry {
+    name: String,
+    content: Vec<u8>,
+}
+
+fn build_tar_gz(entries: &[ArchiveEntry]) -> Result<Vec<u8>> {
+    let mut archive_data = Vec::new();
+    {
+        let encoder = GzEncoder::new(&mut archive_data, Compression::default());
+        let mut tar_builder = tar::Builder::new(encoder);
+
+        for entry in entries {
+            let mut header = tar::Header::new_gnu();
+            header
+                .set_path(&entry.name)
+                .map_err(|e| anyhow!("invalid path in archive: {e}"))?;
+            header.set_size(entry.content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar_builder.append(&header, &entry.content[..])?;
+        }
+
+        let encoder = tar_builder.into_inner()?;
+        encoder.finish()?;
+    }
+    Ok(archive_data)
+}
+
+fn parse_checksums(checksums_str: &str) -> Result<std::collections::HashMap<String, String>> {
+    let mut map = std::collections::HashMap::new();
+    for line in checksums_str.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // Try double-space separator first (sha256sum format)
+        let parts: Vec<&str> = line.splitn(2, "  ").collect();
+        if parts.len() == 2 {
+            map.insert(parts[1].to_string(), parts[0].to_string());
+        } else {
+            // Try single space
+            let parts: Vec<&str> = line.splitn(2, ' ').collect();
+            if parts.len() == 2 {
+                map.insert(parts[1].to_string(), parts[0].to_string());
+            }
+        }
+    }
+    Ok(map)
+}
+
+fn remote_root(workspace: &Workspace) -> PathBuf {
+    storage_root(workspace).join("remote")
+}
+
+fn remote_dir(workspace: &Workspace, snapshot_key: &str) -> PathBuf {
+    remote_root(workspace).join(snapshot_key)
+}
+
+fn remote_status(workspace: &Workspace) -> Result<Value> {
+    let remote_snapshots = discover_remote_snapshots(workspace)?;
+    let mut snapshots = Vec::new();
+    for (snapshot_key, remote_dir) in &remote_snapshots {
+        let verified = remote_snapshot_matches_local(workspace, remote_dir).unwrap_or(false);
+        let has_text = remote_dir.join("text").join("docs.idx").exists();
+        let has_scip = remote_dir.join("scip").join("occurrences.db").exists();
+        let has_graph = remote_dir.join("graph").join("petgraph.bin").exists();
+        snapshots.push(json!({
+            "snapshot_key": snapshot_key,
+            "source": "remote_unpacked",
+            "remoteVerified": verified,
+            "hasTextIndex": has_text,
+            "hasScipIndex": has_scip,
+            "hasGraph": has_graph,
+            "remoteDir": remote_dir,
+        }));
+    }
+    Ok(Value::Array(snapshots))
+}
 #[cfg(unix)]
 fn make_executable(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;

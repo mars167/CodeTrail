@@ -451,6 +451,30 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                     Vec::new(),
                 )
             }
+            IndexCommand::Pack { output } => {
+                let value = index::pack(&workspace, output)?;
+                output::response(
+                    "index pack",
+                    "index pack",
+                    json!({ "output": output }),
+                    &workspace.snapshot_id,
+                    output::freshness(),
+                    value,
+                    Vec::new(),
+                )
+            }
+            IndexCommand::Unpack { path } => {
+                let value = index::unpack(&workspace, path)?;
+                output::response(
+                    "index unpack",
+                    "index unpack",
+                    json!({ "path": path }),
+                    &workspace.snapshot_id,
+                    output::freshness(),
+                    value,
+                    Vec::new(),
+                )
+            }
         },
         Command::Hooks { command } => match command {
             HooksCommand::Install => output::response(

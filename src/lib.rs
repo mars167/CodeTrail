@@ -3,6 +3,7 @@ pub mod commands;
 pub mod completions;
 pub mod index;
 pub mod output;
+pub mod remote;
 pub mod scip;
 pub mod scip_index;
 pub mod scip_proto;
