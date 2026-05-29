@@ -258,7 +258,7 @@ fn should_skip_path(path: &Path) -> bool {
     })
 }
 
-fn matches_filters(path: &str, include: &[String], exclude: &[String]) -> bool {
+pub fn matches_filters(path: &str, include: &[String], exclude: &[String]) -> bool {
     if exclude.iter().any(|pattern| path.contains(pattern)) {
         return false;
     }

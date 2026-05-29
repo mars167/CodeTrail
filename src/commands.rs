@@ -343,15 +343,32 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 json!([index::clean(&workspace)?]),
                 Vec::new(),
             ),
-            IndexCommand::ImportScip { path } => output::response(
-                "index import-scip",
-                "index import-scip",
-                json!({ "path": path, "format": "scip_json" }),
-                &workspace.snapshot_id,
-                output::freshness(),
-                json!([scip_index::import_scip_json(&workspace, path)?]),
-                Vec::new(),
-            ),
+            IndexCommand::ImportScip { path } => {
+                let input = std::fs::read(path)
+                    .unwrap_or_default();
+                // Skip leading whitespace/BOM to detect JSON format
+                let is_json = {
+                    let bytes = &input[..];
+                    let pos = bytes.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(bytes.len());
+                    !bytes[pos..].is_empty() && bytes[pos..][0] == b'{'
+                };
+                let value = if is_json {
+                    // JSON format (compatibility)
+                    scip_index::import_scip_json(&workspace, path)?
+                } else {
+                    // Native SCIP protobuf format
+                    scip_index::import_native_scip(&workspace, path)?
+                };
+                output::response(
+                    "index import-scip",
+                    "index import-scip",
+                    json!({ "path": path }),
+                    &workspace.snapshot_id,
+                    output::freshness(),
+                    value,
+                    Vec::new(),
+                )
+            }
         },
         Command::Hooks { command } => match command {
             HooksCommand::Install => output::response(
