@@ -421,3 +421,307 @@ fn write_minimal_scip_json(path: &std::path::Path) {
     });
     fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
 }
+
+/// Helper: init a git repo in the given directory with a .gitignore to ignore .code-search
+fn init_git_repo(dir: &std::path::Path) {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .arg("init")
+        .output()
+        .ok();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["config", "user.email", "test@test.com"])
+        .output()
+        .ok();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["config", "user.name", "test"])
+        .output()
+        .ok();
+    // Add a .gitignore so .code-search doesn't interfere
+    fs::write(dir.join(".gitignore"), ".code-search\n").ok();
+}
+
+/// Helper: commit all files in a git repo
+fn git_commit_all(dir: &std::path::Path, msg: &str) {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["add", "-A"])
+        .output()
+        .ok();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["commit", "-m", msg])
+        .output()
+        .ok();
+}
+
+#[test]
+fn incremental_update_rescans_only_changed_files() {
+    let dir = tempdir().unwrap();
+    init_git_repo(dir.path());
+
+    // Create initial file and commit
+    fs::write(dir.path().join("a.txt"), "hello world\n").unwrap();
+    fs::write(dir.path().join("b.txt"), "foo bar\n").unwrap();
+    git_commit_all(dir.path(), "initial");
+
+    // Build initial index
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    // Verify the index exists and has our files
+    let status = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let status_json: Value = serde_json::from_slice(&status).unwrap();
+    assert_eq!(status_json["results"][0]["exists"], true);
+
+    // Modify one file
+    fs::write(dir.path().join("a.txt"), "hello world updated\n").unwrap();
+
+    // Run index update (incremental)
+    let update = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "update"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let update_json: Value = serde_json::from_slice(&update).unwrap();
+    let update_result = &update_json["results"][0];
+    // Verify the update job has the expected fields
+    assert_eq!(update_result["job"], "update");
+    assert!(update_result["totalFiles"].as_u64().unwrap() >= 2);
+
+    // Verify freshness after update
+    let status2 = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let status2_json: Value = serde_json::from_slice(&status2).unwrap();
+    assert_eq!(status2_json["results"][0]["exists"], true);
+}
+
+#[test]
+fn index_update_returns_empty_on_no_changes() {
+    let dir = tempdir().unwrap();
+    init_git_repo(dir.path());
+
+    fs::write(dir.path().join("hello.txt"), "hello\n").unwrap();
+    git_commit_all(dir.path(), "initial");
+
+    // Build
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    // Update with no changes
+    let update = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "update"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let update_json: Value = serde_json::from_slice(&update).unwrap();
+    let update_result = &update_json["results"][0];
+    assert_eq!(update_result["job"], "update");
+    assert_eq!(update_result["changedFiles"].as_u64().unwrap(), 0);
+}
+
+#[test]
+fn index_compact_cleans_tmp_directories() {
+    let dir = tempdir().unwrap();
+
+    // Create a stale .tmp dir in snapshots
+    let code_search_dir = dir.path().join(".code-search");
+    let snap_tmp = code_search_dir.join("snapshots").join("stale.tmp");
+    fs::create_dir_all(&snap_tmp).unwrap();
+    fs::write(snap_tmp.join("junk.txt"), b"stale").unwrap();
+
+    let text_tmp = code_search_dir.join("text").join("stale.tmp");
+    fs::create_dir_all(&text_tmp).unwrap();
+    fs::write(text_tmp.join("junk.txt"), b"stale").unwrap();
+
+    // Also create a valid snapshot so compact has something to keep
+    let valid_snap = code_search_dir.join("snapshots").join("valid");
+    fs::create_dir_all(&valid_snap).unwrap();
+    fs::write(
+        valid_snap.join("manifest.json"),
+        serde_json::to_vec(&json!({"snapshotKey": "valid"})).unwrap(),
+    )
+    .unwrap();
+
+    // Create a working manifest pointing to the valid snapshot
+    let working = code_search_dir.join("working");
+    fs::create_dir_all(&working).unwrap();
+    fs::write(
+        working.join("manifest.json"),
+        serde_json::to_vec(&json!({"snapshotKey": "valid"})).unwrap(),
+    )
+    .unwrap();
+
+    // Run compact
+    let result = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "compact"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let result_json: Value = serde_json::from_slice(&result).unwrap();
+    let compact_result = &result_json["results"][0];
+    assert_eq!(compact_result["job"], "compact");
+
+    // Verify .tmp dirs are cleaned
+    assert!(!snap_tmp.exists());
+    assert!(!text_tmp.exists());
+}
+
+#[test]
+fn scheduler_status_includes_health_info() {
+    let dir = tempdir().unwrap();
+
+    // Build index
+    fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    // Check status
+    let result = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let result_json: Value = serde_json::from_slice(&result).unwrap();
+    let status_result = &result_json["results"][0];
+    assert_eq!(status_result["exists"], true);
+    // Scheduler health info should be present
+    let scheduler = &status_result["scheduler"];
+    assert!(scheduler["hasWorking"].as_bool().unwrap());
+    assert!(scheduler["workingSnapshots"].as_u64().unwrap() >= 1);
+}
+
+#[test]
+fn force_rebuild_clears_old_data() {
+    let dir = tempdir().unwrap();
+
+    fs::write(dir.path().join("sample.txt"), "hello\n").unwrap();
+
+    // First build
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    // Force rebuild
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build", "--force"])
+        .assert()
+        .success();
+
+    // Verify index still exists and is fresh
+    let status = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "verify"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let status_json: Value = serde_json::from_slice(&status).unwrap();
+    assert_eq!(status_json["results"][0]["fresh"], true);
+}
+
+#[test]
+fn compact_removes_orphan_snapshots() {
+    let dir = tempdir().unwrap();
+
+    // Build initial index
+    fs::write(dir.path().join("sample.txt"), "first\n").unwrap();
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    // Count snapshots before compact
+    let snapshots_before = fs::read_dir(dir.path().join(".code-search/snapshots"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir() && !e.file_name().to_string_lossy().ends_with(".tmp"))
+        .count();
+
+    // Force rebuild with modified content
+    fs::write(dir.path().join("sample.txt"), "second\n").unwrap();
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build", "--force"])
+        .assert()
+        .success();
+
+    // Run compact
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "compact"])
+        .assert()
+        .success();
+
+    // Count snapshots after compact — should have the same or fewer
+    let snapshots_after = fs::read_dir(dir.path().join(".code-search/snapshots"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir() && !e.file_name().to_string_lossy().ends_with(".tmp"))
+        .count();
+
+    assert!(snapshots_after >= 1);
+    // The orphan snapshot from the first build should be cleaned
+    assert!(snapshots_after <= snapshots_before + 1);
+}

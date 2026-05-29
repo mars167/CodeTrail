@@ -309,7 +309,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 json!({}),
                 &workspace.snapshot_id,
                 output::freshness(),
-                json!([index::build(&workspace, &scan_opts, false, true, false)?]),
+                json!([index::update(&workspace)?]),
                 Vec::new(),
             ),
             IndexCommand::Status => output::response(
@@ -341,6 +341,15 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 &workspace.snapshot_id,
                 output::freshness(),
                 json!([index::clean(&workspace)?]),
+                Vec::new(),
+            ),
+            IndexCommand::Compact => output::response(
+                "index compact",
+                "index compact",
+                json!({}),
+                &workspace.snapshot_id,
+                output::freshness(),
+                json!([index::compact(&workspace)?]),
                 Vec::new(),
             ),
             IndexCommand::ImportScip { path } => output::response(
