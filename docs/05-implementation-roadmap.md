@@ -4,14 +4,15 @@
 
 ## 当前实现状态
 
-截至 2026-05-28，CLI 已完成一个可运行的命令面，并已落地目标 text index 层的第一部分。任何以
+截至 2026-05-29，CLI 已完成一个可运行的命令面，并已落地目标 text index 层的第一部分。相关状态已通过
+`cargo fmt --check`、`cargo check`、`cargo test` 和手工 CLI 验证。任何以
 JSONL 作为主索引存储的代码只能视为不合格实现，不能作为路线图阶段完成依据。
 
-- 阶段 1 的源码事实命令已可用，并输出统一 JSON 与可靠性契约。
-- 阶段 2 已有 index/hook/watch 命令入口、hook 安装脚本、freshness verify、watcher/status reconcile 入口、`text/<snapshot>/{docs.idx,paths.idx,grams.idx}`、literal gram prefilter，以及 SCIP JSON 兼容导入的二进制 `occurrences.idx`；source snapshot Parquet、native SCIP occurrence DB、Kuzu graph、增量 segment 合并仍未完成。
+- 阶段 1 的源码事实命令已可用，并输出统一 JSON 与可靠性契约；手工验证覆盖了 `find`、`files`、`read`、`status`、`changed`。
+- 阶段 2 已有 index/hook/watch 命令入口、hook 安装脚本、freshness verify、watcher/status reconcile 入口、`text/<snapshot>/{docs.idx,paths.idx,grams.idx}`、literal gram prefilter，以及 SCIP JSON 兼容导入的二进制 `occurrences.idx`；手工验证确认 fresh index 下 literal `find` 会使用 `prefilter=trigram`，文件变更后 `index verify` 会因 freshness 失效返回 code `6`。source snapshot Parquet、native SCIP occurrence DB、Kuzu graph、增量 segment 合并仍未完成。
 - 阶段 3 已通过 tree-sitter fallback 提供 `symbols` 与 `defs`。
 - 阶段 4 已通过 tree-sitter call heuristic 提供 `calls` 与 `callers` 候选结果，永不标记为 exact。
-- 阶段 5 的 MCP/远程适配尚未作为独立服务实现；当前 `serve` 暴露的是同一 CLI query service 的状态契约，后续适配器应复用该命令层 schema。
+- 阶段 5 的 MCP/远程适配尚未作为独立服务实现；当前 `serve` 暴露的是同一 CLI query service 的状态契约，`watch --status` 仍为 `mode=status_only`，后续适配器应复用该命令层 schema。
 
 ## 阶段 0：设计骨架
 
