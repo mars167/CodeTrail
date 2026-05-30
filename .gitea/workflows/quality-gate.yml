@@ -24,12 +24,16 @@ jobs:
       - name: Install runner tools
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git ca-certificates nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang
+          apt-get install -y --no-install-recommends git ca-certificates nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang sccache
           rustup component add rustfmt
       - name: Checkout
         uses: actions/checkout@v4
       - name: Run quick quality gate
         run: scripts/quality-gate.sh quick
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_DIR: /workspace/.sccache
+          SCCACHE_CACHE_SIZE: 2G
 
   cli:
     name: CLI Gate
@@ -41,12 +45,16 @@ jobs:
       - name: Install runner tools
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git ca-certificates jq nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang
+          apt-get install -y --no-install-recommends git ca-certificates jq nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang sccache
           rustup component add rustfmt
       - name: Checkout
         uses: actions/checkout@v4
       - name: Run CLI quality gate
         run: scripts/quality-gate.sh cli
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_DIR: /workspace/.sccache
+          SCCACHE_CACHE_SIZE: 2G
 
   bench:
     name: Benchmark Gate
@@ -58,9 +66,13 @@ jobs:
       - name: Install runner tools
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git ca-certificates jq bc hyperfine nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang
+          apt-get install -y --no-install-recommends git ca-certificates jq bc hyperfine nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang sccache
           rustup component add rustfmt
       - name: Checkout
         uses: actions/checkout@v4
       - name: Run benchmark quality gate
         run: scripts/quality-gate.sh bench
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_DIR: /workspace/.sccache
+          SCCACHE_CACHE_SIZE: 2G
