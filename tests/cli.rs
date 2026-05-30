@@ -1,4 +1,7 @@
 use std::fs;
+use std::sync::Mutex;
+
+static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 use assert_cmd::Command;
 use serde_json::json;
