@@ -1,0 +1,964 @@
+use anyhow::{Context, Result};
+use arrow::array::Array;
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use futures::StreamExt;
+use lancedb::connect;
+use lancedb::query::{ExecutableQuery, QueryBase};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock};
+pub struct LanceDbStore {
+    db: Arc<lancedb::Connection>,
+    #[allow(dead_code)]
+    root: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+pub struct ScipOccurrence {
+    #[allow(dead_code)]
+    pub snapshot_id: String,
+    pub symbol: String,
+    pub file_path: String,
+    pub language: String,
+    pub name: String,
+    pub kind: String,
+    pub role: String,
+    pub range_start_line: u32,
+    pub range_start_col: u32,
+    pub range_end_line: u32,
+    pub range_end_col: u32,
+    pub is_definition: bool,
+    pub file_hash: String,
+    pub enclosing_symbol: Option<String>,
+    pub producer: String,
+}
+
+pub fn lancedb_root(workspace_root: &Path) -> PathBuf {
+    workspace_root.join(".code-search").join("index.lance")
+}
+
+static RUNTIME: LazyLock<tokio::runtime::Runtime> =
+    LazyLock::new(|| tokio::runtime::Runtime::new().expect("failed to create tokio runtime"));
+
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    RUNTIME.block_on(f)
+}
+
+impl LanceDbStore {
+    pub fn open_or_create(root: &Path) -> Result<Self> {
+        let lance_path = lancedb_root(root);
+        std::fs::create_dir_all(&lance_path)
+            .with_context(|| format!("failed to create {:?}", lance_path))?;
+        let db = block_on(connect(&lance_path.display().to_string()).execute())
+            .with_context(|| format!("failed to connect to {:?}", lance_path))?;
+        Ok(Self {
+            db: Arc::new(db),
+            root: lance_path,
+        })
+    }
+
+    pub fn ensure_tables(&self) -> Result<()> {
+        let existing = block_on(self.db.table_names().execute())
+            .with_context(|| "failed to list table names")?;
+
+        if !existing.iter().any(|t| t == "snapshots") {
+            block_on(
+                self.db
+                    .create_empty_table("snapshots", snapshots_schema())
+                    .execute(),
+            )
+            .with_context(|| "failed to create snapshots table")?;
+        }
+
+        if !existing.iter().any(|t| t == "file_catalog") {
+            block_on(
+                self.db
+                    .create_empty_table("file_catalog", file_catalog_schema())
+                    .execute(),
+            )
+            .with_context(|| "failed to create file_catalog table")?;
+        }
+
+        if !existing.iter().any(|t| t == "file_proofs") {
+            block_on(
+                self.db
+                    .create_empty_table("file_proofs", file_proofs_schema())
+                    .execute(),
+            )
+            .with_context(|| "failed to create file_proofs table")?;
+        }
+
+        if !existing.iter().any(|t| t == "gram_postings") {
+            block_on(
+                self.db
+                    .create_empty_table("gram_postings", gram_postings_schema())
+                    .execute(),
+            )
+            .with_context(|| "failed to create gram_postings table")?;
+        }
+
+        if !existing.iter().any(|t| t == "scip_occurrences") {
+            block_on(
+                self.db
+                    .create_empty_table("scip_occurrences", scip_occurrences_schema())
+                    .execute(),
+            )
+            .with_context(|| "failed to create scip_occurrences table")?;
+        }
+
+        if !existing.iter().any(|t| t == "parser_facts") {
+            block_on(
+                self.db
+                    .create_empty_table("parser_facts", parser_facts_schema())
+                    .execute(),
+            )
+            .with_context(|| "failed to create parser_facts table")?;
+        }
+
+        if !existing.iter().any(|t| t == "call_graph") {
+            block_on(
+                self.db
+                    .create_empty_table("call_graph", call_graph_schema())
+                    .execute(),
+            )
+            .with_context(|| "failed to create call_graph table")?;
+        }
+
+        Ok(())
+    }
+
+    // ── Write helpers ──
+
+    pub fn write_snapshot(
+        &self,
+        snapshot_id: &str,
+        snapshot_key: &str,
+        schema_version: u32,
+        tool_version: &str,
+        repo_root: &str,
+        head: Option<&str>,
+        dirty: bool,
+        source: &str,
+        scan_options_json: &str,
+        file_count: u32,
+        created_at_epoch_ms: u64,
+    ) -> Result<()> {
+        use arrow::array::{BooleanArray, StringArray, UInt32Array, UInt64Array};
+        use arrow::record_batch::{RecordBatch, RecordBatchIterator};
+
+        let schema = snapshots_schema();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                std::sync::Arc::new(StringArray::from(vec![snapshot_id])),
+                std::sync::Arc::new(StringArray::from(vec![snapshot_key])),
+                std::sync::Arc::new(UInt32Array::from(vec![schema_version])),
+                std::sync::Arc::new(StringArray::from(vec![tool_version])),
+                std::sync::Arc::new(StringArray::from(vec![repo_root])),
+                std::sync::Arc::new(StringArray::from(vec![head.map(|s| s.to_string())])),
+                std::sync::Arc::new(BooleanArray::from(vec![dirty])),
+                std::sync::Arc::new(StringArray::from(vec![source])),
+                std::sync::Arc::new(StringArray::from(vec![scan_options_json])),
+                std::sync::Arc::new(UInt32Array::from(vec![file_count])),
+                std::sync::Arc::new(UInt64Array::from(vec![created_at_epoch_ms])),
+                std::sync::Arc::new(UInt64Array::from(vec![None::<u64>])),
+                std::sync::Arc::new(UInt32Array::from(vec![0u32])),
+            ],
+        )
+        .context("failed to create snapshot RecordBatch")?;
+
+        let batches = RecordBatchIterator::new(vec![batch].into_iter().map(Ok), schema);
+        let table = block_on(self.db.open_table("snapshots").execute())
+            .context("failed to open snapshots table")?;
+        block_on(table.add(Box::new(batches)).execute()).context("failed to add snapshot row")?;
+        Ok(())
+    }
+
+    pub fn write_file_catalog(
+        &self,
+        snapshot_id: &str,
+        records: &[crate::workspace::FileRecord],
+    ) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+
+        use arrow::array::{BooleanArray, Int64Array, StringArray, UInt32Array, UInt64Array};
+        use arrow::record_batch::{RecordBatch, RecordBatchIterator};
+
+        let n = records.len();
+        let mut snapshot_ids = Vec::with_capacity(n);
+        let mut file_paths = Vec::with_capacity(n);
+        let mut languages = Vec::with_capacity(n);
+        let mut size_bytes = Vec::with_capacity(n);
+        let mut mtime_ns = Vec::with_capacity(n);
+        let mut modes = Vec::with_capacity(n);
+        let mut is_binary = Vec::with_capacity(n);
+        let mut is_ignored = Vec::with_capacity(n);
+
+        for r in records {
+            snapshot_ids.push(snapshot_id.to_string());
+            file_paths.push(r.path.clone());
+            languages.push(r.language.clone());
+            size_bytes.push(r.size);
+            mtime_ns.push(r.mtime_ms as i64 * 1_000_000);
+            modes.push(0u32);
+            is_binary.push(false);
+            is_ignored.push(false);
+        }
+
+        let schema = file_catalog_schema();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                std::sync::Arc::new(StringArray::from(snapshot_ids)),
+                std::sync::Arc::new(StringArray::from(file_paths)),
+                std::sync::Arc::new(StringArray::from(languages)),
+                std::sync::Arc::new(UInt64Array::from(size_bytes)),
+                std::sync::Arc::new(Int64Array::from(mtime_ns)),
+                std::sync::Arc::new(UInt32Array::from(modes)),
+                std::sync::Arc::new(BooleanArray::from(is_binary)),
+                std::sync::Arc::new(BooleanArray::from(is_ignored)),
+            ],
+        )
+        .context("failed to create file_catalog RecordBatch")?;
+
+        let batches = RecordBatchIterator::new(vec![batch].into_iter().map(Ok), schema);
+        let table = block_on(self.db.open_table("file_catalog").execute())
+            .context("failed to open file_catalog table")?;
+        block_on(table.add(Box::new(batches)).execute())
+            .context("failed to add file_catalog rows")?;
+        Ok(())
+    }
+
+    pub fn write_file_proofs(
+        &self,
+        snapshot_id: &str,
+        records: &[crate::workspace::FileRecord],
+    ) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+
+        use arrow::array::{StringArray, UInt64Array};
+        use arrow::record_batch::{RecordBatch, RecordBatchIterator};
+
+        let n = records.len();
+        let mut snapshot_ids = Vec::with_capacity(n);
+        let mut file_paths = Vec::with_capacity(n);
+        let mut content_hashes = Vec::with_capacity(n);
+        let mut size_bytes = Vec::with_capacity(n);
+        let mut line_offsets: Vec<Option<String>> = Vec::with_capacity(n);
+        let mut blob_keys = Vec::with_capacity(n);
+
+        for r in records {
+            snapshot_ids.push(snapshot_id.to_string());
+            file_paths.push(r.path.clone());
+            content_hashes.push(r.hash.clone());
+            size_bytes.push(r.size);
+            line_offsets.push(None);
+            blob_keys.push(r.hash.trim_start_matches("blake3:").to_string());
+        }
+
+        let schema = file_proofs_schema();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                std::sync::Arc::new(StringArray::from(snapshot_ids)),
+                std::sync::Arc::new(StringArray::from(file_paths)),
+                std::sync::Arc::new(StringArray::from(content_hashes)),
+                std::sync::Arc::new(UInt64Array::from(size_bytes)),
+                std::sync::Arc::new(StringArray::from(line_offsets)),
+                std::sync::Arc::new(StringArray::from(blob_keys)),
+            ],
+        )
+        .context("failed to create file_proofs RecordBatch")?;
+
+        let batches = RecordBatchIterator::new(vec![batch].into_iter().map(Ok), schema);
+        let table = block_on(self.db.open_table("file_proofs").execute())
+            .context("failed to open file_proofs table")?;
+        block_on(table.add(Box::new(batches)).execute())
+            .context("failed to add file_proofs rows")?;
+        Ok(())
+    }
+
+    pub fn write_gram_postings(
+        &self,
+        snapshot_id: &str,
+        gram_index: &std::collections::BTreeMap<[u8; 3], Vec<u32>>,
+    ) -> Result<()> {
+        if gram_index.is_empty() {
+            return Ok(());
+        }
+
+        use arrow::array::{StringArray, UInt32Array};
+        use arrow::record_batch::{RecordBatch, RecordBatchIterator};
+
+        let estimated = gram_index.values().map(|v| v.len()).sum::<usize>();
+        let mut snapshot_ids = Vec::with_capacity(estimated);
+        let mut grams = Vec::with_capacity(estimated);
+        let mut doc_ids = Vec::with_capacity(estimated);
+
+        for (gram, ids) in gram_index {
+            let gram_hex = format!("{:02x}{:02x}{:02x}", gram[0], gram[1], gram[2]);
+            for &doc_id in ids {
+                snapshot_ids.push(snapshot_id.to_string());
+                grams.push(gram_hex.clone());
+                doc_ids.push(doc_id);
+            }
+        }
+
+        let schema = gram_postings_schema();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                std::sync::Arc::new(StringArray::from(snapshot_ids)),
+                std::sync::Arc::new(StringArray::from(grams)),
+                std::sync::Arc::new(UInt32Array::from(doc_ids)),
+            ],
+        )
+        .context("failed to create gram_postings RecordBatch")?;
+
+        let batches = RecordBatchIterator::new(vec![batch].into_iter().map(Ok), schema);
+        let table = block_on(self.db.open_table("gram_postings").execute())
+            .context("failed to open gram_postings table")?;
+        block_on(table.add(Box::new(batches)).execute())
+            .context("failed to add gram_postings rows")?;
+        Ok(())
+    }
+    pub fn write_scip_occurrences(
+        &self,
+        snapshot_id: &str,
+        records: &[ScipOccurrence],
+    ) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+
+        use arrow::array::{BooleanArray, StringArray, UInt32Array};
+        use arrow::record_batch::{RecordBatch, RecordBatchIterator};
+
+        let n = records.len();
+        let mut snapshot_ids = Vec::with_capacity(n);
+        let mut symbols = Vec::with_capacity(n);
+        let mut file_paths = Vec::with_capacity(n);
+        let mut languages = Vec::with_capacity(n);
+        let mut names = Vec::with_capacity(n);
+        let mut kinds = Vec::with_capacity(n);
+        let mut roles = Vec::with_capacity(n);
+        let mut range_start_lines = Vec::with_capacity(n);
+        let mut range_start_cols = Vec::with_capacity(n);
+        let mut range_end_lines = Vec::with_capacity(n);
+        let mut range_end_cols = Vec::with_capacity(n);
+        let mut is_defs = Vec::with_capacity(n);
+        let mut file_hashes = Vec::with_capacity(n);
+        let mut enclosing_symbols = Vec::with_capacity(n);
+        let mut producers = Vec::with_capacity(n);
+
+        for r in records {
+            snapshot_ids.push(snapshot_id.to_string());
+            symbols.push(r.symbol.clone());
+            file_paths.push(r.file_path.clone());
+            languages.push(r.language.clone());
+            names.push(r.name.clone());
+            kinds.push(r.kind.clone());
+            roles.push(r.role.clone());
+            range_start_lines.push(r.range_start_line);
+            range_start_cols.push(r.range_start_col);
+            range_end_lines.push(r.range_end_line);
+            range_end_cols.push(r.range_end_col);
+            is_defs.push(r.is_definition);
+            file_hashes.push(r.file_hash.clone());
+            enclosing_symbols.push(r.enclosing_symbol.clone());
+            producers.push(r.producer.clone());
+        }
+
+        let schema = scip_occurrences_schema();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                std::sync::Arc::new(StringArray::from(snapshot_ids)),
+                std::sync::Arc::new(StringArray::from(symbols)),
+                std::sync::Arc::new(StringArray::from(file_paths)),
+                std::sync::Arc::new(StringArray::from(languages)),
+                std::sync::Arc::new(StringArray::from(names)),
+                std::sync::Arc::new(StringArray::from(kinds)),
+                std::sync::Arc::new(StringArray::from(roles)),
+                std::sync::Arc::new(UInt32Array::from(range_start_lines)),
+                std::sync::Arc::new(UInt32Array::from(range_start_cols)),
+                std::sync::Arc::new(UInt32Array::from(range_end_lines)),
+                std::sync::Arc::new(UInt32Array::from(range_end_cols)),
+                std::sync::Arc::new(BooleanArray::from(is_defs)),
+                std::sync::Arc::new(StringArray::from(file_hashes)),
+                std::sync::Arc::new(StringArray::from(enclosing_symbols)),
+                std::sync::Arc::new(StringArray::from(producers)),
+            ],
+        )
+        .context("failed to create scip_occurrences RecordBatch")?;
+
+        let batches = RecordBatchIterator::new(vec![batch].into_iter().map(Ok), schema);
+        let table = block_on(self.db.open_table("scip_occurrences").execute())
+            .context("failed to open scip_occurrences table")?;
+        block_on(table.add(Box::new(batches)).execute())
+            .context("failed to add scip_occurrences rows")?;
+        Ok(())
+    }
+
+    pub fn read_scip_occurrences(&self, snapshot_id: &str) -> Result<Vec<ScipOccurrence>> {
+        let table = block_on(self.db.open_table("scip_occurrences").execute())
+            .with_context(|| "failed to open scip_occurrences table")?;
+        let filter = format!("snapshot_id = '{}'", snapshot_id);
+        let mut stream = block_on(table.query().only_if(&filter).execute())
+            .with_context(|| "failed to query scip_occurrences")?;
+        let mut rows = Vec::new();
+        while let Some(batch_result) = block_on(stream.next()) {
+            let batch = batch_result.with_context(|| "failed to read scip_occurrences batch")?;
+            let col_sid = batch.column_by_name("snapshot_id").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_sym = batch.column_by_name("symbol").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_fp = batch.column_by_name("file_path").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_lang = batch.column_by_name("language").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_name = batch.column_by_name("name").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_kind = batch.column_by_name("kind").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_role = batch.column_by_name("role").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_rsl = batch.column_by_name("range_start_line").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::UInt32Array>()
+                    .unwrap()
+            });
+            let col_rsc = batch.column_by_name("range_start_col").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::UInt32Array>()
+                    .unwrap()
+            });
+            let col_rel = batch.column_by_name("range_end_line").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::UInt32Array>()
+                    .unwrap()
+            });
+            let col_rec = batch.column_by_name("range_end_col").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::UInt32Array>()
+                    .unwrap()
+            });
+            let col_isdef = batch.column_by_name("is_definition").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::BooleanArray>()
+                    .unwrap()
+            });
+            let col_fh = batch.column_by_name("file_hash").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_es = batch.column_by_name("enclosing_symbol").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_prod = batch.column_by_name("producer").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+
+            if let (
+                Some(sid),
+                Some(sym),
+                Some(fp),
+                Some(lang),
+                Some(name),
+                Some(kind),
+                Some(role),
+                Some(rsl),
+                Some(rsc),
+                Some(rel),
+                Some(rec),
+                Some(isdef),
+                Some(fh),
+                Some(es),
+                Some(prod),
+            ) = (
+                col_sid, col_sym, col_fp, col_lang, col_name, col_kind, col_role, col_rsl, col_rsc,
+                col_rel, col_rec, col_isdef, col_fh, col_es, col_prod,
+            ) {
+                for i in 0..batch.num_rows() {
+                    rows.push(ScipOccurrence {
+                        snapshot_id: sid.value(i).to_string(),
+                        symbol: sym.value(i).to_string(),
+                        file_path: fp.value(i).to_string(),
+                        language: lang.value(i).to_string(),
+                        name: name.value(i).to_string(),
+                        kind: kind.value(i).to_string(),
+                        role: role.value(i).to_string(),
+                        range_start_line: rsl.value(i),
+                        range_start_col: rsc.value(i),
+                        range_end_line: rel.value(i),
+                        range_end_col: rec.value(i),
+                        is_definition: isdef.value(i),
+                        file_hash: fh.value(i).to_string(),
+                        enclosing_symbol: if es.is_null(i) {
+                            None
+                        } else {
+                            Some(es.value(i).to_string())
+                        },
+                        producer: prod.value(i).to_string(),
+                    });
+                }
+            }
+        }
+        Ok(rows)
+    }
+    pub fn read_snapshot(&self, snapshot_id: &str) -> Result<Option<SnapShotRow>> {
+        let table = block_on(self.db.open_table("snapshots").execute())
+            .with_context(|| "failed to open snapshots table")?;
+        let filter = format!("snapshot_id = '{}'", snapshot_id);
+        let mut stream = block_on(table.query().only_if(&filter).execute())
+            .with_context(|| "failed to query snapshots")?;
+        while let Some(batch_result) = block_on(stream.next()) {
+            let batch = batch_result.with_context(|| "failed to read snapshot batch")?;
+            if batch.num_rows() == 0 {
+                return Ok(None);
+            }
+            let col_snapshot_id = batch.column_by_name("snapshot_id").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_snapshot_key = batch.column_by_name("snapshot_key").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_schema_version = batch.column_by_name("schema_version").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::UInt32Array>()
+                    .unwrap()
+            });
+            let col_tool_version = batch.column_by_name("tool_version").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_repo_root = batch.column_by_name("repo_root").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_head = batch.column_by_name("head").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_dirty = batch.column_by_name("dirty").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::BooleanArray>()
+                    .unwrap()
+            });
+            let col_source = batch.column_by_name("source").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_scan_opts = batch.column_by_name("scan_options_json").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_file_count = batch.column_by_name("file_count").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::UInt32Array>()
+                    .unwrap()
+            });
+            let col_created_at = batch.column_by_name("created_at_epoch_ms").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::UInt64Array>()
+                    .unwrap()
+            });
+
+            if let (
+                Some(sid),
+                Some(skey),
+                Some(sv),
+                Some(tv),
+                Some(rr),
+                Some(h),
+                Some(d),
+                Some(s),
+                Some(so),
+                Some(fc),
+                Some(ca),
+            ) = (
+                col_snapshot_id,
+                col_snapshot_key,
+                col_schema_version,
+                col_tool_version,
+                col_repo_root,
+                col_head,
+                col_dirty,
+                col_source,
+                col_scan_opts,
+                col_file_count,
+                col_created_at,
+            ) {
+                for i in 0..batch.num_rows() {
+                    if sid.value(i) == snapshot_id {
+                        return Ok(Some(SnapShotRow {
+                            snapshot_id: sid.value(i).to_string(),
+                            snapshot_key: skey.value(i).to_string(),
+                            schema_version: sv.value(i),
+                            tool_version: tv.value(i).to_string(),
+                            repo_root: rr.value(i).to_string(),
+                            head: if h.is_null(i) {
+                                None
+                            } else {
+                                Some(h.value(i).to_string())
+                            },
+                            dirty: d.value(i),
+                            source: s.value(i).to_string(),
+                            scan_options_json: so.value(i).to_string(),
+                            file_count: fc.value(i),
+                            created_at_epoch_ms: ca.value(i),
+                        }));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn read_file_catalog(&self, snapshot_id: &str) -> Result<Vec<FileCatalogRow>> {
+        let table = block_on(self.db.open_table("file_catalog").execute())
+            .with_context(|| "failed to open file_catalog table")?;
+        let filter = format!("snapshot_id = '{}'", snapshot_id);
+        let mut stream = block_on(table.query().only_if(&filter).execute())
+            .with_context(|| "failed to query file_catalog")?;
+        let mut rows = Vec::new();
+        while let Some(batch_result) = block_on(stream.next()) {
+            let batch = batch_result.with_context(|| "failed to read file_catalog batch")?;
+            let col_sid = batch.column_by_name("snapshot_id").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_fp = batch.column_by_name("file_path").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_lang = batch.column_by_name("language").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_sz = batch.column_by_name("size_bytes").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::UInt64Array>()
+                    .unwrap()
+            });
+            let col_mt = batch.column_by_name("mtime_ns").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::Int64Array>()
+                    .unwrap()
+            });
+            if let (Some(sid), Some(fp), Some(lang), Some(sz), Some(mt)) =
+                (col_sid, col_fp, col_lang, col_sz, col_mt)
+            {
+                for i in 0..batch.num_rows() {
+                    rows.push(FileCatalogRow {
+                        snapshot_id: sid.value(i).to_string(),
+                        file_path: fp.value(i).to_string(),
+                        language: lang.value(i).to_string(),
+                        size_bytes: sz.value(i),
+                        mtime_ns: mt.value(i),
+                    });
+                }
+            }
+        }
+        Ok(rows)
+    }
+
+    pub fn read_file_proofs(&self, snapshot_id: &str) -> Result<Vec<FileProofRow>> {
+        let table = block_on(self.db.open_table("file_proofs").execute())
+            .with_context(|| "failed to open file_proofs table")?;
+        let filter = format!("snapshot_id = '{}'", snapshot_id);
+        let mut stream = block_on(table.query().only_if(&filter).execute())
+            .with_context(|| "failed to query file_proofs")?;
+        let mut rows = Vec::new();
+        while let Some(batch_result) = block_on(stream.next()) {
+            let batch = batch_result.with_context(|| "failed to read file_proofs batch")?;
+            let col_sid = batch.column_by_name("snapshot_id").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_fp = batch.column_by_name("file_path").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_hash = batch.column_by_name("content_hash").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+            });
+            let col_sz = batch.column_by_name("size_bytes").map(|c| {
+                c.as_any()
+                    .downcast_ref::<arrow::array::UInt64Array>()
+                    .unwrap()
+            });
+            if let (Some(sid), Some(fp), Some(hash), Some(sz)) = (col_sid, col_fp, col_hash, col_sz)
+            {
+                for i in 0..batch.num_rows() {
+                    rows.push(FileProofRow {
+                        snapshot_id: sid.value(i).to_string(),
+                        file_path: fp.value(i).to_string(),
+                        content_hash: hash.value(i).to_string(),
+                        size_bytes: sz.value(i),
+                    });
+                }
+            }
+        }
+        Ok(rows)
+    }
+
+    pub fn read_file_records(
+        &self,
+        snapshot_id: &str,
+    ) -> Result<Vec<crate::workspace::FileRecord>> {
+        let catalog = self.read_file_catalog(snapshot_id)?;
+        let proofs: HashMap<String, FileProofRow> = self
+            .read_file_proofs(snapshot_id)?
+            .into_iter()
+            .map(|p| (p.file_path.clone(), p))
+            .collect();
+        Ok(catalog
+            .into_iter()
+            .map(|row| {
+                let proof = proofs.get(&row.file_path);
+                crate::workspace::FileRecord {
+                    path: row.file_path,
+                    language: row.language,
+                    size: row.size_bytes,
+                    mtime_ms: (row.mtime_ns as i128 / 1_000_000) as u128,
+                    hash: proof.map(|p| p.content_hash.clone()).unwrap_or_default(),
+                }
+            })
+            .collect())
+    }
+}
+
+fn snapshots_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("snapshot_id", DataType::Utf8, false),
+        Field::new("snapshot_key", DataType::Utf8, false),
+        Field::new("schema_version", DataType::UInt32, false),
+        Field::new("tool_version", DataType::Utf8, false),
+        Field::new("repo_root", DataType::Utf8, false),
+        Field::new("head", DataType::Utf8, true),
+        Field::new("dirty", DataType::Boolean, false),
+        Field::new("source", DataType::Utf8, false),
+        Field::new("scan_options_json", DataType::Utf8, false),
+        Field::new("file_count", DataType::UInt32, false),
+        Field::new("created_at_epoch_ms", DataType::UInt64, false),
+        Field::new("last_compaction_at_epoch_ms", DataType::UInt64, true),
+        Field::new("segment_count", DataType::UInt32, false),
+    ]))
+}
+
+fn file_catalog_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("snapshot_id", DataType::Utf8, false),
+        Field::new("file_path", DataType::Utf8, false),
+        Field::new("language", DataType::Utf8, false),
+        Field::new("size_bytes", DataType::UInt64, false),
+        Field::new("mtime_ns", DataType::Int64, false),
+        Field::new("mode", DataType::UInt32, false),
+        Field::new("is_binary", DataType::Boolean, false),
+        Field::new("is_ignored", DataType::Boolean, false),
+    ]))
+}
+
+fn file_proofs_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("snapshot_id", DataType::Utf8, false),
+        Field::new("file_path", DataType::Utf8, false),
+        Field::new("content_hash", DataType::Utf8, false),
+        Field::new("size_bytes", DataType::UInt64, false),
+        Field::new("line_offsets", DataType::Utf8, true),
+        Field::new("blob_key", DataType::Utf8, false),
+    ]))
+}
+
+fn gram_postings_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("snapshot_id", DataType::Utf8, false),
+        Field::new("gram", DataType::Utf8, false),
+        Field::new("doc_id", DataType::UInt32, false),
+    ]))
+}
+
+fn scip_occurrences_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("snapshot_id", DataType::Utf8, false),
+        Field::new("symbol", DataType::Utf8, false),
+        Field::new("file_path", DataType::Utf8, false),
+        Field::new("language", DataType::Utf8, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("kind", DataType::Utf8, false),
+        Field::new("role", DataType::Utf8, false),
+        Field::new("range_start_line", DataType::UInt32, false),
+        Field::new("range_start_col", DataType::UInt32, false),
+        Field::new("range_end_line", DataType::UInt32, false),
+        Field::new("range_end_col", DataType::UInt32, false),
+        Field::new("is_definition", DataType::Boolean, false),
+        Field::new("file_hash", DataType::Utf8, false),
+        Field::new("enclosing_symbol", DataType::Utf8, true),
+        Field::new("producer", DataType::Utf8, false),
+    ]))
+}
+
+fn parser_facts_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("snapshot_id", DataType::Utf8, false),
+        Field::new("file_path", DataType::Utf8, false),
+        Field::new("language", DataType::Utf8, false),
+        Field::new("parser_version", DataType::Utf8, false),
+        Field::new("file_hash", DataType::Utf8, false),
+        Field::new("symbols", DataType::Binary, false),
+        Field::new("calls", DataType::Binary, false),
+        Field::new("cached_at_epoch_ms", DataType::UInt64, false),
+    ]))
+}
+
+fn call_graph_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("snapshot_id", DataType::Utf8, false),
+        Field::new("caller_file", DataType::Utf8, false),
+        Field::new("caller_symbol", DataType::Utf8, false),
+        Field::new("callee", DataType::Utf8, false),
+        Field::new("callee_file", DataType::Utf8, true),
+        Field::new("language", DataType::Utf8, false),
+        Field::new("reliability", DataType::Utf8, false),
+        Field::new("file_hash", DataType::Utf8, false),
+    ]))
+}
+
+pub struct SnapShotRow {
+    pub snapshot_id: String,
+    pub snapshot_key: String,
+    pub schema_version: u32,
+    pub tool_version: String,
+    pub repo_root: String,
+    pub head: Option<String>,
+    pub dirty: bool,
+    pub source: String,
+    pub scan_options_json: String,
+    pub file_count: u32,
+    pub created_at_epoch_ms: u64,
+}
+
+pub struct FileCatalogRow {
+    #[allow(dead_code)]
+    pub snapshot_id: String,
+    pub file_path: String,
+    pub language: String,
+    pub size_bytes: u64,
+    pub mtime_ns: i64,
+}
+
+pub struct FileProofRow {
+    #[allow(dead_code)]
+    pub snapshot_id: String,
+    pub file_path: String,
+    pub content_hash: String,
+    #[allow(dead_code)]
+    pub size_bytes: u64,
+}
+
+pub fn is_available(workspace_root: &Path) -> bool {
+    lancedb_root(workspace_root).exists()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_open_or_create_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        let store1 = LanceDbStore::open_or_create(root).unwrap();
+        assert!(store1.root.exists());
+
+        let store2 = LanceDbStore::open_or_create(root).unwrap();
+        assert_eq!(store1.root, store2.root);
+    }
+
+    #[test]
+    fn test_ensure_tables_creates_all() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        let store = LanceDbStore::open_or_create(root).unwrap();
+        store.ensure_tables().unwrap();
+
+        let existing = block_on(store.db.table_names().execute()).unwrap();
+        assert!(existing.iter().any(|t| t == "snapshots"));
+        assert!(existing.iter().any(|t| t == "file_catalog"));
+        assert!(existing.iter().any(|t| t == "file_proofs"));
+        assert!(existing.iter().any(|t| t == "gram_postings"));
+        assert!(existing.iter().any(|t| t == "scip_occurrences"));
+        assert!(existing.iter().any(|t| t == "parser_facts"));
+        assert!(existing.iter().any(|t| t == "call_graph"));
+    }
+
+    #[test]
+    fn test_lancedb_directory_created() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        let _store = LanceDbStore::open_or_create(root).unwrap();
+        let expected = root.join(".code-search").join("index.lance");
+        assert!(expected.exists());
+        assert!(expected.is_dir());
+    }
+
+    #[test]
+    fn test_lancedb_root_helper() {
+        let p = Path::new("/foo/bar");
+        assert_eq!(
+            lancedb_root(p),
+            PathBuf::from("/foo/bar/.code-search/index.lance")
+        );
+    }
+}

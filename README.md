@@ -7,6 +7,7 @@
 实现任务拆解见 [`docs/13-implementation-tasks.md`](docs/13-implementation-tasks.md)。
 Agent team / MR 执行计划见 [`docs/14-agent-team-mr-plan.md`](docs/14-agent-team-mr-plan.md)。
 质量看护与测试架构见 [`docs/18-quality-guard-test-architecture.md`](docs/18-quality-guard-test-architecture.md)。
+性能优化技术方案见 [`docs/19-performance-optimization-technical-plan.md`](docs/19-performance-optimization-technical-plan.md)。
 Gitea Actions 门禁配置见 [`.gitea/workflows/quality-gate.yml`](.gitea/workflows/quality-gate.yml)。
 
 这个项目是对旧 `git-ai` 方向的 Rust 重新设计。它不是语义代码理解引擎，

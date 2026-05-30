@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File},
-    io::{Read, Write},
+    io::Read,
     path::Path,
 };
 
@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
-    index, scip,
+    index, lancedb_store, scip,
     scip::store::{OccurrenceResult, SymbolResult},
     workspace::{matches_filters, ScanOptions, Workspace},
 };
@@ -133,22 +133,7 @@ pub fn import_scip_json(workspace: &Workspace, path: impl AsRef<Path>) -> Result
         }
     }
 
-    records.sort_by(|a, b| {
-        a.path
-            .cmp(&b.path)
-            .then(a.name.cmp(&b.name))
-            .then(a.role.cmp(&b.role))
-    });
-    write_occurrences(&root.join("occurrences.idx"), &records)?;
-    fs::write(
-        root.join("manifest.json"),
-        serde_json::to_vec_pretty(&json!({
-            "source": "scip_json",
-            "path": source_path.to_string_lossy(),
-            "recordCount": records.len(),
-            "definitionCount": records.iter().filter(|record| record.role == "definition").count()
-        }))?,
-    )?;
+    import_to_lancedb(workspace, &records)?;
 
     Ok(json!({
         "index": {
@@ -156,7 +141,7 @@ pub fn import_scip_json(workspace: &Workspace, path: impl AsRef<Path>) -> Result
             "fresh": true,
             "source": "scip_json",
             "path": root,
-            "occurrencePath": root.join("occurrences.idx"),
+            "storageBackend": "lancedb",
             "recordCount": records.len(),
             "definitionCount": records.iter().filter(|record| record.role == "definition").count()
         }
@@ -383,10 +368,6 @@ fn fresh_records(
     opts: &ScanOptions,
 ) -> Result<Option<(Vec<PreciseOccurrenceRecord>, Value)>> {
     let root = index::scip_root(workspace);
-    let path = root.join("occurrences.idx");
-    if !path.exists() || !root.join("manifest.json").exists() {
-        return Ok(None);
-    }
 
     let mut scan_opts = opts.clone();
     scan_opts.limit = 0;
@@ -395,6 +376,46 @@ fn fresh_records(
         .into_iter()
         .map(|file| file.path)
         .collect::<HashSet<_>>();
+
+    if lancedb_store::is_available(&workspace.root) {
+        if let Ok(store) = lancedb_store::LanceDbStore::open_or_create(&workspace.root) {
+            if let Ok(lance_records) = store.read_scip_occurrences(&workspace.snapshot_id) {
+                if !lance_records.is_empty() {
+                    let converted = convert_scip_occurrences(lance_records);
+                    let mut fresh_rows = Vec::new();
+                    for record in converted {
+                        if !allowed_paths.contains(&record.path) {
+                            continue;
+                        }
+                        let hash = match current_file_hash(workspace, &record.path) {
+                            Ok(hash) => hash,
+                            Err(_) => return Ok(None),
+                        };
+                        if hash != record.file_hash {
+                            return Ok(None);
+                        }
+                        fresh_rows.push(record);
+                    }
+                    return Ok(Some((
+                        fresh_rows,
+                        json!({
+                            "used": true,
+                            "fresh": true,
+                            "source": "scip_json",
+                            "storageBackend": "lancedb",
+                            "fallback": false,
+                            "path": lancedb_store::lancedb_root(&workspace.root)
+                        }),
+                    )));
+                }
+            }
+        }
+    }
+
+    let path = root.join("occurrences.idx");
+    if !path.exists() {
+        return Ok(None);
+    }
 
     let records = read_occurrences(&path)?;
     let mut fresh_records = Vec::new();
@@ -418,7 +439,8 @@ fn fresh_records(
             "used": true,
             "fresh": true,
             "source": "scip_json",
-            "fallback": false,
+            "fallback": true,
+            "storageBackend": "idx_binary",
             "path": path
         }),
     )))
@@ -427,6 +449,62 @@ fn fresh_records(
 fn current_file_hash(workspace: &Workspace, path: &str) -> Result<String> {
     let content = fs::read(workspace.abs_path(path))?;
     Ok(format!("blake3:{}", blake3::hash(&content).to_hex()))
+}
+
+fn import_to_lancedb(workspace: &Workspace, records: &[PreciseOccurrenceRecord]) -> Result<()> {
+    let store = lancedb_store::LanceDbStore::open_or_create(&workspace.root)
+        .with_context(|| "failed to open LanceDB store")?;
+    store
+        .ensure_tables()
+        .with_context(|| "failed to ensure LanceDB tables")?;
+    let scip_records: Vec<lancedb_store::ScipOccurrence> = records
+        .iter()
+        .map(|r| lancedb_store::ScipOccurrence {
+            snapshot_id: workspace.snapshot_id.clone(),
+            symbol: r.symbol.clone(),
+            file_path: r.path.clone(),
+            language: r.language.clone(),
+            name: r.name.clone(),
+            kind: r.kind.clone(),
+            role: r.role.clone(),
+            range_start_line: r.range.start_line,
+            range_start_col: r.range.start_column,
+            range_end_line: r.range.end_line,
+            range_end_col: r.range.end_column,
+            is_definition: r.role == "definition",
+            file_hash: r.file_hash.clone(),
+            enclosing_symbol: None,
+            producer: r.producer.clone(),
+        })
+        .collect();
+    store
+        .write_scip_occurrences(&workspace.snapshot_id, &scip_records)
+        .with_context(|| "failed to write scip occurrences")?;
+    Ok(())
+}
+
+fn convert_scip_occurrences(
+    records: Vec<lancedb_store::ScipOccurrence>,
+) -> Vec<PreciseOccurrenceRecord> {
+    records
+        .into_iter()
+        .map(|r| PreciseOccurrenceRecord {
+            path: r.file_path,
+            language: r.language,
+            symbol: r.symbol,
+            name: r.name,
+            kind: r.kind,
+            role: r.role,
+            range: PreciseRange {
+                start_line: r.range_start_line,
+                start_column: r.range_start_col,
+                end_line: r.range_end_line,
+                end_column: r.range_end_col,
+            },
+            file_hash: r.file_hash,
+            producer: r.producer,
+        })
+        .collect()
 }
 
 fn scip_range(range: &[usize]) -> Option<PreciseRange> {
@@ -488,27 +566,6 @@ fn record_to_json(record: PreciseOccurrenceRecord) -> Value {
     })
 }
 
-fn write_occurrences(path: &Path, records: &[PreciseOccurrenceRecord]) -> Result<()> {
-    let mut file = File::create(path)?;
-    file.write_all(OCCURRENCES_MAGIC)?;
-    write_u32(&mut file, records.len() as u32)?;
-    for record in records {
-        write_string(&mut file, &record.path)?;
-        write_string(&mut file, &record.language)?;
-        write_string(&mut file, &record.symbol)?;
-        write_string(&mut file, &record.name)?;
-        write_string(&mut file, &record.kind)?;
-        write_string(&mut file, &record.role)?;
-        write_u32(&mut file, record.range.start_line)?;
-        write_u32(&mut file, record.range.start_column)?;
-        write_u32(&mut file, record.range.end_line)?;
-        write_u32(&mut file, record.range.end_column)?;
-        write_string(&mut file, &record.file_hash)?;
-        write_string(&mut file, &record.producer)?;
-    }
-    Ok(())
-}
-
 fn read_occurrences(path: &Path) -> Result<Vec<PreciseOccurrenceRecord>> {
     let mut file =
         File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
@@ -558,23 +615,11 @@ fn read_magic(file: &mut File, expected: &[u8; 8]) -> Result<()> {
     Ok(())
 }
 
-fn write_string(file: &mut File, value: &str) -> Result<()> {
-    let bytes = value.as_bytes();
-    write_u32(file, bytes.len() as u32)?;
-    file.write_all(bytes)?;
-    Ok(())
-}
-
 fn read_string(file: &mut File) -> Result<String> {
     let len = read_u32(file)? as usize;
     let mut bytes = vec![0u8; len];
     file.read_exact(&mut bytes)?;
     Ok(String::from_utf8(bytes)?)
-}
-
-fn write_u32(file: &mut File, value: u32) -> Result<()> {
-    file.write_all(&value.to_le_bytes())?;
-    Ok(())
 }
 
 fn read_u32(file: &mut File) -> Result<u32> {

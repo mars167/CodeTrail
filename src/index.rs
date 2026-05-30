@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs::{self, File},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -14,7 +15,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    graph, snapshot_store, text_index,
+    graph, lancedb_store, snapshot_store, text_index,
     workspace::{read_staged_blob, staged_tree, tracked_files, FileRecord, ScanOptions, Workspace},
 };
 
@@ -101,25 +102,13 @@ pub fn build(
         created_at_epoch_ms: now_ms(),
     };
 
-    write_manifest(&snapshot_tmp.join("manifest.json"), &manifest)?;
-
-    if staged {
-        snapshot_store::write_files_parquet(&snapshot_tmp.join("files.parquet"), &records)?;
-    } else {
-        snapshot_store::build_snapshot(&snapshot_tmp, &records, &workspace.root)?;
-    }
-    text_index::write(&text_tmp, workspace, &records, !staged)?;
+    write_to_lancedb(workspace, &manifest, &records, staged)?;
 
     // Build call graph (best-effort; non-fatal on failure)
     if !staged {
         let _ =
             crate::graph::GraphStore::open(workspace).and_then(|mut store| store.build(workspace));
     }
-
-    remove_dir_if_exists(&snapshot_target)?;
-    remove_dir_if_exists(&text_target)?;
-    fs::rename(&snapshot_tmp, &snapshot_target)?;
-    fs::rename(&text_tmp, &text_target)?;
 
     let active_dir = active_dir(workspace, staged);
     fs::create_dir_all(&active_dir)?;
@@ -137,14 +126,43 @@ pub fn build(
             "changedOnly": changed,
             "force": force,
             "path": root,
-            "snapshotPath": snapshot_target,
-            "textPath": text_target
+            "storageBackend": "lancedb"
         }
     }))
 }
 
 pub fn status(workspace: &Workspace) -> Result<Value> {
     let root = storage_root(workspace);
+
+    if lancedb_store::is_available(&workspace.root) {
+        if let Ok(store) = lancedb_store::LanceDbStore::open_or_create(&workspace.root) {
+            if let Ok(Some(snapshot)) = store.read_snapshot(&workspace.snapshot_id) {
+                if let Ok(records) = store.read_file_records(&workspace.snapshot_id) {
+                    let freshness = freshness(workspace, &records);
+                    let fresh = freshness
+                        .get("staleFiles")
+                        .and_then(Value::as_array)
+                        .map(|items| items.is_empty())
+                        .unwrap_or(false)
+                        && freshness
+                            .get("missingFiles")
+                            .and_then(Value::as_array)
+                            .map(|items| items.is_empty())
+                            .unwrap_or(false);
+                    return Ok(json!({
+                        "exists": true,
+                        "fresh": fresh,
+                        "path": root,
+                        "snapshotPath": lancedb_store::lancedb_root(&workspace.root),
+                        "textPath": text_dir(workspace, &snapshot.snapshot_key),
+                        "manifest": snapshot_row_to_manifest(&snapshot),
+                        "freshness": freshness
+                    }));
+                }
+            }
+        }
+    }
+
     let manifest_path = active_manifest_path(workspace, false);
     if !manifest_path.exists() {
         let remote = remote_status(workspace)?;
@@ -213,7 +231,8 @@ pub fn fresh_text_records(
         return remote_fallback_text_records(workspace, Some((pattern, mode)));
     };
 
-    let candidate_ids = text_index::candidate_ids(&text_path.join("grams.idx"), pattern, mode)?;
+    let candidate_ids =
+        text_index::candidate_ids(&text_path.join("grams.idx"), pattern, mode).unwrap_or(None);
     let filtered = match &candidate_ids {
         Some(ids) => records
             .into_iter()
@@ -507,17 +526,43 @@ pub(crate) fn snapshot_key(snapshot_id: &str) -> String {
         .collect()
 }
 
-fn remove_dir_if_exists(path: &Path) -> Result<()> {
-    if path.exists() {
-        fs::remove_dir_all(path)?;
-    }
-    Ok(())
-}
-
 fn fresh_text_snapshot(
     workspace: &Workspace,
     opts: &ScanOptions,
 ) -> Result<Option<(Manifest, Vec<FileRecord>, PathBuf)>> {
+    if lancedb_store::is_available(&workspace.root) {
+        if let Ok(store) = lancedb_store::LanceDbStore::open_or_create(&workspace.root) {
+            if let Ok(Some(snapshot)) = store.read_snapshot(&workspace.snapshot_id) {
+                if snapshot.source == "working_tree" {
+                    if let Ok(scan_opts) =
+                        serde_json::from_str::<IndexScanOptions>(&snapshot.scan_options_json)
+                    {
+                        if scan_opts == IndexScanOptions::from(opts) {
+                            if let Ok(records) = store.read_file_records(&workspace.snapshot_id) {
+                                let freshness = freshness(workspace, &records);
+                                let fresh = freshness
+                                    .get("staleFiles")
+                                    .and_then(Value::as_array)
+                                    .map(|items| items.is_empty())
+                                    .unwrap_or(false)
+                                    && freshness
+                                        .get("missingFiles")
+                                        .and_then(Value::as_array)
+                                        .map(|items| items.is_empty())
+                                        .unwrap_or(false);
+                                if fresh {
+                                    let manifest = snapshot_row_to_manifest(&snapshot);
+                                    let text_path = text_dir(workspace, &snapshot.snapshot_key);
+                                    return Ok(Some((manifest, records, text_path)));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let manifest_path = active_manifest_path(workspace, false);
     if !manifest_path.exists() {
         return Ok(None);
@@ -593,18 +638,89 @@ fn staged_records(workspace: &Workspace, blobs_dir: Option<&Path>) -> Result<Vec
     Ok(records)
 }
 
-fn write_manifest(path: &Path, manifest: &Manifest) -> Result<()> {
-    let mut file = File::create(path)?;
-    serde_json::to_writer_pretty(&mut file, manifest)?;
-    writeln!(file)?;
-    Ok(())
-}
-
 fn read_manifest(path: &Path) -> Result<Manifest> {
     let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     Ok(serde_json::from_reader(file)?)
 }
 
+#[allow(non_snake_case)]
+fn freshness(workspace: &Workspace, records: &[FileRecord]) -> Value {
+    let mut fresh = Vec::new();
+    let mut staleFiles = Vec::new();
+    let mut missingFiles = Vec::new();
+    for record in records {
+        let path = workspace.abs_path(&record.path);
+        if !path.exists() {
+            missingFiles.push(json!({ "path": record.path, "reason": "missing" }));
+            continue;
+        }
+        // metadata fast path: if mtime and size match, skip hash
+        match fs::metadata(&path) {
+            Ok(meta) => {
+                let current_mtime = crate::workspace::mtime_ms(&meta);
+                let current_size = meta.len();
+                if current_mtime == record.mtime_ms && current_size == record.size {
+                    fresh.push(record.path.clone());
+                    continue;
+                }
+                // metadata changed, verify with hash
+                match fs::read(&path) {
+                    Ok(content) => {
+                        let hash = format!("blake3:{}", blake3::hash(&content).to_hex());
+                        if hash == record.hash {
+                            fresh.push(record.path.clone());
+                        } else {
+                            staleFiles.push(json!({
+                                "path": record.path,
+                                "reason": "file_hash_mismatch",
+                                "expected": record.hash,
+                                "actual": hash
+                            }));
+                        }
+                    }
+                    Err(error) => staleFiles.push(json!({
+                        "path": record.path,
+                        "reason": "read_error",
+                        "message": error.to_string()
+                    })),
+                }
+            }
+            Err(error) => staleFiles.push(json!({
+                "path": record.path,
+                "reason": "read_error",
+                "message": error.to_string()
+            })),
+        }
+    }
+    json!({
+        "freshCount": fresh.len(),
+        "staleFiles": staleFiles,
+        "missingFiles": missingFiles
+    })
+}
+
+fn snapshot_row_to_manifest(s: &lancedb_store::SnapShotRow) -> Manifest {
+    let scan_options: IndexScanOptions =
+        serde_json::from_str(&s.scan_options_json).unwrap_or_else(|_| IndexScanOptions {
+            include: Vec::new(),
+            exclude: Vec::new(),
+            hidden: false,
+            no_ignore: false,
+        });
+    Manifest {
+        schema_version: s.schema_version,
+        tool_version: s.tool_version.clone(),
+        repo_root: s.repo_root.clone(),
+        snapshot_id: s.snapshot_id.clone(),
+        snapshot_key: s.snapshot_key.clone(),
+        source: s.source.clone(),
+        head: s.head.clone(),
+        dirty: s.dirty,
+        file_count: s.file_count as usize,
+        scan_options,
+        created_at_epoch_ms: s.created_at_epoch_ms as u128,
+    }
+}
 fn now_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1010,6 +1126,67 @@ fn remote_status(workspace: &Workspace) -> Result<Value> {
         }));
     }
     Ok(Value::Array(snapshots))
+}
+
+fn write_to_lancedb(
+    workspace: &Workspace,
+    manifest: &Manifest,
+    records: &[FileRecord],
+    staged: bool,
+) -> Result<()> {
+    let lancedb = lancedb_store::LanceDbStore::open_or_create(&workspace.root)
+        .with_context(|| "failed to open LanceDB store")?;
+
+    lancedb
+        .ensure_tables()
+        .with_context(|| "failed to ensure LanceDB tables")?;
+
+    let scan_options_json = serde_json::to_string(&manifest.scan_options).unwrap_or_default();
+
+    lancedb
+        .write_snapshot(
+            &manifest.snapshot_id,
+            &manifest.snapshot_key,
+            manifest.schema_version,
+            &manifest.tool_version,
+            &manifest.repo_root,
+            manifest.head.as_deref(),
+            manifest.dirty,
+            &manifest.source,
+            &scan_options_json,
+            manifest.file_count as u32,
+            manifest.created_at_epoch_ms as u64,
+        )
+        .with_context(|| "failed to write snapshot to LanceDB")?;
+
+    lancedb
+        .write_file_catalog(&manifest.snapshot_id, records)
+        .with_context(|| "failed to write file catalog to LanceDB")?;
+
+    lancedb
+        .write_file_proofs(&manifest.snapshot_id, records)
+        .with_context(|| "failed to write file proofs to LanceDB")?;
+
+    if !staged {
+        let mut gram_index: BTreeMap<[u8; 3], Vec<u32>> = BTreeMap::new();
+        for (doc_id, record) in records.iter().enumerate() {
+            let bytes = match fs::read(workspace.abs_path(&record.path)) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            for window in bytes.windows(3) {
+                let gram = [window[0], window[1], window[2]];
+                gram_index.entry(gram).or_default().push(doc_id as u32);
+            }
+        }
+        if !gram_index.is_empty() {
+            lancedb
+                .write_gram_postings(&manifest.snapshot_id, &gram_index)
+                .with_context(|| "failed to write gram postings to LanceDB")?;
+        }
+    }
+
+    Ok(())
 }
 #[cfg(unix)]
 fn make_executable(path: &Path) -> Result<()> {
