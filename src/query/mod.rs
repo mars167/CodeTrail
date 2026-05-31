@@ -321,7 +321,13 @@ impl QueryService {
             opts.context,
             true,
         )?;
-        qo.results = search::annotate_identifier_refs(qo.results, identifier);
+        let definition_ranges =
+            syntax::definition_ranges(&self.workspace, &scan, identifier).unwrap_or_default();
+        qo.results = search::annotate_identifier_refs_with_definitions(
+            qo.results,
+            identifier,
+            &definition_ranges,
+        );
         let response = output::response_with_index(
             "refs",
             "refs",

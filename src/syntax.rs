@@ -8,7 +8,7 @@ use tree_sitter::{Language, Node, Parser};
 
 use crate::{
     index,
-    search::line_range_for_node,
+    search::{line_range_for_node, symbol_range, SymbolRange},
     workspace::{language_for_path, FileRecord, ScanOptions, Workspace},
 };
 
@@ -70,6 +70,23 @@ pub fn defs(
         }
     }
     Ok((Value::Array(results), warnings))
+}
+
+pub(crate) fn definition_ranges(
+    workspace: &Workspace,
+    opts: &ScanOptions,
+    identifier: &str,
+) -> Result<Vec<SymbolRange>> {
+    let mut scan_opts = opts.clone();
+    scan_opts.limit = 0;
+    let mut warnings = Vec::new();
+    let ranges =
+        collect_symbols_prefiltered(workspace, &scan_opts, &mut warnings, Some(identifier))?
+            .into_iter()
+            .filter(|symbol| symbol.name == identifier)
+            .filter_map(|symbol| symbol_range(&symbol.path, &symbol.range))
+            .collect();
+    Ok(ranges)
 }
 
 pub fn calls(

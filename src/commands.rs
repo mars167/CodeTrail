@@ -208,8 +208,13 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 cli.context,
                 true,
             )?;
-            query_output.results =
-                search::annotate_identifier_refs(query_output.results, identifier);
+            let definition_ranges =
+                syntax::definition_ranges(&workspace, &scan_opts, identifier).unwrap_or_default();
+            query_output.results = search::annotate_identifier_refs_with_definitions(
+                query_output.results,
+                identifier,
+                &definition_ranges,
+            );
             exit_code = output::no_match_exit(&query_output.results);
             page_response(output::response_with_index(
                 "refs",

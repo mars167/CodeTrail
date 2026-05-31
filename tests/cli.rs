@@ -29,6 +29,25 @@ fn init_git_repo(path: &std::path::Path) {
         .unwrap();
 }
 
+fn replay_read_result(result: &Value) -> Value {
+    let argv = result["readCommandArgv"]
+        .as_array()
+        .expect("readCommandArgv is present")
+        .iter()
+        .map(|arg| arg.as_str().expect("argv item is string").to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(argv.first().map(String::as_str), Some("code-search"));
+
+    let output = code_search()
+        .args(argv.iter().skip(1))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    serde_json::from_slice(&output).unwrap()
+}
+
 #[test]
 fn find_returns_reliable_source_fact() {
     let dir = tempdir().unwrap();
@@ -185,7 +204,7 @@ fn refs_text_fallback_uses_identifier_boundaries() {
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(
         dir.path().join("src/main.rs"),
-        "let user = User::new();\nlet profile = UserProfile::new();\n",
+        "struct User;\nfn main() {\n    let user = User;\n    let profile = UserProfile;\n}\n",
     )
     .unwrap();
 
@@ -205,9 +224,9 @@ fn refs_text_fallback_uses_identifier_boundaries() {
         .unwrap()
         .iter()
         .all(|result| result["matchText"] == "User"));
-    assert_eq!(json["results"].as_array().unwrap().len(), 1);
+    assert_eq!(json["results"].as_array().unwrap().len(), 2);
     assert_eq!(json["results"][0]["symbolName"], "User");
-    assert_eq!(json["results"][0]["role"], "reference");
+    assert_eq!(json["results"][0]["role"], "definition");
     assert_eq!(json["results"][0]["kind"], "unknown");
     assert_eq!(
         json["results"][0]["fallbackReason"],
@@ -217,6 +236,16 @@ fn refs_text_fallback_uses_identifier_boundaries() {
         .as_str()
         .unwrap()
         .contains("src/main.rs:1"));
+    assert_eq!(json["results"][1]["role"], "reference_candidate");
+    assert!(json["results"][1]["readCommand"]
+        .as_str()
+        .unwrap()
+        .contains("src/main.rs:3"));
+    let read_json = replay_read_result(&json["results"][1]);
+    assert!(read_json["results"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("let user = User;"));
 }
 
 #[test]
@@ -2688,6 +2717,11 @@ fn imported_scip_index_drives_precise_defs_refs_and_symbols() {
         .as_str()
         .unwrap()
         .contains("src/lib.rs:1"));
+    let defs_read_json = replay_read_result(&defs_json["results"][0]);
+    assert!(defs_read_json["results"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("fn needle()"));
 
     let refs = code_search()
         .arg("--path")
@@ -2708,6 +2742,11 @@ fn imported_scip_index_drives_precise_defs_refs_and_symbols() {
         .as_str()
         .unwrap()
         .contains("src/lib.rs:2"));
+    let refs_read_json = replay_read_result(&refs_json["results"][0]);
+    assert!(refs_read_json["results"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("needle();"));
 
     let symbols = code_search()
         .arg("--path")
@@ -2790,12 +2829,27 @@ fn defs_falls_back_to_parser_for_java_classes() {
 
     assert_eq!(defs_json["reliability"]["level"], "parser_fact");
     assert_eq!(defs_json["results"][0]["name"], "SampleService");
+    assert_eq!(defs_json["results"][0]["symbolName"], "SampleService");
     assert_eq!(defs_json["results"][0]["kind"], "class");
     assert_eq!(defs_json["results"][0]["language"], "java");
+    assert_eq!(defs_json["results"][0]["role"], "definition");
+    assert_eq!(
+        defs_json["results"][0]["fallbackReason"],
+        "precise_scip_index_unavailable"
+    );
     assert_eq!(
         defs_json["results"][0]["path"],
         "src/main/java/example/SampleService.java"
     );
+    assert!(defs_json["results"][0]["readCommand"]
+        .as_str()
+        .unwrap()
+        .contains("src/main/java/example/SampleService.java:3"));
+    let read_json = replay_read_result(&defs_json["results"][0]);
+    assert!(read_json["results"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("public class SampleService"));
     assert!(defs_json["warnings"]
         .as_array()
         .unwrap()
