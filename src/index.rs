@@ -231,7 +231,13 @@ pub fn fresh_file_records(
 
     Ok(Some((
         records,
-        text_index_meta(&manifest, text_path, None, None),
+        text_index_meta(
+            &manifest,
+            text_path,
+            None,
+            None,
+            Some(workspace.scan_summary(opts)?),
+        ),
     )))
 }
 
@@ -266,7 +272,13 @@ pub fn fresh_text_records(
 
     Ok(Some((
         filtered,
-        text_index_meta(&manifest, text_path, prefilter, candidate_count),
+        text_index_meta(
+            &manifest,
+            text_path,
+            prefilter,
+            candidate_count,
+            Some(workspace.scan_summary(opts)?),
+        ),
     )))
 }
 /// Fall back to remote snapshots when local text index is not fresh or missing.
@@ -626,6 +638,7 @@ fn text_index_meta(
     text_path: PathBuf,
     prefilter: Option<&str>,
     candidate_count: Option<usize>,
+    scan_summary: Option<Value>,
 ) -> Value {
     let mut value = json!({
         "used": true,
@@ -643,6 +656,9 @@ fn text_index_meta(
     }
     if let Some(candidate_count) = candidate_count {
         value["candidateCount"] = json!(candidate_count);
+    }
+    if let Some(scan_summary) = scan_summary {
+        value["scanSummary"] = scan_summary;
     }
     value
 }
