@@ -573,10 +573,12 @@ fn record_to_json(record: PreciseOccurrenceRecord) -> Value {
     json!({
         "path": record.path,
         "name": record.name,
+        "symbolName": record.name,
         "kind": record.kind,
         "symbol": record.symbol,
         "role": record.role,
         "language": record.language,
+        "container": Value::Null,
         "range": {
             "start": { "line": record.range.start_line, "column": record.range.start_column },
             "end": { "line": record.range.end_line, "column": record.range.end_column }

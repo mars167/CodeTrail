@@ -313,7 +313,7 @@ impl QueryService {
         }
 
         // 2. Fall back to identifier-boundary text search.
-        let qo = search::find(
+        let mut qo = search::find(
             &self.workspace,
             &scan,
             identifier,
@@ -321,6 +321,7 @@ impl QueryService {
             opts.context,
             true,
         )?;
+        qo.results = search::annotate_identifier_refs(qo.results, identifier);
         let response = output::response_with_index(
             "refs",
             "refs",

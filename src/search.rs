@@ -328,6 +328,44 @@ pub fn find(
     )
 }
 
+pub fn annotate_identifier_refs(results: Value, identifier: &str) -> Value {
+    let Value::Array(values) = results else {
+        return results;
+    };
+    Value::Array(
+        values
+            .into_iter()
+            .map(|value| annotate_identifier_ref(value, identifier))
+            .collect(),
+    )
+}
+
+fn annotate_identifier_ref(value: Value, identifier: &str) -> Value {
+    let Value::Object(mut object) = value else {
+        return value;
+    };
+    object
+        .entry("name".to_string())
+        .or_insert_with(|| Value::String(identifier.to_string()));
+    object
+        .entry("symbolName".to_string())
+        .or_insert_with(|| Value::String(identifier.to_string()));
+    object
+        .entry("kind".to_string())
+        .or_insert_with(|| Value::String("unknown".to_string()));
+    object
+        .entry("language".to_string())
+        .or_insert_with(|| Value::String("text".to_string()));
+    object.entry("container".to_string()).or_insert(Value::Null);
+    object
+        .entry("role".to_string())
+        .or_insert_with(|| Value::String("reference".to_string()));
+    object
+        .entry("fallbackReason".to_string())
+        .or_insert_with(|| Value::String("precise_scip_index_unavailable".to_string()));
+    Value::Object(object)
+}
+
 pub fn changed(workspace: &Workspace) -> Result<Value> {
     Ok(serde_json::to_value(&workspace.changed)?)
 }

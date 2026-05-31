@@ -389,13 +389,17 @@ fn symbol_to_json(symbol: Symbol) -> Value {
     json!({
         "path": symbol.path,
         "name": symbol.name,
+        "symbolName": symbol.name,
         "kind": symbol.kind,
         "language": symbol.language,
+        "container": Value::Null,
+        "role": "definition",
         "range": symbol.range,
         "bodyRange": symbol.body_range,
         "producer": symbol.producer,
         "reliability": "parser_fact",
         "exact": false,
+        "fallbackReason": "precise_scip_index_unavailable",
         "warning": symbol.warning
     })
 }

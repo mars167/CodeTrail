@@ -200,7 +200,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                     &workspace.root,
                 );
             }
-            let query_output = search::find(
+            let mut query_output = search::find(
                 &workspace,
                 &scan_opts,
                 identifier,
@@ -208,6 +208,8 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 cli.context,
                 true,
             )?;
+            query_output.results =
+                search::annotate_identifier_refs(query_output.results, identifier);
             exit_code = output::no_match_exit(&query_output.results);
             page_response(output::response_with_index(
                 "refs",

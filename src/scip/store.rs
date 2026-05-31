@@ -294,10 +294,12 @@ pub fn occurrence_to_json(result: &OccurrenceResult) -> Value {
     json!({
         "path": result.path,
         "name": result.name,
+        "symbolName": result.name,
         "kind": result.kind,
         "symbol": result.symbol,
         "role": result.role,
         "language": result.language,
+        "container": Value::Null,
         "range": {
             "start": { "line": result.start_line, "column": result.start_column },
             "end": { "line": result.end_line, "column": result.end_column }
@@ -313,10 +315,12 @@ pub fn occurrence_to_json(result: &OccurrenceResult) -> Value {
 pub fn symbol_to_json(result: &SymbolResult) -> Value {
     json!({
         "name": result.name,
+        "symbolName": result.name,
         "kind": result.kind,
         "language": result.language,
         "path": result.path,
         "role": result.role,
+        "container": Value::Null,
         "range": {
             "start": { "line": result.start_line, "column": result.start_column },
             "end": { "line": result.end_line, "column": result.end_column }
