@@ -106,6 +106,216 @@ fn warnings_are_structured_with_stable_codes() {
 }
 
 #[test]
+fn l0_literal_and_regex_modes_are_predictable() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/main.rs"), "literal a.b\nregex acb\n").unwrap();
+
+    let find_output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["find", "a.b"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let find_json: Value = serde_json::from_slice(&find_output).unwrap();
+    assert_eq!(find_json["query"]["mode"], "literal");
+    assert_eq!(find_json["results"].as_array().unwrap().len(), 1);
+    assert_eq!(find_json["results"][0]["matchText"], "a.b");
+
+    let grep_output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["grep", "a.b"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let grep_json: Value = serde_json::from_slice(&grep_output).unwrap();
+    let grep_matches: Vec<&str> = grep_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|result| result["matchText"].as_str())
+        .collect();
+    assert_eq!(grep_json["query"]["mode"], "regex");
+    assert!(grep_matches.contains(&"a.b"));
+    assert!(grep_matches.contains(&"acb"));
+
+    let literal_grep = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["grep", "a.b", "--mode", "literal"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let literal_json: Value = serde_json::from_slice(&literal_grep).unwrap();
+    assert_eq!(literal_json["query"]["mode"], "literal");
+    assert_eq!(literal_json["results"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn refs_text_fallback_uses_identifier_boundaries() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/main.rs"),
+        "let user = User::new();\nlet profile = UserProfile::new();\n",
+    )
+    .unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["refs", "User"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert!(json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|result| result["matchText"] == "User"));
+    assert_eq!(json["results"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn files_is_path_substring_while_glob_is_strict_glob() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(dir.path().join("src/*.rs"), "literal star path\n").unwrap();
+
+    let files_output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["files", "src/*.rs"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let files_json: Value = serde_json::from_slice(&files_output).unwrap();
+    let files_paths: Vec<&str> = files_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|result| result["path"].as_str())
+        .collect();
+    assert_eq!(files_json["query"]["mode"], "path_substring");
+    assert_eq!(files_paths, vec!["src/*.rs"]);
+
+    let glob_output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["glob", "src/*.rs"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let glob_json: Value = serde_json::from_slice(&glob_output).unwrap();
+    let glob_paths: Vec<&str> = glob_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|result| result["path"].as_str())
+        .collect();
+    assert_eq!(glob_json["query"]["mode"], "strict_glob");
+    assert!(glob_paths.contains(&"src/main.rs"));
+}
+
+#[test]
+fn list_and_tree_respect_hidden_no_ignore_and_filters() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::create_dir_all(dir.path().join("target/generated")).unwrap();
+    fs::create_dir_all(dir.path().join(".code-search")).unwrap();
+    fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(dir.path().join(".ignore"), "ignored.log\n").unwrap();
+    fs::write(dir.path().join(".hidden.rs"), "hidden\n").unwrap();
+    fs::write(dir.path().join("ignored.log"), "ignored\n").unwrap();
+    fs::write(dir.path().join("target/generated/out.rs"), "generated\n").unwrap();
+    fs::write(dir.path().join(".code-search/cache"), "internal\n").unwrap();
+
+    let default_list = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["list"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let default_json: Value = serde_json::from_slice(&default_list).unwrap();
+    let default_paths: Vec<&str> = default_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|result| result["path"].as_str())
+        .collect();
+    assert!(default_paths.contains(&"src"));
+    assert!(!default_paths.contains(&".hidden.rs"));
+    assert!(!default_paths.contains(&"ignored.log"));
+    assert!(!default_paths.contains(&"target"));
+    assert!(!default_paths.contains(&".code-search"));
+
+    let expanded_list = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--hidden")
+        .arg("--no-ignore")
+        .args(["list"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let expanded_json: Value = serde_json::from_slice(&expanded_list).unwrap();
+    let expanded_paths: Vec<&str> = expanded_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|result| result["path"].as_str())
+        .collect();
+    assert!(expanded_paths.contains(&".hidden.rs"));
+    assert!(expanded_paths.contains(&"ignored.log"));
+    assert!(expanded_paths.contains(&"target"));
+    assert!(!expanded_paths.contains(&".code-search"));
+
+    let filtered_tree = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--include")
+        .arg("src")
+        .args(["tree"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let tree_json: Value = serde_json::from_slice(&filtered_tree).unwrap();
+    let tree_paths: Vec<&str> = tree_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|result| result["path"].as_str())
+        .collect();
+    assert!(tree_paths.contains(&"src"));
+    assert!(tree_paths.contains(&"src/main.rs"));
+    assert!(!tree_paths.contains(&"target"));
+}
+
+#[test]
 fn json_output_includes_read_suggestions_and_next_actions() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
@@ -1377,6 +1587,81 @@ fn native_scip_import_drives_precise_defs_refs_and_symbols() {
 }
 
 #[test]
+fn native_scip_precise_results_respect_hidden_and_no_ignore() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".hidden")).unwrap();
+    fs::create_dir_all(dir.path().join("target/generated")).unwrap();
+    let source = "fn needle() {}\nfn main() { needle(); }\n";
+    fs::write(dir.path().join(".hidden/lib.rs"), source).unwrap();
+    fs::write(dir.path().join("target/generated/lib.rs"), source).unwrap();
+
+    let scip_path = dir.path().join("index.scip");
+    write_scip_index_for_paths(&scip_path, &[".hidden/lib.rs", "target/generated/lib.rs"]);
+
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "import-scip"])
+        .arg(&scip_path)
+        .assert()
+        .success();
+
+    let default_output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["refs", "needle"])
+        .assert()
+        .code(2)
+        .get_output()
+        .stdout
+        .clone();
+    let default_json: Value = serde_json::from_slice(&default_output).unwrap();
+    assert_eq!(default_json["index"]["source"], "scip_native");
+    assert!(default_json["results"].as_array().unwrap().is_empty());
+
+    let hidden_output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--hidden")
+        .args(["refs", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let hidden_json: Value = serde_json::from_slice(&hidden_output).unwrap();
+    let hidden_paths: Vec<&str> = hidden_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|result| result["path"].as_str())
+        .collect();
+    assert_eq!(hidden_paths, vec![".hidden/lib.rs"]);
+
+    let expanded_output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--hidden")
+        .arg("--no-ignore")
+        .args(["refs", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let expanded_json: Value = serde_json::from_slice(&expanded_output).unwrap();
+    let expanded_paths: Vec<&str> = expanded_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|result| result["path"].as_str())
+        .collect();
+    assert!(expanded_paths.contains(&".hidden/lib.rs"));
+    assert!(expanded_paths.contains(&"target/generated/lib.rs"));
+    assert_eq!(expanded_paths.len(), 2);
+}
+
+#[test]
 fn native_scip_stale_detection_simulates_staleness_by_db_removal() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
@@ -1425,6 +1710,60 @@ fn native_scip_stale_detection_simulates_staleness_by_db_removal() {
     assert_eq!(defs_json["reliability"]["level"], "parser_fact");
     assert_eq!(defs_json["reliability"]["exact"], false);
     assert_eq!(defs_json["results"][0]["producer"], "tree_sitter_parser");
+}
+
+fn write_scip_index_for_paths(path: &std::path::Path, rel_paths: &[&str]) {
+    use code_search_cli::scip_proto::proto;
+    use prost::Message;
+
+    let documents = rel_paths
+        .iter()
+        .map(|rel_path| proto::Document {
+            language: "rust".to_string(),
+            relative_path: (*rel_path).to_string(),
+            occurrences: vec![
+                proto::Occurrence {
+                    range: vec![0, 3, 0, 9],
+                    symbol: "local 1".to_string(),
+                    symbol_roles: 1,
+                    ..Default::default()
+                },
+                proto::Occurrence {
+                    range: vec![1, 12, 1, 18],
+                    symbol: "local 1".to_string(),
+                    symbol_roles: 0,
+                    ..Default::default()
+                },
+            ],
+            symbols: vec![proto::SymbolInformation {
+                symbol: "local 1".to_string(),
+                kind: proto::symbol_information::Kind::Function as i32,
+                display_name: "needle".to_string(),
+                ..Default::default()
+            }],
+            position_encoding: proto::PositionEncoding::Utf8CodeUnitOffsetFromLineStart as i32,
+            ..Default::default()
+        })
+        .collect();
+
+    let index = proto::Index {
+        metadata: Some(proto::Metadata {
+            version: proto::ProtocolVersion::UnspecifiedProtocolVersion as i32,
+            tool_info: Some(proto::ToolInfo {
+                name: "test-indexer".to_string(),
+                version: "0.1.0".to_string(),
+                arguments: vec![],
+            }),
+            project_root: "file:///test".to_string(),
+            text_document_encoding: proto::TextEncoding::Utf8 as i32,
+        }),
+        documents,
+        ..Default::default()
+    };
+
+    let mut buf = Vec::new();
+    index.encode(&mut buf).unwrap();
+    fs::write(path, &buf).unwrap();
 }
 
 #[test]
