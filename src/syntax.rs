@@ -19,6 +19,7 @@ struct Symbol {
     name: String,
     kind: String,
     range: Value,
+    name_range: Value,
     body_range: Value,
     producer: String,
     warning: Option<String>,
@@ -84,7 +85,7 @@ pub(crate) fn definition_ranges(
         collect_symbols_prefiltered(workspace, &scan_opts, &mut warnings, Some(identifier))?
             .into_iter()
             .filter(|symbol| symbol.name == identifier)
-            .filter_map(|symbol| symbol_range(&symbol.path, &symbol.range))
+            .filter_map(|symbol| symbol_range(&symbol.path, &symbol.name_range))
             .collect();
     Ok(ranges)
 }
@@ -292,6 +293,7 @@ fn walk_symbols(node: Node, path: &str, language: &str, source: &[u8], symbols: 
                     name: name.to_string(),
                     kind: kind.to_string(),
                     range: point_range(node),
+                    name_range: point_range(name_node),
                     body_range: point_range(body_node),
                     producer: "tree_sitter_parser".to_string(),
                     warning: None,

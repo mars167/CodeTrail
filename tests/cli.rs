@@ -249,6 +249,37 @@ fn refs_text_fallback_uses_identifier_boundaries() {
 }
 
 #[test]
+fn refs_text_fallback_only_marks_definition_name_as_definition() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/main.rs"),
+        "fn needle() {\n    needle();\n}\nfn main() {\n    needle();\n}\n",
+    )
+    .unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["refs", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let results = json["results"].as_array().unwrap();
+
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0]["range"]["start"]["line"], 1);
+    assert_eq!(results[0]["role"], "definition");
+    assert_eq!(results[1]["range"]["start"]["line"], 2);
+    assert_eq!(results[1]["role"], "reference_candidate");
+    assert_eq!(results[2]["range"]["start"]["line"], 5);
+    assert_eq!(results[2]["role"], "reference_candidate");
+}
+
+#[test]
 fn find_no_match_returns_structured_next_actions() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
