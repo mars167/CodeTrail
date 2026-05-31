@@ -1,4 +1,8 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    io::{BufRead, BufReader, Read},
+    path::Path,
+};
 
 use anyhow::{anyhow, Context, Result};
 use globset::Glob;
@@ -9,6 +13,8 @@ use crate::{
     index,
     workspace::{language_for_path, FileCatalogRecord, FileRecord, ScanOptions, Workspace},
 };
+
+const MAX_FULL_READ_BYTES: usize = 64 * 1024;
 
 pub struct QueryOutput {
     pub results: Value,
@@ -106,37 +112,70 @@ pub fn tree(workspace: &Workspace, dir: Option<&str>, depth: Option<u8>) -> Resu
 }
 
 pub fn read(workspace: &Workspace, target: &str) -> Result<Value> {
-    let request = ReadTarget::parse(target);
+    let request = ReadTarget::parse(target)?;
     let path = workspace.abs_path(&request.path);
-    let content =
-        fs::read_to_string(&path).with_context(|| format!("failed to read {}", request.path))?;
-    let lines: Vec<&str> = content.lines().collect();
-    let total_lines = lines.len();
-    let start_line = request.start_line.unwrap_or(1).max(1);
-    let end_line = request.end_line.unwrap_or(total_lines).min(total_lines);
-    if start_line > end_line && total_lines > 0 {
-        return Err(anyhow!("invalid line range: {start_line}-{end_line}"));
+    let canonical_path =
+        fs::canonicalize(&path).with_context(|| format!("failed to read {}", request.path))?;
+    if !canonical_path.starts_with(&workspace.root) {
+        return Err(anyhow!("path escapes workspace root: {}", request.path));
     }
 
-    let selected = if total_lines == 0 {
-        String::new()
+    let metadata = fs::metadata(&canonical_path)
+        .with_context(|| format!("failed to read {}", request.path))?;
+    if !metadata.is_file() {
+        return Err(anyhow!("failed to read {}", request.path));
+    }
+
+    let file_facts = scan_file_facts(&canonical_path, &request.path)?;
+    if file_facts.binary {
+        return Ok(json!({
+            "path": request.path,
+            "range": {
+                "start": { "line": 1, "column": 1 },
+                "end": { "line": 1, "column": 1 }
+            },
+            "content": "",
+            "binary": true,
+            "truncated": false,
+            "fileHash": file_facts.hash,
+            "language": language_for_path(&path),
+            "producer": "snapshot_store_live_read",
+            "reliability": "source_fact",
+            "exact": false,
+            "warnings": ["binary_file_not_displayed"]
+        }));
+    }
+
+    let mut warnings = Vec::new();
+    let read_content = if request.has_explicit_range {
+        read_line_range(
+            &canonical_path,
+            &request.path,
+            request.start_line.unwrap_or(1),
+            request.end_line.unwrap_or(1),
+        )?
+    } else if metadata.len() as usize > MAX_FULL_READ_BYTES {
+        warnings.push("large_file_truncated");
+        read_prefix(&canonical_path, &request.path, MAX_FULL_READ_BYTES)?
     } else {
-        lines[(start_line - 1)..end_line].join("\n")
+        read_full_text(&canonical_path, &request.path)?
     };
-    let hash = format!("blake3:{}", blake3::hash(content.as_bytes()).to_hex());
 
     Ok(json!({
         "path": request.path,
         "range": {
-            "start": { "line": start_line, "column": 1 },
-            "end": { "line": end_line.max(start_line), "column": line_end_column(lines.get(end_line.saturating_sub(1)).copied().unwrap_or("")) }
+            "start": { "line": read_content.start_line, "column": 1 },
+            "end": { "line": read_content.end_line, "column": read_content.end_column }
         },
-        "content": selected,
-        "fileHash": hash,
+        "content": read_content.content,
+        "binary": false,
+        "truncated": read_content.truncated,
+        "fileHash": file_facts.hash,
         "language": language_for_path(&path),
         "producer": "snapshot_store_live_read",
         "reliability": "source_fact",
-        "exact": true
+        "exact": !read_content.truncated,
+        "warnings": warnings
     }))
 }
 
@@ -484,35 +523,188 @@ struct ReadTarget {
     path: String,
     start_line: Option<usize>,
     end_line: Option<usize>,
+    has_explicit_range: bool,
 }
 
 impl ReadTarget {
-    fn parse(target: &str) -> Self {
+    fn parse(target: &str) -> Result<Self> {
         let Some((path, range)) = target.rsplit_once(':') else {
-            return Self {
+            return Ok(Self {
                 path: target.to_string(),
                 start_line: None,
                 end_line: None,
-            };
+                has_explicit_range: false,
+            });
         };
         if path.is_empty() || !range.chars().all(|ch| ch.is_ascii_digit() || ch == '-') {
-            return Self {
+            return Ok(Self {
                 path: target.to_string(),
                 start_line: None,
                 end_line: None,
-            };
-        }
-        let (start_line, end_line) = range
-            .split_once('-')
-            .map(|(start, end)| (start.parse().ok(), end.parse().ok()))
-            .unwrap_or_else(|| {
-                let line = range.parse().ok();
-                (line, line)
+                has_explicit_range: false,
             });
-        Self {
+        }
+        let (start_line, end_line) = range.split_once('-').map_or_else(
+            || {
+                let line = parse_line(range)?;
+                Ok((line, line))
+            },
+            |(start, end)| {
+                let start = parse_line(start)?;
+                let end = parse_line(end)?;
+                if start > end {
+                    return Err(anyhow!("invalid line range: {start}-{end}"));
+                }
+                Ok((start, end))
+            },
+        )?;
+        Ok(Self {
             path: path.to_string(),
-            start_line,
-            end_line,
+            start_line: Some(start_line),
+            end_line: Some(end_line),
+            has_explicit_range: true,
+        })
+    }
+}
+
+fn parse_line(value: &str) -> Result<usize> {
+    let line = value
+        .parse::<usize>()
+        .map_err(|_| anyhow!("invalid line range: {value}"))?;
+    if line == 0 {
+        return Err(anyhow!("invalid line range: {value}"));
+    }
+    Ok(line)
+}
+
+struct FileFacts {
+    hash: String,
+    binary: bool,
+}
+
+struct ReadContent {
+    content: String,
+    start_line: usize,
+    end_line: usize,
+    end_column: usize,
+    truncated: bool,
+}
+
+fn scan_file_facts(path: &Path, display_path: &str) -> Result<FileFacts> {
+    let mut file =
+        fs::File::open(path).with_context(|| format!("failed to read {display_path}"))?;
+    let mut hasher = blake3::Hasher::new();
+    let mut binary = false;
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("failed to read {display_path}"))?;
+        if read == 0 {
+            break;
+        }
+        if buffer[..read].iter().any(|byte| *byte == 0) {
+            binary = true;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(FileFacts {
+        hash: format!("blake3:{}", hasher.finalize().to_hex()),
+        binary,
+    })
+}
+
+fn read_full_text(path: &Path, display_path: &str) -> Result<ReadContent> {
+    let content =
+        fs::read_to_string(path).with_context(|| format!("failed to read {display_path}"))?;
+    let end_line = line_count_for_content(&content);
+    let end_column = last_line_end_column(&content);
+    Ok(ReadContent {
+        content,
+        start_line: 1,
+        end_line,
+        end_column,
+        truncated: false,
+    })
+}
+
+fn read_prefix(path: &Path, display_path: &str, max_bytes: usize) -> Result<ReadContent> {
+    let mut file =
+        fs::File::open(path).with_context(|| format!("failed to read {display_path}"))?;
+    let mut bytes = Vec::with_capacity(max_bytes);
+    file.by_ref()
+        .take(max_bytes as u64)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("failed to read {display_path}"))?;
+    while std::str::from_utf8(&bytes).is_err() && !bytes.is_empty() {
+        bytes.pop();
+    }
+    let content =
+        String::from_utf8(bytes).with_context(|| format!("failed to read {display_path}"))?;
+    let end_line = line_count_for_content(&content);
+    let end_column = last_line_end_column(&content);
+    Ok(ReadContent {
+        content,
+        start_line: 1,
+        end_line,
+        end_column,
+        truncated: true,
+    })
+}
+
+fn read_line_range(
+    path: &Path,
+    display_path: &str,
+    start_line: usize,
+    requested_end_line: usize,
+) -> Result<ReadContent> {
+    let file = fs::File::open(path).with_context(|| format!("failed to read {display_path}"))?;
+    let reader = BufReader::new(file);
+    let mut selected = Vec::new();
+    let mut total_lines = 0;
+    for (idx, line) in reader.lines().enumerate() {
+        let line_no = idx + 1;
+        let line = line.with_context(|| format!("failed to read {display_path}"))?;
+        total_lines = line_no;
+        if line_no >= start_line && line_no <= requested_end_line {
+            selected.push(line);
         }
     }
+
+    if selected.is_empty() && start_line > total_lines && total_lines > 0 {
+        return Err(anyhow!(
+            "invalid line range: {start_line}-{requested_end_line}"
+        ));
+    }
+
+    let content = selected.join("\n");
+    let end_line = if selected.is_empty() {
+        start_line
+    } else {
+        start_line + selected.len() - 1
+    };
+    let end_column = selected
+        .last()
+        .map(|line| line_end_column(line))
+        .unwrap_or(1);
+    Ok(ReadContent {
+        content,
+        start_line,
+        end_line,
+        end_column,
+        truncated: false,
+    })
+}
+
+fn line_count_for_content(content: &str) -> usize {
+    let count = content.lines().count();
+    if count == 0 {
+        1
+    } else {
+        count
+    }
+}
+
+fn last_line_end_column(content: &str) -> usize {
+    content.lines().last().map(line_end_column).unwrap_or(1)
 }

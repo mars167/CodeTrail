@@ -163,14 +163,31 @@ impl QueryService {
     /// Read file contents (optionally with a line-range like `path:1-10`).
     pub fn read_file(&self, target: &str) -> Result<Value> {
         let result = search::read(&self.workspace, target)?;
+        let reliability = if result
+            .get("exact")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            output::source_fact()
+        } else {
+            output::source_fact_inexact()
+        };
+        let warnings = result
+            .get("warnings")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(ToString::to_string)
+            .collect();
         Ok(self.finalize(output::response(
             "read",
             "read",
             json!({ "target": target }),
             &self.workspace.snapshot_id,
-            output::source_fact(),
+            reliability,
             json!([result]),
-            Vec::new(),
+            warnings,
         )))
     }
 

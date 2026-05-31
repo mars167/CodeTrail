@@ -29,6 +29,16 @@ pub fn source_fact() -> Reliability {
     }
 }
 
+pub fn source_fact_inexact() -> Reliability {
+    Reliability {
+        level: "source_fact",
+        source: "text_path_git_filesystem",
+        exact: false,
+        llm_instruction:
+            "这些结果来自源码文件，但内容被省略或截断。需要使用更小范围的 code-search read 验证。",
+    }
+}
+
 pub fn parser_fact() -> Reliability {
     Reliability {
         level: "parser_fact",
@@ -370,6 +380,11 @@ fn is_readable_path_result(object: &serde_json::Map<String, Value>) -> bool {
     {
         return false;
     }
+    if object.get("binary").and_then(Value::as_bool) == Some(true)
+        || object.get("truncated").and_then(Value::as_bool) == Some(true)
+    {
+        return false;
+    }
     object.get("kind").and_then(Value::as_str) != Some("directory")
 }
 
@@ -497,6 +512,18 @@ fn structured_warnings(warnings: Vec<String>) -> Value {
 fn stable_code(message: &str) -> String {
     if message.starts_with("failed to read ") {
         return "read_failed".to_string();
+    }
+    if message.starts_with("invalid line range: ") {
+        return "invalid_line_range".to_string();
+    }
+    if message.starts_with("path escapes workspace root: ") {
+        return "path_escapes_workspace_root".to_string();
+    }
+    if message == "binary_file_not_displayed" {
+        return "binary_file_not_displayed".to_string();
+    }
+    if message == "large_file_truncated" {
+        return "large_file_truncated".to_string();
     }
     if message.starts_with("failed to resolve path ") {
         return "workspace_path_resolve_failed".to_string();
