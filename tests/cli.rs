@@ -462,6 +462,76 @@ fn defs_falls_back_to_parser_after_plain_index_build_without_scip() {
 }
 
 #[test]
+fn defs_falls_back_to_parser_for_java_classes() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/example")).unwrap();
+    fs::write(
+        dir.path().join("src/main/java/example/SampleService.java"),
+        "package example;\n\npublic class SampleService {\n    public void run() {}\n}\n",
+    )
+    .unwrap();
+
+    let defs = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "SampleService"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let defs_json: Value = serde_json::from_slice(&defs).unwrap();
+
+    assert_eq!(defs_json["reliability"]["level"], "parser_fact");
+    assert_eq!(defs_json["results"][0]["name"], "SampleService");
+    assert_eq!(defs_json["results"][0]["kind"], "class");
+    assert_eq!(defs_json["results"][0]["language"], "java");
+    assert_eq!(
+        defs_json["results"][0]["path"],
+        "src/main/java/example/SampleService.java"
+    );
+}
+
+#[test]
+fn parser_fallback_supports_java_methods_and_callers() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/example")).unwrap();
+    fs::write(
+        dir.path().join("src/main/java/example/SampleService.java"),
+        "package example;\n\npublic class SampleService {\n    public void run() {}\n\n    public void start() {\n        run();\n    }\n}\n",
+    )
+    .unwrap();
+
+    let defs = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "run"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let defs_json: Value = serde_json::from_slice(&defs).unwrap();
+    assert_eq!(defs_json["results"][0]["name"], "run");
+    assert_eq!(defs_json["results"][0]["kind"], "function");
+    assert_eq!(defs_json["results"][0]["language"], "java");
+
+    let callers = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["callers", "run"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let callers_json: Value = serde_json::from_slice(&callers).unwrap();
+    assert_eq!(callers_json["results"][0]["target"], "run");
+    assert_eq!(callers_json["results"][0]["enclosingSymbol"], "start");
+    assert_eq!(callers_json["results"][0]["language"], "java");
+}
+
+#[test]
 fn calls_and_callers_do_not_claim_graph_store_before_kuzu_backend_exists() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();

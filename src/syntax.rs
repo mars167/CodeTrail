@@ -202,6 +202,7 @@ fn parse_symbols_in_file(
     let Some(language) = parser_language(&path) else {
         return Ok((Vec::new(), Vec::new()));
     };
+    let language_name = language_for_path(&path);
     let content = match fs::read_to_string(&path) {
         Ok(content) => content,
         Err(_) => return Ok((Vec::new(), Vec::new())),
@@ -219,7 +220,7 @@ fn parse_symbols_in_file(
     walk_symbols(
         tree.root_node(),
         &file.path,
-        &file.language,
+        language_name,
         content.as_bytes(),
         &mut symbols,
     );
@@ -234,6 +235,7 @@ fn parse_calls_in_file(
     let Some(language) = parser_language(&path) else {
         return Ok((Vec::new(), Vec::new()));
     };
+    let language_name = language_for_path(&path);
     let content = match fs::read_to_string(&path) {
         Ok(content) => content,
         Err(_) => return Ok((Vec::new(), Vec::new())),
@@ -251,7 +253,7 @@ fn parse_calls_in_file(
     walk_calls(
         tree.root_node(),
         &file.path,
-        &file.language,
+        language_name,
         &file.hash,
         content.as_bytes(),
         &mut calls,
@@ -298,6 +300,7 @@ fn walk_calls(
     if is_call_node(node.kind()) {
         if let Some(target_node) = node
             .child_by_field_name("function")
+            .or_else(|| node.child_by_field_name("name"))
             .or_else(|| first_named_child(node))
         {
             if let Ok(target) = target_node.utf8_text(source) {
@@ -324,6 +327,7 @@ fn parser_language(path: &Path) -> Option<Language> {
     match language_for_path(path) {
         "rust" => Some(tree_sitter_rust::LANGUAGE.into()),
         "python" => Some(tree_sitter_python::LANGUAGE.into()),
+        "java" => Some(tree_sitter_java::LANGUAGE.into()),
         "typescript" => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
         "javascript" => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
         _ => None,
@@ -336,10 +340,15 @@ fn symbol_kind(kind: &str) -> Option<&'static str> {
             Some("function")
         }
         "struct_item" => Some("struct"),
-        "enum_item" => Some("enum"),
+        "enum_item" | "enum_declaration" => Some("enum"),
         "trait_item" => Some("trait"),
         "impl_item" => Some("impl"),
         "mod_item" => Some("module"),
+        "method_declaration" => Some("function"),
+        "constructor_declaration" | "compact_constructor_declaration" => Some("constructor"),
+        "interface_declaration" => Some("interface"),
+        "record_declaration" => Some("record"),
+        "annotation_type_declaration" => Some("annotation"),
         "class_definition" | "class_declaration" => Some("class"),
         "lexical_declaration" => Some("variable"),
         _ => None,
@@ -347,7 +356,7 @@ fn symbol_kind(kind: &str) -> Option<&'static str> {
 }
 
 fn is_call_node(kind: &str) -> bool {
-    matches!(kind, "call_expression" | "call")
+    matches!(kind, "call_expression" | "call" | "method_invocation")
 }
 
 fn first_named_child(node: Node) -> Option<Node> {
@@ -418,4 +427,40 @@ pub(crate) fn last_identifier(target: &str) -> &str {
         .rsplit(|ch: char| !(ch == '_' || ch.is_ascii_alphanumeric()))
         .find(|part| !part.is_empty())
         .unwrap_or(target)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn parser_symbols_use_extension_language_even_when_index_record_is_stale() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src/main/java/example")).unwrap();
+        fs::write(
+            dir.path().join("src/main/java/example/Sample.java"),
+            "package example;\n\npublic class Sample {}\n",
+        )
+        .unwrap();
+        let workspace = Workspace::discover(dir.path()).unwrap();
+        let file = FileRecord {
+            path: "src/main/java/example/Sample.java".to_string(),
+            language: "text".to_string(),
+            size: 39,
+            mtime_ms: 0,
+            mode: 0,
+            hash: "blake3:test".to_string(),
+        };
+
+        let (symbols, warnings) = parse_symbols_in_file(&workspace, &file).unwrap();
+
+        assert!(warnings.is_empty());
+        assert!(symbols
+            .iter()
+            .any(|symbol| symbol.name == "Sample" && symbol.language == "java"));
+    }
 }

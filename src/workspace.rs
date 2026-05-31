@@ -273,6 +273,7 @@ pub fn language_for_path(path: &Path) -> &'static str {
     match path.extension().and_then(|ext| ext.to_str()).unwrap_or("") {
         "rs" => "rust",
         "py" => "python",
+        "java" => "java",
         "ts" | "tsx" => "typescript",
         "js" | "jsx" | "mjs" | "cjs" => "javascript",
         "md" | "markdown" => "markdown",
