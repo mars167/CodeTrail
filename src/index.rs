@@ -1184,6 +1184,10 @@ fn write_to_lancedb(
     let scan_options_json = serde_json::to_string(&manifest.scan_options).unwrap_or_default();
 
     lancedb
+        .delete_snapshot_rows(&manifest.snapshot_id)
+        .with_context(|| "failed to replace old LanceDB snapshot rows")?;
+
+    lancedb
         .write_snapshot(
             &manifest.snapshot_id,
             &manifest.snapshot_key,

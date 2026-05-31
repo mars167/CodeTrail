@@ -152,6 +152,17 @@ impl LanceDbStore {
         Ok(())
     }
 
+    pub fn delete_snapshot_rows(&self, snapshot_id: &str) -> Result<()> {
+        let filter = format!("snapshot_id = '{}'", escape_filter(snapshot_id));
+        for table_name in ["snapshots", "file_catalog", "file_proofs", "gram_postings"] {
+            let table = block_on(self.db.open_table(table_name).execute())
+                .with_context(|| format!("failed to open {table_name} table"))?;
+            block_on(table.delete(&filter))
+                .with_context(|| format!("failed to delete old {table_name} rows"))?;
+        }
+        Ok(())
+    }
+
     // ── Write helpers ──
 
     pub fn write_snapshot(
@@ -741,27 +752,7 @@ impl LanceDbStore {
             }
         }
         if !wanted.iter().all(|gram| postings.contains_key(gram)) {
-            let filter = format!("snapshot_id = '{}'", escape_filter(snapshot_id));
-            let mut stream = block_on(table.query().only_if(&filter).limit(READ_LIMIT).execute())
-                .with_context(|| "failed to query gram_postings by snapshot")?;
-            while let Some(batch_result) = block_on(stream.next()) {
-                let batch = batch_result.with_context(|| "failed to read gram_postings batch")?;
-                let col_gram = column_as::<arrow::array::StringArray>(&batch, "gram")?;
-                let col_doc = column_as::<arrow::array::UInt32Array>(&batch, "doc_id")?;
-                for i in 0..batch.num_rows() {
-                    if col_gram.is_null(i) || col_doc.is_null(i) {
-                        continue;
-                    }
-                    if let Some(gram) = decode_gram_hex(col_gram.value(i)) {
-                        if wanted.contains(&gram) {
-                            postings
-                                .entry(gram)
-                                .or_default()
-                                .push(col_doc.value(i) as usize);
-                        }
-                    }
-                }
-            }
+            return Ok(BTreeMap::new());
         }
         for ids in postings.values_mut() {
             ids.sort_unstable();
@@ -1039,5 +1030,27 @@ mod tests {
 
         assert_eq!(postings.get(b"nee").unwrap(), &vec![0usize]);
         assert_eq!(postings.get(b"eed").unwrap(), &vec![0usize, 1usize]);
+    }
+
+    #[test]
+    fn test_gram_postings_missing_wanted_gram_is_empty() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        let store = LanceDbStore::open_or_create(root).unwrap();
+        store.ensure_tables().unwrap();
+
+        let mut grams = BTreeMap::new();
+        grams.insert(*b"nee", vec![0u32]);
+        store
+            .write_gram_postings("worktree:non-git", &grams)
+            .unwrap();
+
+        let wanted = HashSet::from([*b"nee", *b"abs"]);
+        let postings = store
+            .read_gram_postings("worktree:non-git", &wanted)
+            .unwrap();
+
+        assert!(postings.is_empty());
     }
 }

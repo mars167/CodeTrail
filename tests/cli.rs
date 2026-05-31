@@ -258,6 +258,44 @@ fn index_update_noops_when_index_is_fresh() {
 }
 
 #[test]
+fn index_update_replaces_stale_gram_postings() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("sample.txt"), "alpha oldtoken\n").unwrap();
+
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    fs::write(dir.path().join("sample.txt"), "alpha newtoken\n").unwrap();
+
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "update"])
+        .assert()
+        .success();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["find", "oldtoken"])
+        .assert()
+        .code(2)
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["index"]["used"], true);
+    assert_eq!(json["index"]["fresh"], true);
+    assert_eq!(json["index"]["candidateCount"], 0);
+    assert_eq!(json["results"].as_array().unwrap().len(), 0);
+}
+
+#[test]
 fn files_live_scan_uses_catalog_without_content_hash() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
