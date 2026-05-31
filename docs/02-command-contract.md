@@ -35,12 +35,14 @@ flowchart TB
 
 ```json
 {
+  "schemaVersion": "1.0",
   "ok": true,
   "command": "grep",
   "canonicalCommand": "find",
   "query": {
     "pattern": "fn .*status",
-    "mode": "regex"
+    "mode": "regex",
+    "normalized": true
   },
   "snapshot_id": "worktree:...",
   "reliability": {
@@ -63,10 +65,12 @@ flowchart TB
 
 - `command` 保留用户调用的入口名。
 - `canonicalCommand` 表示归一化后的能力名。
+- `schemaVersion` 使用兼容版本号；同一 major 内只新增可选字段或扩展枚举值，不移除既有稳定字段。
+- `query.normalized=true` 表示命令参数已按 CLI 契约归一化，便于 agent 重放与调试。
 - `snapshot_id` 表示结果绑定的 Git/worktree 视角。
 - `reliability` 告诉 Agent 是否能把结果当作事实。
 - `index` 只描述缓存是否参与和是否新鲜。
-- `warnings` 必须暴露 fallback、stale、remote mismatch 或 heuristic 边界。
+- `warnings` 必须暴露 fallback、stale、remote mismatch 或 heuristic 边界；每条 warning 使用 `{code,message}` 结构，`code` 稳定、可匹配。
 
 ## 可靠性流转
 
