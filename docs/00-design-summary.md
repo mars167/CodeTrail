@@ -1,108 +1,84 @@
-# 设计方案汇总
+# 设计总览
 
-> 当前设计准绳。其他 `docs/*.md` 是展开材料，不是优先阅读入口。
+> 长期设计入口。本文记录稳定边界；过程记录、任务拆解、计划和一次性报告不放在 `docs/`。
 
-## 一句话定位
+## 阅读地图
 
-`code-search` 是给 Agent 用的 local-first、git-first 代码搜索与跳转工具，让 Agent 像 IDE 一样完成搜索、跳转、读取、引用和影响分析。
-
-## 核心原则
-
-- Local first：本地源码、本地索引、本地查询默认可用。
-- Git first：所有结果绑定 `commit` / `staged` / `worktree` snapshot。
-- Remote 可用：远程只做共享和加速，不能替代本地验证。
-- 高效准确：能精确证明的结果必须精确；不能证明的结果必须标为候选。
-- 一个工具覆盖 Agent 常用搜索：`grep`、`find-path`、`glob`、`list`、`tree`、`read`、`defs`、`refs`。
-
-## 目标架构
-
-```text
-Source Snapshot
-  -> Text Search Index
-  -> SCIP / Symbol Occurrence Index
-  -> Parser Facts
-  -> Code Property Graph
-  -> Query Service
-  -> CLI / MCP / Optional Remote
+```mermaid
+flowchart LR
+  S["00 设计总览"] --> A["01 架构"]
+  S --> C["02 命令契约"]
+  S --> Q["03 质量"]
+  A --> SRC["src/ 是实现细节权威"]
+  C --> HELP["code-search --help 是参数权威"]
+  Q --> SCRIPTS["scripts/ 是门禁权威"]
 ```
 
-所有索引都是 snapshot 的派生视图，不是事实源。事实源是本地源码、git object、staged blob、file hash 和 range。
+| 文档 | 保留内容 | 不保留内容 |
+| --- | --- | --- |
+| `00-design-summary.md` | 产品定位、系统图、文档规则 | 历史决策过程 |
+| `01-architecture.md` | snapshot/index/query/freshness 边界 | 模块逐行说明 |
+| `02-command-contract.md` | Agent 依赖的 JSON 与 reliability 契约 | 每个 flag 的重复清单 |
+| `03-quality.md` | 验证入口和门禁分层 | 临时测试记录 |
 
-## 命令面
+## 产品定位
 
-- 内容搜索：`find`、`grep`
-- 路径搜索：`files`、`find-path`、`findpath`、`glob`
-- 浏览读取：`list`、`ls`、`tree`、`read`
-- Git 视角：`changed`、`status`
-- IDE 跳转：`defs`、`refs`、`symbols`
-- 图候选：`calls`、`callers`
-- 实时更新：`watch`、`serve`
-- 索引：`index build/update/status/verify/clean`
-- Hook：`hooks install/uninstall/status`
+`code-search` 是本地优先、Git 优先的代码搜索与跳转工具，目标是让 Agent 像使用 IDE 一样获取窄而可靠的代码证据。
 
-兼容命令只是入口名不同，输出 schema 必须统一。`grep` 不直接等于系统 grep，`find-path` 不直接等于 shell find。
+它提供：
 
-## 准确性分级
+- 内容搜索、路径搜索、目录浏览和范围读取。
+- 定义、引用、符号、调用候选和变更状态。
+- 本地索引、Git hook、watcher、remote pack/unpack 和 MCP 入口。
+- 每个响应的 snapshot、producer、freshness 与 reliability 信息。
 
-- L0：源码事实，精确。
-- L1P：SCIP/语言服务/编译器索引，IDE 级精确。
-- L1S：tree-sitter parser fact，确定但不是语义精确。
-- L2：调用链、框架桥接、启发式关系，只能是候选。
+它不承诺：
 
-`exact=true` 只能用于 L0 或 L1P，并且必须通过 snapshot/file hash/range 验证。
+- 默认 embedding 或语义相似度搜索。
+- 把启发式调用图伪装成精确事实。
+- 用 remote 结果覆盖本地 dirty/staged 状态。
+- 用 watcher 替代 Git hook 或 staged/commit snapshot。
+- 在文档里复制源码已经能说明的模块和参数细节。
 
-## 索引策略
+## 系统图
 
-- 保留 git hook 自动创建和更新索引。
-- 索引不是事实源，必须能用 snapshot、file hash、range 验证。
-- `pre-commit` 处理 staged snapshot。
-- `post-commit/post-checkout/post-merge/post-rewrite` 维护 commit snapshot 与索引一致性。
-- watcher 只维护 worktree overlay，不替代 git hook。
+```mermaid
+flowchart TB
+  Agent["Agent / developer"] --> Entry["CLI / MCP"]
+  Entry --> Query["Query layer"]
 
-## Watcher 策略
+  Git["Git HEAD / staged / worktree"] --> Snapshot["Snapshot and freshness model"]
+  Snapshot --> Text["Text and path facts"]
+  Snapshot --> Scip["SCIP occurrence facts"]
+  Snapshot --> Parser["Tree-sitter parser facts"]
+  Snapshot --> Graph["Call graph candidates"]
 
-- `code-search watch` 启动本地文件 watcher。
-- `code-search serve` 启动 query service，并默认包含 watcher。
-- watcher 只更新 `worktree` overlay。
-- watcher 事件进入统一 `IndexScheduler`。
-- 事件丢失、overflow 或 rename 不完整时，标记 overlay stale 并触发 reconcile scan。
-- watcher 不执行 `git add`，不改 staged，不维护 commit snapshot。
+  Text --> Query
+  Scip --> Query
+  Parser --> Query
+  Graph --> Query
 
-## 竞品借鉴
+  Query --> Read["read verifies file range"]
+  Query --> Json["JSON response with reliability"]
+```
 
-完整竞品与定位分析报告见 [`HTML`](12-competitive-analysis-report.html) / [`PDF`](12-competitive-analysis-report.pdf)。
+索引是加速层，不是事实源。事实源始终是本地源码、Git 状态、文件 hash 和可读取的 range。
 
-- GitHub Code Search：学 Rust code-specific text index。
-- Sourcegraph：学 text search 和 precise navigation 分层。
-- CodeGraphContext：学 pluggable graph backend。
-- GitNexus：学 DAG ingestion 和 Agent ops。
-- CodeGraph：学 local-first graph、watcher、provenance。
-- Glean：学 typed facts/schema。
+## 可靠性
 
-## 不做什么
+| level | 来源 | `exact` | 使用方式 |
+| --- | --- | --- | --- |
+| `source_fact` | 文件系统、Git、文本和路径匹配 | `true` | 可作为源码证据；编辑前仍用 `read` 取精确范围 |
+| `precise_fact` | SCIP、语言服务或编译器索引 | `true` | 可作为 IDE 级跳转事实；仍保留 range verification |
+| `parser_fact` | tree-sitter AST | `false` | 确定的语法事实，不等于语义精确引用 |
+| `inferred_candidate` | 图、AST heuristic、search-based inference | `false` | 只用于缩小范围，必须二次验证 |
+| `freshness` | manifest、hash、watcher、index status | `false` | 描述缓存状态，不提升代码事实准确性 |
+| `remote_unverified` | 未能与本地文件对齐的 remote snapshot | `false` | 只能作为线索，不能直接用于编辑决策 |
 
-- 不默认做 embedding/semantic similarity。
-- 不把 tree-sitter 调用链伪装成准确调用图。
-- 不让 remote 覆盖本地 dirty/staged 状态。
-- 不让 watcher 替代 git hook。
-- 不让 Agent 在多套 shell 工具输出之间来回猜。
+## 文档规则
 
-## 质量看护
-
-测试架构见 `docs/18-quality-guard-test-architecture.md`。质量门禁按测试金字塔分层：
-
-- PR 默认阻断：格式、编译、单元测试、CLI contract、git diff whitespace。
-- 扩展阻断：真实仓库 L0 smoke、性能基准回归。
-- 趋势看护：SWE-bench agent 搜索效率和解决率。
-
-统一本地入口是 `scripts/quality-gate.sh quick|cli|bench|full`。
-
-## 性能优化
-
-性能优化技术方案见 `docs/19-performance-optimization-technical-plan.md`。核心方向是：
-
-- 拆分 workspace catalog 与内容 hash，路径类命令不做全仓内容读取。
-- freshness 使用 metadata 快路径，只对变化文件重新 hash。
-- text index 查询从顺序扫描改为 gram dictionary + postings seek。
-- warm index update 变成增量更新，而不是全量重建。
-- parser/关系命令先用索引预过滤，再读取 parser facts cache。
+- `docs/` 只放长期 Markdown 设计文档。
+- 过程型文件不进入仓库文档：`task`、`plan`、`roadmap`、MR 执行记录、一次性 benchmark/test report 都应外置。
+- 图优先，长段落从简；能由源码、测试或脚本说明的问题不写二次文档。
+- 文档描述边界和契约，不描述每个函数的实现细节。
+- 新增文档必须能被上面的阅读地图解释；不能解释就不要新增。
