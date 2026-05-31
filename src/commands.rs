@@ -200,7 +200,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                     &workspace.root,
                 );
             }
-            let query_output = search::find(
+            let mut query_output = search::find(
                 &workspace,
                 &scan_opts,
                 identifier,
@@ -208,6 +208,13 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 cli.context,
                 true,
             )?;
+            let definition_ranges =
+                syntax::definition_ranges(&workspace, &scan_opts, identifier).unwrap_or_default();
+            query_output.results = search::annotate_identifier_refs_with_definitions(
+                query_output.results,
+                identifier,
+                &definition_ranges,
+            );
             exit_code = output::no_match_exit(&query_output.results);
             page_response(output::response_with_index(
                 "refs",

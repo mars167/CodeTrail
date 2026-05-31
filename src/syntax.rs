@@ -8,7 +8,7 @@ use tree_sitter::{Language, Node, Parser};
 
 use crate::{
     index,
-    search::line_range_for_node,
+    search::{line_range_for_node, symbol_range, SymbolRange},
     workspace::{language_for_path, FileRecord, ScanOptions, Workspace},
 };
 
@@ -19,6 +19,7 @@ struct Symbol {
     name: String,
     kind: String,
     range: Value,
+    name_range: Value,
     body_range: Value,
     producer: String,
     warning: Option<String>,
@@ -70,6 +71,23 @@ pub fn defs(
         }
     }
     Ok((Value::Array(results), warnings))
+}
+
+pub(crate) fn definition_ranges(
+    workspace: &Workspace,
+    opts: &ScanOptions,
+    identifier: &str,
+) -> Result<Vec<SymbolRange>> {
+    let mut scan_opts = opts.clone();
+    scan_opts.limit = 0;
+    let mut warnings = Vec::new();
+    let ranges =
+        collect_symbols_prefiltered(workspace, &scan_opts, &mut warnings, Some(identifier))?
+            .into_iter()
+            .filter(|symbol| symbol.name == identifier)
+            .filter_map(|symbol| symbol_range(&symbol.path, &symbol.name_range))
+            .collect();
+    Ok(ranges)
 }
 
 pub fn calls(
@@ -275,6 +293,7 @@ fn walk_symbols(node: Node, path: &str, language: &str, source: &[u8], symbols: 
                     name: name.to_string(),
                     kind: kind.to_string(),
                     range: point_range(node),
+                    name_range: point_range(name_node),
                     body_range: point_range(body_node),
                     producer: "tree_sitter_parser".to_string(),
                     warning: None,
@@ -389,13 +408,17 @@ fn symbol_to_json(symbol: Symbol) -> Value {
     json!({
         "path": symbol.path,
         "name": symbol.name,
+        "symbolName": symbol.name,
         "kind": symbol.kind,
         "language": symbol.language,
+        "container": Value::Null,
+        "role": "definition",
         "range": symbol.range,
         "bodyRange": symbol.body_range,
         "producer": symbol.producer,
         "reliability": "parser_fact",
         "exact": false,
+        "fallbackReason": "precise_scip_index_unavailable",
         "warning": symbol.warning
     })
 }

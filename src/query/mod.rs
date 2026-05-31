@@ -313,7 +313,7 @@ impl QueryService {
         }
 
         // 2. Fall back to identifier-boundary text search.
-        let qo = search::find(
+        let mut qo = search::find(
             &self.workspace,
             &scan,
             identifier,
@@ -321,6 +321,13 @@ impl QueryService {
             opts.context,
             true,
         )?;
+        let definition_ranges =
+            syntax::definition_ranges(&self.workspace, &scan, identifier).unwrap_or_default();
+        qo.results = search::annotate_identifier_refs_with_definitions(
+            qo.results,
+            identifier,
+            &definition_ranges,
+        );
         let response = output::response_with_index(
             "refs",
             "refs",

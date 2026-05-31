@@ -29,6 +29,25 @@ fn init_git_repo(path: &std::path::Path) {
         .unwrap();
 }
 
+fn replay_read_result(result: &Value) -> Value {
+    let argv = result["readCommandArgv"]
+        .as_array()
+        .expect("readCommandArgv is present")
+        .iter()
+        .map(|arg| arg.as_str().expect("argv item is string").to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(argv.first().map(String::as_str), Some("code-search"));
+
+    let output = code_search()
+        .args(argv.iter().skip(1))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    serde_json::from_slice(&output).unwrap()
+}
+
 #[test]
 fn find_returns_reliable_source_fact() {
     let dir = tempdir().unwrap();
@@ -185,7 +204,7 @@ fn refs_text_fallback_uses_identifier_boundaries() {
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(
         dir.path().join("src/main.rs"),
-        "let user = User::new();\nlet profile = UserProfile::new();\n",
+        "struct User;\nfn main() {\n    let user = User;\n    let profile = UserProfile;\n}\n",
     )
     .unwrap();
 
@@ -205,7 +224,59 @@ fn refs_text_fallback_uses_identifier_boundaries() {
         .unwrap()
         .iter()
         .all(|result| result["matchText"] == "User"));
-    assert_eq!(json["results"].as_array().unwrap().len(), 1);
+    assert_eq!(json["results"].as_array().unwrap().len(), 2);
+    assert_eq!(json["results"][0]["symbolName"], "User");
+    assert_eq!(json["results"][0]["role"], "definition");
+    assert_eq!(json["results"][0]["kind"], "unknown");
+    assert_eq!(
+        json["results"][0]["fallbackReason"],
+        "precise_scip_index_unavailable"
+    );
+    assert!(json["results"][0]["readCommand"]
+        .as_str()
+        .unwrap()
+        .contains("src/main.rs:1"));
+    assert_eq!(json["results"][1]["role"], "reference_candidate");
+    assert!(json["results"][1]["readCommand"]
+        .as_str()
+        .unwrap()
+        .contains("src/main.rs:3"));
+    let read_json = replay_read_result(&json["results"][1]);
+    assert!(read_json["results"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("let user = User;"));
+}
+
+#[test]
+fn refs_text_fallback_only_marks_definition_name_as_definition() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/main.rs"),
+        "fn needle() {\n    needle();\n}\nfn main() {\n    needle();\n}\n",
+    )
+    .unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["refs", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let results = json["results"].as_array().unwrap();
+
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0]["range"]["start"]["line"], 1);
+    assert_eq!(results[0]["role"], "definition");
+    assert_eq!(results[1]["range"]["start"]["line"], 2);
+    assert_eq!(results[1]["role"], "reference_candidate");
+    assert_eq!(results[2]["range"]["start"]["line"], 5);
+    assert_eq!(results[2]["role"], "reference_candidate");
 }
 
 #[test]
@@ -2670,7 +2741,18 @@ fn imported_scip_index_drives_precise_defs_refs_and_symbols() {
     assert_eq!(defs_json["reliability"]["level"], "precise_fact");
     assert_eq!(defs_json["results"][0]["producer"], "scip");
     assert_eq!(defs_json["results"][0]["exact"], true);
+    assert_eq!(defs_json["results"][0]["symbolName"], "needle");
+    assert_eq!(defs_json["results"][0]["role"], "definition");
     assert_eq!(defs_json["results"][0]["range"]["start"]["line"], 1);
+    assert!(defs_json["results"][0]["readCommand"]
+        .as_str()
+        .unwrap()
+        .contains("src/lib.rs:1"));
+    let defs_read_json = replay_read_result(&defs_json["results"][0]);
+    assert!(defs_read_json["results"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("fn needle()"));
 
     let refs = code_search()
         .arg("--path")
@@ -2684,8 +2766,18 @@ fn imported_scip_index_drives_precise_defs_refs_and_symbols() {
     let refs_json: Value = serde_json::from_slice(&refs).unwrap();
     assert_eq!(refs_json["reliability"]["level"], "precise_fact");
     assert_eq!(refs_json["results"][0]["producer"], "scip");
+    assert_eq!(refs_json["results"][0]["symbolName"], "needle");
     assert_eq!(refs_json["results"][0]["role"], "reference");
     assert_eq!(refs_json["results"][0]["range"]["start"]["line"], 2);
+    assert!(refs_json["results"][0]["readCommand"]
+        .as_str()
+        .unwrap()
+        .contains("src/lib.rs:2"));
+    let refs_read_json = replay_read_result(&refs_json["results"][0]);
+    assert!(refs_read_json["results"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("needle();"));
 
     let symbols = code_search()
         .arg("--path")
@@ -2699,6 +2791,12 @@ fn imported_scip_index_drives_precise_defs_refs_and_symbols() {
     let symbols_json: Value = serde_json::from_slice(&symbols).unwrap();
     assert_eq!(symbols_json["reliability"]["level"], "precise_fact");
     assert_eq!(symbols_json["results"][0]["name"], "needle");
+    assert_eq!(symbols_json["results"][0]["symbolName"], "needle");
+    assert_eq!(symbols_json["results"][0]["role"], "definition");
+    assert!(symbols_json["results"][0]["readCommand"]
+        .as_str()
+        .unwrap()
+        .contains("src/lib.rs:1"));
 }
 
 #[test]
@@ -2727,6 +2825,16 @@ fn defs_falls_back_to_parser_after_plain_index_build_without_scip() {
 
     assert_eq!(defs_json["reliability"]["level"], "parser_fact");
     assert_eq!(defs_json["results"][0]["producer"], "tree_sitter_parser");
+    assert_eq!(defs_json["results"][0]["symbolName"], "needle");
+    assert_eq!(defs_json["results"][0]["role"], "definition");
+    assert_eq!(
+        defs_json["results"][0]["fallbackReason"],
+        "precise_scip_index_unavailable"
+    );
+    assert!(defs_json["results"][0]["readCommand"]
+        .as_str()
+        .unwrap()
+        .contains("src/lib.rs:1"));
 }
 
 #[test]
@@ -2752,17 +2860,78 @@ fn defs_falls_back_to_parser_for_java_classes() {
 
     assert_eq!(defs_json["reliability"]["level"], "parser_fact");
     assert_eq!(defs_json["results"][0]["name"], "SampleService");
+    assert_eq!(defs_json["results"][0]["symbolName"], "SampleService");
     assert_eq!(defs_json["results"][0]["kind"], "class");
     assert_eq!(defs_json["results"][0]["language"], "java");
+    assert_eq!(defs_json["results"][0]["role"], "definition");
+    assert_eq!(
+        defs_json["results"][0]["fallbackReason"],
+        "precise_scip_index_unavailable"
+    );
     assert_eq!(
         defs_json["results"][0]["path"],
         "src/main/java/example/SampleService.java"
     );
+    assert!(defs_json["results"][0]["readCommand"]
+        .as_str()
+        .unwrap()
+        .contains("src/main/java/example/SampleService.java:3"));
+    let read_json = replay_read_result(&defs_json["results"][0]);
+    assert!(read_json["results"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("public class SampleService"));
     assert!(defs_json["warnings"]
         .as_array()
         .unwrap()
         .iter()
         .any(|warning| warning["code"] == "precise_scip_index_unavailable"));
+}
+
+#[test]
+fn parser_defs_read_closure_covers_python_typescript_and_javascript() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/app.py"),
+        "def py_target():\n    pass\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("src/app.ts"),
+        "function tsTarget() { return 1; }\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("src/app.js"),
+        "function jsTarget() { return 1; }\n",
+    )
+    .unwrap();
+
+    for (identifier, language, line) in [
+        ("py_target", "python", "src/app.py:1"),
+        ("tsTarget", "typescript", "src/app.ts:1"),
+        ("jsTarget", "javascript", "src/app.js:1"),
+    ] {
+        let output = code_search()
+            .arg("--path")
+            .arg(dir.path())
+            .args(["defs", identifier])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["reliability"]["level"], "parser_fact");
+        assert_eq!(json["results"][0]["symbolName"], identifier);
+        assert_eq!(json["results"][0]["role"], "definition");
+        assert_eq!(json["results"][0]["language"], language);
+        assert!(json["results"][0]["readCommand"]
+            .as_str()
+            .unwrap()
+            .contains(line));
+    }
 }
 
 #[test]
