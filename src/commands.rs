@@ -65,7 +65,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             output::response_with_index(
                 "files",
                 "files",
-                json!({ "pattern": pattern, "mode": "path_substring_or_glob" }),
+                json!({ "pattern": pattern, "mode": "path_substring" }),
                 &workspace.snapshot_id,
                 output::source_fact(),
                 query_output.index,
@@ -79,7 +79,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             output::response_with_index(
                 "find-path",
                 "files",
-                json!({ "pattern": pattern, "mode": "path_substring_or_glob" }),
+                json!({ "pattern": pattern, "mode": "path_substring" }),
                 &workspace.snapshot_id,
                 output::source_fact(),
                 query_output.index,
@@ -107,7 +107,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             json!({ "dir": dir, "recursive": recursive }),
             &workspace.snapshot_id,
             output::source_fact(),
-            search::list(&workspace, dir.as_deref(), *recursive)?,
+            search::list(&workspace, &scan_opts, dir.as_deref(), *recursive)?,
             Vec::new(),
         ),
         Command::Tree { dir, depth } => output::response(
@@ -116,7 +116,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             json!({ "dir": dir, "depth": depth }),
             &workspace.snapshot_id,
             output::source_fact(),
-            search::tree(&workspace, dir.as_deref(), *depth)?,
+            search::tree(&workspace, &scan_opts, dir.as_deref(), *depth)?,
             Vec::new(),
         ),
         Command::Read { target } => {

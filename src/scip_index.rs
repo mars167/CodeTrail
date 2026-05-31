@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use crate::{
     index, lancedb_store, scip,
     scip::store::{OccurrenceResult, SymbolResult},
-    workspace::{matches_filters, ScanOptions, Workspace},
+    workspace::{ScanOptions, Workspace},
 };
 
 const ROLE_DEFINITION: i32 = 1;
@@ -246,7 +246,7 @@ fn query_native_defs(
         return Ok(None);
     }
     let mut results = scip::query_defs(&db_path, identifier)?;
-    filter_and_limit(&mut results, opts);
+    filter_and_limit(workspace, &mut results, opts)?;
     if results.is_empty() {
         return Ok(Some(PreciseQueryOutput {
             results: Value::Array(Vec::new()),
@@ -273,7 +273,7 @@ fn query_native_refs(
         return Ok(None);
     }
     let mut results = scip::query_refs(&db_path, identifier)?;
-    filter_and_limit(&mut results, opts);
+    filter_and_limit(workspace, &mut results, opts)?;
     if results.is_empty() {
         return Ok(Some(PreciseQueryOutput {
             results: Value::Array(Vec::new()),
@@ -300,7 +300,7 @@ fn query_native_symbols(
         return Ok(None);
     }
     let mut results = scip::query_symbols(&db_path, query)?;
-    filter_symbol_results(&mut results, opts);
+    filter_symbol_results(workspace, &mut results, opts)?;
     if results.is_empty() {
         return Ok(Some(PreciseQueryOutput {
             results: Value::Array(Vec::new()),
@@ -324,18 +324,40 @@ fn native_db_index_meta(db_path: &std::path::Path, fresh: bool) -> Value {
     })
 }
 
-fn filter_and_limit(results: &mut Vec<OccurrenceResult>, opts: &ScanOptions) {
-    results.retain(|r| matches_filters(&r.path, &opts.include, &opts.exclude));
+fn filter_and_limit(
+    workspace: &Workspace,
+    results: &mut Vec<OccurrenceResult>,
+    opts: &ScanOptions,
+) -> Result<()> {
+    let allowed_paths = allowed_scan_paths(workspace, opts)?;
+    results.retain(|r| allowed_paths.contains(&r.path));
     if opts.limit > 0 && results.len() > opts.limit {
         results.truncate(opts.limit);
     }
+    Ok(())
 }
 
-fn filter_symbol_results(results: &mut Vec<SymbolResult>, opts: &ScanOptions) {
-    results.retain(|r| matches_filters(&r.path, &opts.include, &opts.exclude));
+fn filter_symbol_results(
+    workspace: &Workspace,
+    results: &mut Vec<SymbolResult>,
+    opts: &ScanOptions,
+) -> Result<()> {
+    let allowed_paths = allowed_scan_paths(workspace, opts)?;
+    results.retain(|r| allowed_paths.contains(&r.path));
     if opts.limit > 0 && results.len() > opts.limit {
         results.truncate(opts.limit);
     }
+    Ok(())
+}
+
+fn allowed_scan_paths(workspace: &Workspace, opts: &ScanOptions) -> Result<HashSet<String>> {
+    let mut scan_opts = opts.clone();
+    scan_opts.limit = 0;
+    Ok(workspace
+        .scan_catalog(&scan_opts)?
+        .into_iter()
+        .map(|file| file.path)
+        .collect())
 }
 
 // ---------------------------------------------------------------------------

@@ -131,7 +131,7 @@ impl QueryService {
         Ok(self.finalize(output::response_with_index(
             "files",
             "files",
-            json!({ "pattern": pattern, "mode": "path_substring_or_glob" }),
+            json!({ "pattern": pattern, "mode": "path_substring" }),
             &self.workspace.snapshot_id,
             output::source_fact(),
             qo.index,
@@ -193,13 +193,14 @@ impl QueryService {
 
     /// List directory contents (non-recursive).
     pub fn list_dir(&self, dir: &str) -> Result<Value> {
+        let scan = QueryOptions::default().to_scan_options();
         Ok(self.finalize(output::response(
             "list",
             "list",
             json!({ "dir": dir, "recursive": false }),
             &self.workspace.snapshot_id,
             output::source_fact(),
-            search::list(&self.workspace, Some(dir), false)?,
+            search::list(&self.workspace, &scan, Some(dir), false)?,
             Vec::new(),
         )))
     }

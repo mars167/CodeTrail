@@ -1,17 +1,20 @@
 use std::{
     fs,
     io::{BufRead, BufReader, Read},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use anyhow::{anyhow, Context, Result};
 use globset::Glob;
+use ignore::WalkBuilder;
 use regex::Regex;
 use serde_json::{json, Value};
 
 use crate::{
     index,
-    workspace::{language_for_path, FileCatalogRecord, FileRecord, ScanOptions, Workspace},
+    workspace::{
+        language_for_path, matches_filters, FileCatalogRecord, FileRecord, ScanOptions, Workspace,
+    },
 };
 
 const MAX_FULL_READ_BYTES: usize = 64 * 1024;
@@ -29,7 +32,7 @@ pub fn files(
     strict_glob: bool,
 ) -> Result<QueryOutput> {
     let mut results = Vec::new();
-    let matcher = if strict_glob || has_glob_meta(pattern) {
+    let matcher = if strict_glob {
         Some(Glob::new(pattern)?.compile_matcher())
     } else {
         None
@@ -62,53 +65,58 @@ pub fn files(
     })
 }
 
-pub fn list(workspace: &Workspace, dir: Option<&str>, recursive: bool) -> Result<Value> {
+pub fn list(
+    workspace: &Workspace,
+    opts: &ScanOptions,
+    dir: Option<&str>,
+    recursive: bool,
+) -> Result<Value> {
     let rel_dir = dir.unwrap_or(".");
-    let base = workspace.abs_path(rel_dir);
-    if !base.exists() {
-        return Err(anyhow!("directory does not exist: {rel_dir}"));
-    }
-    if !base.is_dir() {
-        return Err(anyhow!("path is not a directory: {rel_dir}"));
-    }
+    let base = resolve_workspace_dir(workspace, rel_dir)?;
 
     let mut results = Vec::new();
     if recursive {
-        collect_tree(workspace, &base, 0, None, &mut results)?;
+        collect_tree(workspace, opts, &base, 0, None, &mut results)?;
     } else {
-        let mut entries = Vec::new();
-        for entry in fs::read_dir(&base)? {
-            let entry = entry?;
-            entries.push(entry.path());
-        }
-        entries.sort();
-        for path in entries {
-            if should_hide(&path) {
+        for entry in browse_entries(workspace, opts, &base, Some(1))? {
+            if !path_matches_output_filters(workspace, &entry.path, opts) {
                 continue;
             }
-            let metadata = fs::metadata(&path)?;
+            let metadata = fs::metadata(&entry.path)?;
             results.push(json!({
-                "path": workspace.rel_path(&path),
+                "path": workspace.rel_path(&entry.path),
                 "kind": if metadata.is_dir() { "directory" } else { "file" },
                 "size": if metadata.is_file() { metadata.len() } else { 0 },
-                "language": if metadata.is_file() { language_for_path(&path) } else { "directory" },
+                "language": if metadata.is_file() { language_for_path(&entry.path) } else { "directory" },
                 "producer": "filesystem",
                 "reliability": "source_fact",
                 "exact": true
             }));
+            if opts.limit > 0 && results.len() >= opts.limit {
+                break;
+            }
         }
     }
     Ok(Value::Array(results))
 }
 
-pub fn tree(workspace: &Workspace, dir: Option<&str>, depth: Option<u8>) -> Result<Value> {
+pub fn tree(
+    workspace: &Workspace,
+    opts: &ScanOptions,
+    dir: Option<&str>,
+    depth: Option<u8>,
+) -> Result<Value> {
     let rel_dir = dir.unwrap_or(".");
-    let base = workspace.abs_path(rel_dir);
-    if !base.exists() {
-        return Err(anyhow!("directory does not exist: {rel_dir}"));
-    }
+    let base = resolve_workspace_dir(workspace, rel_dir)?;
     let mut results = Vec::new();
-    collect_tree(workspace, &base, 0, depth.map(usize::from), &mut results)?;
+    collect_tree(
+        workspace,
+        opts,
+        &base,
+        0,
+        depth.map(usize::from),
+        &mut results,
+    )?;
     Ok(Value::Array(results))
 }
 
@@ -268,60 +276,106 @@ pub fn line_range_for_node(
 
 fn collect_tree(
     workspace: &Workspace,
+    opts: &ScanOptions,
     base: &Path,
-    level: usize,
+    _level: usize,
     max_depth: Option<usize>,
     results: &mut Vec<Value>,
 ) -> Result<()> {
-    if let Some(max_depth) = max_depth {
-        if level > max_depth {
+    let walker_max_depth = max_depth.map(|depth| depth + 1);
+    for entry in browse_entries(workspace, opts, base, walker_max_depth)? {
+        if opts.limit > 0 && results.len() >= opts.limit {
             return Ok(());
         }
-    }
-
-    let mut entries = Vec::new();
-    for entry in fs::read_dir(base)? {
-        let entry = entry?;
-        if should_hide(&entry.path()) {
-            continue;
-        }
-        entries.push(entry.path());
-    }
-    entries.sort();
-
-    for path in entries {
-        let metadata = fs::metadata(&path)?;
-        results.push(json!({
-            "path": workspace.rel_path(&path),
-            "kind": if metadata.is_dir() { "directory" } else { "file" },
-            "depth": level,
-            "size": if metadata.is_file() { metadata.len() } else { 0 },
-            "language": if metadata.is_file() { language_for_path(&path) } else { "directory" },
-            "producer": "filesystem",
-            "reliability": "source_fact",
-            "exact": true
-        }));
-        if metadata.is_dir() {
-            collect_tree(workspace, &path, level + 1, max_depth, results)?;
+        let metadata = fs::metadata(&entry.path)?;
+        if path_matches_output_filters(workspace, &entry.path, opts) {
+            results.push(json!({
+                "path": workspace.rel_path(&entry.path),
+                "kind": if metadata.is_dir() { "directory" } else { "file" },
+                "depth": entry.depth,
+                "size": if metadata.is_file() { metadata.len() } else { 0 },
+                "language": if metadata.is_file() { language_for_path(&entry.path) } else { "directory" },
+                "producer": "filesystem",
+                "reliability": "source_fact",
+                "exact": true
+            }));
         }
     }
     Ok(())
 }
 
-fn should_hide(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| {
-            matches!(
-                name,
-                ".git" | ".code-search" | "target" | "node_modules" | "dist"
-            )
-        })
-        .unwrap_or(false)
+fn resolve_workspace_dir(workspace: &Workspace, rel_dir: &str) -> Result<PathBuf> {
+    let base = workspace.abs_path(rel_dir);
+    if !base.exists() {
+        return Err(anyhow!("directory does not exist: {rel_dir}"));
+    }
+    let canonical = fs::canonicalize(&base)
+        .with_context(|| format!("failed to resolve path {}", base.display()))?;
+    if !canonical.starts_with(&workspace.root) {
+        return Err(anyhow!("path escapes workspace root: {rel_dir}"));
+    }
+    if !canonical.is_dir() {
+        return Err(anyhow!("path is not a directory: {rel_dir}"));
+    }
+    Ok(canonical)
 }
 
-fn has_glob_meta(pattern: &str) -> bool {
-    pattern.contains('*') || pattern.contains('?') || pattern.contains('[') || pattern.contains('{')
+struct BrowseEntry {
+    path: PathBuf,
+    depth: usize,
+}
+
+fn browse_entries(
+    workspace: &Workspace,
+    opts: &ScanOptions,
+    base: &Path,
+    max_depth: Option<usize>,
+) -> Result<Vec<BrowseEntry>> {
+    let mut builder = WalkBuilder::new(base);
+    builder
+        .current_dir(&workspace.root)
+        .hidden(!opts.hidden)
+        .ignore(!opts.no_ignore)
+        .git_ignore(!opts.no_ignore)
+        .git_global(!opts.no_ignore)
+        .git_exclude(!opts.no_ignore)
+        .parents(!opts.no_ignore)
+        .max_depth(max_depth)
+        .sort_by_file_path(|left, right| left.cmp(right));
+
+    let mut entries = Vec::new();
+    for entry in builder.build() {
+        let entry = entry?;
+        if entry.path() == base {
+            continue;
+        }
+        if should_skip_browse_path(&workspace.root, entry.path(), opts.no_ignore) {
+            continue;
+        }
+        entries.push(BrowseEntry {
+            path: entry.path().to_path_buf(),
+            depth: entry.depth().saturating_sub(1),
+        });
+    }
+    Ok(entries)
+}
+
+fn should_skip_browse_path(root: &Path, path: &Path, no_ignore: bool) -> bool {
+    rel_path(root, path).split('/').any(|component| {
+        matches!(component, ".git" | ".code-search")
+            || (!no_ignore && matches!(component, "target" | "node_modules" | "dist" | ".next"))
+    })
+}
+
+fn path_matches_output_filters(workspace: &Workspace, path: &Path, opts: &ScanOptions) -> bool {
+    matches_filters(&workspace.rel_path(path), &opts.include, &opts.exclude)
+}
+
+fn rel_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 struct CandidateFiles {
