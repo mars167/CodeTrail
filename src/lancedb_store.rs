@@ -9,7 +9,7 @@ use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use futures::StreamExt;
 use lancedb::connect;
 use lancedb::query::{ExecutableQuery, QueryBase};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 pub struct LanceDbStore {
@@ -17,6 +17,8 @@ pub struct LanceDbStore {
     #[allow(dead_code)]
     root: PathBuf,
 }
+
+const READ_LIMIT: usize = 10_000_000;
 
 use anyhow::anyhow;
 use arrow::record_batch::RecordBatch;
@@ -225,7 +227,7 @@ impl LanceDbStore {
             languages.push(r.language.clone());
             size_bytes.push(r.size);
             mtime_ns.push((r.mtime_ms * 1_000_000) as u64);
-            modes.push(0u32);
+            modes.push(r.mode);
             is_binary.push(false);
             is_ignored.push(false);
         }
@@ -431,7 +433,7 @@ impl LanceDbStore {
         let table = block_on(self.db.open_table("scip_occurrences").execute())
             .with_context(|| "failed to open scip_occurrences table")?;
         let filter = format!("snapshot_id = \'{}\'", escape_filter(snapshot_id));
-        let mut stream = block_on(table.query().only_if(&filter).execute())
+        let mut stream = block_on(table.query().only_if(&filter).limit(READ_LIMIT).execute())
             .with_context(|| "failed to query scip_occurrences")?;
         let mut rows = Vec::new();
         while let Some(batch_result) = block_on(stream.next()) {
@@ -524,13 +526,11 @@ impl LanceDbStore {
         let table = block_on(self.db.open_table("snapshots").execute())
             .with_context(|| "failed to open snapshots table")?;
         let filter = format!("snapshot_id = \'{}\'", escape_filter(snapshot_id));
-        let mut stream = block_on(table.query().only_if(&filter).execute())
+        let mut stream = block_on(table.query().only_if(&filter).limit(READ_LIMIT).execute())
             .with_context(|| "failed to query snapshots")?;
+        let mut latest = None;
         while let Some(batch_result) = block_on(stream.next()) {
             let batch = batch_result.with_context(|| "failed to read snapshot batch")?;
-            if batch.num_rows() == 0 {
-                return Ok(None);
-            }
             let col_snapshot_id = Some(column_as::<arrow::array::StringArray>(
                 &batch,
                 "snapshot_id",
@@ -591,7 +591,7 @@ impl LanceDbStore {
             ) {
                 for i in 0..batch.num_rows() {
                     if sid.value(i) == snapshot_id {
-                        return Ok(Some(SnapShotRow {
+                        let row = SnapShotRow {
                             snapshot_id: sid.value(i).to_string(),
                             snapshot_key: skey.value(i).to_string(),
                             schema_version: sv.value(i),
@@ -607,19 +607,28 @@ impl LanceDbStore {
                             scan_options_json: so.value(i).to_string(),
                             file_count: fc.value(i),
                             created_at_epoch_ms: ca.value(i),
-                        }));
+                        };
+                        let is_newer = latest
+                            .as_ref()
+                            .map(|current: &SnapShotRow| {
+                                row.created_at_epoch_ms >= current.created_at_epoch_ms
+                            })
+                            .unwrap_or(true);
+                        if is_newer {
+                            latest = Some(row);
+                        }
                     }
                 }
             }
         }
-        Ok(None)
+        Ok(latest)
     }
 
     pub fn read_file_catalog(&self, snapshot_id: &str) -> Result<Vec<FileCatalogRow>> {
         let table = block_on(self.db.open_table("file_catalog").execute())
             .with_context(|| "failed to open file_catalog table")?;
         let filter = format!("snapshot_id = \'{}\'", escape_filter(snapshot_id));
-        let mut stream = block_on(table.query().only_if(&filter).execute())
+        let mut stream = block_on(table.query().only_if(&filter).limit(READ_LIMIT).execute())
             .with_context(|| "failed to query file_catalog")?;
         let mut rows = Vec::new();
         while let Some(batch_result) = block_on(stream.next()) {
@@ -635,8 +644,9 @@ impl LanceDbStore {
                 "size_bytes",
             )?);
             let col_mt = Some(column_as::<arrow::array::UInt64Array>(&batch, "mtime_ns")?);
-            if let (Some(sid), Some(fp), Some(lang), Some(sz), Some(mt)) =
-                (col_sid, col_fp, col_lang, col_sz, col_mt)
+            let col_mode = Some(column_as::<arrow::array::UInt32Array>(&batch, "mode")?);
+            if let (Some(sid), Some(fp), Some(lang), Some(sz), Some(mt), Some(mode)) =
+                (col_sid, col_fp, col_lang, col_sz, col_mt, col_mode)
             {
                 for i in 0..batch.num_rows() {
                     rows.push(FileCatalogRow {
@@ -645,6 +655,7 @@ impl LanceDbStore {
                         language: lang.value(i).to_string(),
                         size_bytes: sz.value(i),
                         mtime_ns: mt.value(i),
+                        mode: mode.value(i),
                     });
                 }
             }
@@ -656,7 +667,7 @@ impl LanceDbStore {
         let table = block_on(self.db.open_table("file_proofs").execute())
             .with_context(|| "failed to open file_proofs table")?;
         let filter = format!("snapshot_id = \'{}\'", escape_filter(snapshot_id));
-        let mut stream = block_on(table.query().only_if(&filter).execute())
+        let mut stream = block_on(table.query().only_if(&filter).limit(READ_LIMIT).execute())
             .with_context(|| "failed to query file_proofs")?;
         let mut rows = Vec::new();
         while let Some(batch_result) = block_on(stream.next()) {
@@ -689,11 +700,85 @@ impl LanceDbStore {
         Ok(rows)
     }
 
+    pub fn read_gram_postings(
+        &self,
+        snapshot_id: &str,
+        wanted: &HashSet<[u8; 3]>,
+    ) -> Result<BTreeMap<[u8; 3], Vec<usize>>> {
+        if wanted.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+
+        let table = block_on(self.db.open_table("gram_postings").execute())
+            .with_context(|| "failed to open gram_postings table")?;
+        let gram_values = wanted
+            .iter()
+            .map(|gram| format!("'{:02x}{:02x}{:02x}'", gram[0], gram[1], gram[2]))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let filter = format!(
+            "snapshot_id = '{}' AND gram IN ({})",
+            escape_filter(snapshot_id),
+            gram_values
+        );
+        let mut stream = block_on(table.query().only_if(&filter).limit(READ_LIMIT).execute())
+            .with_context(|| "failed to query gram_postings")?;
+        let mut postings: BTreeMap<[u8; 3], Vec<usize>> = BTreeMap::new();
+        while let Some(batch_result) = block_on(stream.next()) {
+            let batch = batch_result.with_context(|| "failed to read gram_postings batch")?;
+            let col_gram = column_as::<arrow::array::StringArray>(&batch, "gram")?;
+            let col_doc = column_as::<arrow::array::UInt32Array>(&batch, "doc_id")?;
+            for i in 0..batch.num_rows() {
+                if col_gram.is_null(i) || col_doc.is_null(i) {
+                    continue;
+                }
+                if let Some(gram) = decode_gram_hex(col_gram.value(i)) {
+                    postings
+                        .entry(gram)
+                        .or_default()
+                        .push(col_doc.value(i) as usize);
+                }
+            }
+        }
+        if !wanted.iter().all(|gram| postings.contains_key(gram)) {
+            let filter = format!("snapshot_id = '{}'", escape_filter(snapshot_id));
+            let mut stream = block_on(table.query().only_if(&filter).limit(READ_LIMIT).execute())
+                .with_context(|| "failed to query gram_postings by snapshot")?;
+            while let Some(batch_result) = block_on(stream.next()) {
+                let batch = batch_result.with_context(|| "failed to read gram_postings batch")?;
+                let col_gram = column_as::<arrow::array::StringArray>(&batch, "gram")?;
+                let col_doc = column_as::<arrow::array::UInt32Array>(&batch, "doc_id")?;
+                for i in 0..batch.num_rows() {
+                    if col_gram.is_null(i) || col_doc.is_null(i) {
+                        continue;
+                    }
+                    if let Some(gram) = decode_gram_hex(col_gram.value(i)) {
+                        if wanted.contains(&gram) {
+                            postings
+                                .entry(gram)
+                                .or_default()
+                                .push(col_doc.value(i) as usize);
+                        }
+                    }
+                }
+            }
+        }
+        for ids in postings.values_mut() {
+            ids.sort_unstable();
+            ids.dedup();
+        }
+        Ok(postings)
+    }
+
     pub fn read_file_records(
         &self,
         snapshot_id: &str,
     ) -> Result<Vec<crate::workspace::FileRecord>> {
-        let catalog = self.read_file_catalog(snapshot_id)?;
+        let catalog: BTreeMap<String, FileCatalogRow> = self
+            .read_file_catalog(snapshot_id)?
+            .into_iter()
+            .map(|row| (row.file_path.clone(), row))
+            .collect();
         let proofs: HashMap<String, FileProofRow> = self
             .read_file_proofs(snapshot_id)?
             .into_iter()
@@ -701,13 +786,14 @@ impl LanceDbStore {
             .collect();
         Ok(catalog
             .into_iter()
-            .map(|row| {
+            .map(|(_path, row)| {
                 let proof = proofs.get(&row.file_path);
                 crate::workspace::FileRecord {
                     path: row.file_path,
                     language: row.language,
                     size: row.size_bytes,
                     mtime_ms: (row.mtime_ns / 1_000_000) as u128,
+                    mode: row.mode,
                     hash: proof
                         .map(|p| p.content_hash.clone())
                         .unwrap_or_else(|| "blake3:missing_proof".to_string()),
@@ -715,6 +801,17 @@ impl LanceDbStore {
             })
             .collect())
     }
+}
+
+fn decode_gram_hex(value: &str) -> Option<[u8; 3]> {
+    if value.len() != 6 {
+        return None;
+    }
+    Some([
+        u8::from_str_radix(&value[0..2], 16).ok()?,
+        u8::from_str_radix(&value[2..4], 16).ok()?,
+        u8::from_str_radix(&value[4..6], 16).ok()?,
+    ])
 }
 
 fn snapshots_schema() -> SchemaRef {
@@ -834,6 +931,7 @@ pub struct FileCatalogRow {
     pub language: String,
     pub size_bytes: u64,
     pub mtime_ns: u64,
+    pub mode: u32,
 }
 
 pub struct FileProofRow {
@@ -917,5 +1015,29 @@ mod tests {
             lancedb_root(p),
             PathBuf::from("/foo/bar/.code-search/index.lance")
         );
+    }
+
+    #[test]
+    fn test_gram_postings_round_trip() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        let store = LanceDbStore::open_or_create(root).unwrap();
+        store.ensure_tables().unwrap();
+
+        let mut grams = BTreeMap::new();
+        grams.insert(*b"nee", vec![0u32]);
+        grams.insert(*b"eed", vec![0u32, 1u32]);
+        store
+            .write_gram_postings("worktree:non-git", &grams)
+            .unwrap();
+
+        let wanted = HashSet::from([*b"nee", *b"eed"]);
+        let postings = store
+            .read_gram_postings("worktree:non-git", &wanted)
+            .unwrap();
+
+        assert_eq!(postings.get(b"nee").unwrap(), &vec![0usize]);
+        assert_eq!(postings.get(b"eed").unwrap(), &vec![0usize, 1usize]);
     }
 }

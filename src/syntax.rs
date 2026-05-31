@@ -1,13 +1,15 @@
 use std::{fs, path::Path};
 
 use anyhow::Result;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tree_sitter::{Language, Node, Parser};
 
 use crate::{
+    index,
     search::line_range_for_node,
-    workspace::{language_for_path, ScanOptions, Workspace},
+    workspace::{language_for_path, FileRecord, ScanOptions, Workspace},
 };
 
 #[derive(Clone, Debug)]
@@ -41,7 +43,7 @@ pub fn symbols(
 ) -> Result<(Value, Vec<String>)> {
     let mut results = Vec::new();
     let mut warnings = Vec::new();
-    for symbol in collect_symbols(workspace, opts, &mut warnings)? {
+    for symbol in collect_symbols_prefiltered(workspace, opts, &mut warnings, Some(query))? {
         if symbol.name.contains(query) {
             results.push(symbol_to_json(symbol));
         }
@@ -59,7 +61,7 @@ pub fn defs(
 ) -> Result<(Value, Vec<String>)> {
     let mut results = Vec::new();
     let mut warnings = Vec::new();
-    for symbol in collect_symbols(workspace, opts, &mut warnings)? {
+    for symbol in collect_symbols_prefiltered(workspace, opts, &mut warnings, Some(identifier))? {
         if symbol.name == identifier {
             results.push(symbol_to_json(symbol));
         }
@@ -77,7 +79,7 @@ pub fn calls(
 ) -> Result<(Value, Vec<String>)> {
     let mut warnings = Vec::new();
     let mut results = Vec::new();
-    for call in collect_calls(workspace, opts, &mut warnings)? {
+    for call in collect_calls_prefiltered(workspace, opts, &mut warnings, Some(identifier))? {
         if call.enclosing_symbol.as_deref() == Some(identifier) {
             results.push(call_to_json(call));
         }
@@ -95,7 +97,7 @@ pub fn callers(
 ) -> Result<(Value, Vec<String>)> {
     let mut warnings = Vec::new();
     let mut results = Vec::new();
-    for call in collect_calls(workspace, opts, &mut warnings)? {
+    for call in collect_calls_prefiltered(workspace, opts, &mut warnings, Some(identifier))? {
         if last_identifier(&call.target) == identifier {
             results.push(call_to_json(call));
         }
@@ -106,39 +108,29 @@ pub fn callers(
     Ok((Value::Array(results), warnings))
 }
 
-fn collect_symbols(
+fn collect_symbols_prefiltered(
     workspace: &Workspace,
     opts: &ScanOptions,
     warnings: &mut Vec<String>,
+    needle: Option<&str>,
 ) -> Result<Vec<Symbol>> {
-    let mut scan_opts = opts.clone();
-    scan_opts.limit = 0;
+    let files = parser_candidate_files(workspace, opts, needle)?;
+    parse_symbol_files(workspace, &files, warnings)
+}
+
+fn parse_symbol_files(
+    workspace: &Workspace,
+    files: &[FileRecord],
+    warnings: &mut Vec<String>,
+) -> Result<Vec<Symbol>> {
+    let parsed = files
+        .par_iter()
+        .map(|file| parse_symbols_in_file(workspace, file))
+        .collect::<Result<Vec<_>>>()?;
     let mut symbols = Vec::new();
-    for file in workspace.scan_files(&scan_opts)? {
-        let path = workspace.abs_path(&file.path);
-        let Some(language) = parser_language(&path) else {
-            continue;
-        };
-        let content = match fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(_) => continue,
-        };
-        let mut parser = Parser::new();
-        parser.set_language(&language)?;
-        let Some(tree) = parser.parse(&content, None) else {
-            warnings.push(format!("parser failed for {}", file.path));
-            continue;
-        };
-        if tree.root_node().has_error() {
-            warnings.push(format!("partial parse with syntax errors: {}", file.path));
-        }
-        walk_symbols(
-            tree.root_node(),
-            &file.path,
-            &file.language,
-            content.as_bytes(),
-            &mut symbols,
-        );
+    for (mut file_symbols, mut file_warnings) in parsed {
+        symbols.append(&mut file_symbols);
+        warnings.append(&mut file_warnings);
     }
     symbols.sort_by(|a, b| a.path.cmp(&b.path).then(a.name.cmp(&b.name)));
     Ok(symbols)
@@ -149,35 +141,32 @@ pub(crate) fn collect_calls(
     opts: &ScanOptions,
     warnings: &mut Vec<String>,
 ) -> Result<Vec<CallCandidate>> {
-    let mut scan_opts = opts.clone();
-    scan_opts.limit = 0;
+    collect_calls_prefiltered(workspace, opts, warnings, None)
+}
+
+fn collect_calls_prefiltered(
+    workspace: &Workspace,
+    opts: &ScanOptions,
+    warnings: &mut Vec<String>,
+    needle: Option<&str>,
+) -> Result<Vec<CallCandidate>> {
+    let files = parser_candidate_files(workspace, opts, needle)?;
+    parse_call_files(workspace, &files, warnings)
+}
+
+fn parse_call_files(
+    workspace: &Workspace,
+    files: &[FileRecord],
+    warnings: &mut Vec<String>,
+) -> Result<Vec<CallCandidate>> {
+    let parsed = files
+        .par_iter()
+        .map(|file| parse_calls_in_file(workspace, file))
+        .collect::<Result<Vec<_>>>()?;
     let mut calls = Vec::new();
-    for file in workspace.scan_files(&scan_opts)? {
-        let path = workspace.abs_path(&file.path);
-        let Some(language) = parser_language(&path) else {
-            continue;
-        };
-        let content = match fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(_) => continue,
-        };
-        let mut parser = Parser::new();
-        parser.set_language(&language)?;
-        let Some(tree) = parser.parse(&content, None) else {
-            warnings.push(format!("parser failed for {}", file.path));
-            continue;
-        };
-        if tree.root_node().has_error() {
-            warnings.push(format!("partial parse with syntax errors: {}", file.path));
-        }
-        walk_calls(
-            tree.root_node(),
-            &file.path,
-            &file.language,
-            &file.hash,
-            content.as_bytes(),
-            &mut calls,
-        );
+    for (mut file_calls, mut file_warnings) in parsed {
+        calls.append(&mut file_calls);
+        warnings.append(&mut file_warnings);
     }
     calls.sort_by(|a, b| {
         a.path
@@ -186,6 +175,88 @@ pub(crate) fn collect_calls(
             .then(a.enclosing_symbol.cmp(&b.enclosing_symbol))
     });
     Ok(calls)
+}
+
+fn parser_candidate_files(
+    workspace: &Workspace,
+    opts: &ScanOptions,
+    needle: Option<&str>,
+) -> Result<Vec<FileRecord>> {
+    let mut scan_opts = opts.clone();
+    scan_opts.limit = 0;
+    if let Some(needle) = needle.filter(|value| value.as_bytes().len() >= 3) {
+        if let Some((records, _index)) =
+            index::fresh_text_records(workspace, &scan_opts, needle, "literal")?
+        {
+            return Ok(records);
+        }
+    }
+    workspace.scan_files(&scan_opts)
+}
+
+fn parse_symbols_in_file(
+    workspace: &Workspace,
+    file: &FileRecord,
+) -> Result<(Vec<Symbol>, Vec<String>)> {
+    let path = workspace.abs_path(&file.path);
+    let Some(language) = parser_language(&path) else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    let content = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(_) => return Ok((Vec::new(), Vec::new())),
+    };
+    let mut parser = Parser::new();
+    parser.set_language(&language)?;
+    let Some(tree) = parser.parse(&content, None) else {
+        return Ok((Vec::new(), vec![format!("parser failed for {}", file.path)]));
+    };
+    let mut warnings = Vec::new();
+    if tree.root_node().has_error() {
+        warnings.push(format!("partial parse with syntax errors: {}", file.path));
+    }
+    let mut symbols = Vec::new();
+    walk_symbols(
+        tree.root_node(),
+        &file.path,
+        &file.language,
+        content.as_bytes(),
+        &mut symbols,
+    );
+    Ok((symbols, warnings))
+}
+
+fn parse_calls_in_file(
+    workspace: &Workspace,
+    file: &FileRecord,
+) -> Result<(Vec<CallCandidate>, Vec<String>)> {
+    let path = workspace.abs_path(&file.path);
+    let Some(language) = parser_language(&path) else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    let content = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(_) => return Ok((Vec::new(), Vec::new())),
+    };
+    let mut parser = Parser::new();
+    parser.set_language(&language)?;
+    let Some(tree) = parser.parse(&content, None) else {
+        return Ok((Vec::new(), vec![format!("parser failed for {}", file.path)]));
+    };
+    let mut warnings = Vec::new();
+    if tree.root_node().has_error() {
+        warnings.push(format!("partial parse with syntax errors: {}", file.path));
+    }
+    let mut calls = Vec::new();
+    walk_calls(
+        tree.root_node(),
+        &file.path,
+        &file.language,
+        &file.hash,
+        content.as_bytes(),
+        &mut calls,
+    );
+    Ok((calls, warnings))
 }
 
 fn walk_symbols(node: Node, path: &str, language: &str, source: &[u8], symbols: &mut Vec<Symbol>) {

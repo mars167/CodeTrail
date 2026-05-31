@@ -190,6 +190,95 @@ fn find_uses_fresh_text_index_for_candidates() {
 }
 
 #[test]
+fn find_uses_lancedb_gram_prefilter_for_candidates() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("hit.txt"),
+        "this file contains needle_rare_literal\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("miss.txt"),
+        "this file contains many words but not the target\n",
+    )
+    .unwrap();
+
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["find", "needle_rare_literal"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["index"]["used"], true);
+    assert_eq!(json["index"]["fresh"], true);
+    assert_eq!(json["index"]["prefilter"], "trigram");
+    assert_eq!(json["index"]["candidateCount"], 1);
+    assert_eq!(json["results"][0]["path"], "hit.txt");
+}
+
+#[test]
+fn index_update_noops_when_index_is_fresh() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
+
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "update"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let result = &json["results"][0];
+
+    assert_eq!(result["updated"], false);
+    assert_eq!(result["reason"], "index_fresh");
+    assert_eq!(result["index"]["fresh"], true);
+}
+
+#[test]
+fn files_live_scan_uses_catalog_without_content_hash() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["files", "sample"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["index"]["used"], false);
+    assert_eq!(json["results"][0]["producer"], "live_file_catalog");
+    assert!(json["results"][0]["hash"].is_null());
+}
+
+#[test]
 fn query_falls_back_when_scan_options_do_not_match_index() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join(".hidden.txt"), "needle\n").unwrap();
