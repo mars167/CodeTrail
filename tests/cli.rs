@@ -961,6 +961,167 @@ fn cursor_rejects_dirty_worktree_result_set_changes() {
 }
 
 #[test]
+fn saved_query_replay_matches_direct_query_and_can_be_deleted() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("a.txt"), "needle\n").unwrap();
+    fs::write(dir.path().join("b.txt"), "needle\n").unwrap();
+
+    let saved_output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--save-query")
+        .arg("needles")
+        .args(["find", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let saved_json: Value = serde_json::from_slice(&saved_output).unwrap();
+    assert_eq!(saved_json["savedQuery"]["name"], "needles");
+
+    let saved_path = dir.path().join(".code-search/queries/needles.json");
+    let saved_file: Value = serde_json::from_slice(&fs::read(&saved_path).unwrap()).unwrap();
+    assert_eq!(saved_file["command"], "find");
+    assert_eq!(saved_file["query"]["pattern"], "needle");
+    assert_eq!(saved_file["query"]["scope"]["limit"], 100);
+    assert!(saved_file.get("results").is_none());
+
+    let direct_output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["find", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let direct_json: Value = serde_json::from_slice(&direct_output).unwrap();
+
+    let replay_output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["query", "replay", "needles"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let replay_json: Value = serde_json::from_slice(&replay_output).unwrap();
+    assert_eq!(replay_json["query"], direct_json["query"]);
+    assert_eq!(replay_json["results"], direct_json["results"]);
+    assert_eq!(replay_json["savedQuery"]["snapshotMatch"], true);
+
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["query", "delete", "needles"])
+        .assert()
+        .success();
+    assert!(!saved_path.exists());
+}
+
+#[test]
+fn saved_query_replay_continues_from_saved_next_cursor() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("a.txt"), "needle\n").unwrap();
+    fs::write(dir.path().join("b.txt"), "needle\n").unwrap();
+
+    let first_output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--limit")
+        .arg("1")
+        .arg("--save-query")
+        .arg("page")
+        .args(["find", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let first_json: Value = serde_json::from_slice(&first_output).unwrap();
+    let saved_cursor = first_json["nextCursor"].as_str().unwrap().to_string();
+    assert_eq!(first_json["results"][0]["path"], "a.txt");
+
+    let replay_output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["query", "replay", "page"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let replay_json: Value = serde_json::from_slice(&replay_output).unwrap();
+
+    assert_eq!(replay_json["query"]["scope"]["cursor"], saved_cursor);
+    assert_eq!(replay_json["results"][0]["path"], "b.txt");
+}
+
+#[test]
+fn saved_query_replay_warns_when_snapshot_changes() {
+    let dir = tempdir().unwrap();
+    init_git_repo(dir.path());
+    fs::write(dir.path().join("a.txt"), "needle\n").unwrap();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["add", "a.txt"])
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["commit", "-m", "init"])
+        .output()
+        .unwrap();
+
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--save-query")
+        .arg("stable")
+        .args(["find", "needle"])
+        .assert()
+        .success();
+    fs::write(dir.path().join("b.txt"), "needle\n").unwrap();
+
+    let replay_output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["query", "replay", "stable"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let replay_json: Value = serde_json::from_slice(&replay_output).unwrap();
+
+    assert_eq!(replay_json["savedQuery"]["snapshotMatch"], false);
+    assert!(replay_json["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|warning| warning["code"] == "saved_query_snapshot_mismatch"));
+
+    let saved_snapshot_output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["query", "replay", "stable", "--snapshot", "saved"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let saved_snapshot_json: Value = serde_json::from_slice(&saved_snapshot_output).unwrap();
+    assert_eq!(
+        saved_snapshot_json["error"]["code"],
+        "saved_query_snapshot_mismatch"
+    );
+}
+
+#[test]
 fn jsonl_summary_includes_cursor_and_facets() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("a.rs"), "needle\n").unwrap();
