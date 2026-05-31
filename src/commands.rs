@@ -145,6 +145,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                         precise.results,
                         Vec::new(),
                     ),
+                    &workspace.root,
                 );
             }
             let query_output = search::find(
@@ -181,6 +182,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                         precise.results,
                         Vec::new(),
                     ),
+                    &workspace.root,
                 );
             }
             let (results, warnings) = syntax::symbols(&workspace, &scan_opts, query)?;
@@ -209,6 +211,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                         precise.results,
                         Vec::new(),
                     ),
+                    &workspace.root,
                 );
             }
             let (results, warnings) = syntax::defs(&workspace, &scan_opts, identifier)?;
@@ -243,6 +246,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                             json!(results),
                             warnings,
                         ),
+                        &workspace.root,
                     );
                 }
             }
@@ -279,6 +283,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                             json!(results),
                             warnings,
                         ),
+                        &workspace.root,
                     );
                 }
             }
@@ -508,11 +513,17 @@ pub fn run(cli: Cli) -> AppResult<i32> {
         Command::Completions { .. } => unreachable!("handled before workspace discovery"),
     };
 
+    let value = output::with_workspace_root(value, &workspace.root);
     output::emit(&cli.output, &value)?;
     Ok(exit_code)
 }
 
-fn emit_response(format: &crate::cli::OutputFormat, value: serde_json::Value) -> AppResult<i32> {
+fn emit_response(
+    format: &crate::cli::OutputFormat,
+    value: serde_json::Value,
+    workspace_root: &std::path::Path,
+) -> AppResult<i32> {
+    let value = output::with_workspace_root(value, workspace_root);
     let exit_code = output::no_match_exit(&value["results"]);
     output::emit(format, &value)?;
     Ok(exit_code)

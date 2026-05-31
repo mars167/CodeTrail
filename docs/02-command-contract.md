@@ -94,7 +94,13 @@ flowchart LR
 
 ## Text 输出
 
-`--output text` 只面向人类快速查看，不是 Agent 契约。Agent 应使用默认 JSON。
+`--output json` 是默认 Agent 契约，保留完整字段、preview/context、`suggestedReads` 和 `nextActions`。
+
+`--output compact-json` 保留同一 envelope 与可验证字段，但移除 `preview`、`context`、`content`、`matchText` 这类大字段；Agent 仍应通过 `readCommand` 精确读取源码。
+
+`--output jsonl` 面向长结果流式消费：每条命中输出一个 `result` event，最后输出一个 `summary` event；错误输出 `error` event。
+
+`--output text` 只面向人类快速查看，不是 Agent 契约。
 
 ## 退出码
 

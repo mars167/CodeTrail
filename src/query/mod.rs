@@ -77,6 +77,10 @@ impl QueryService {
         &self.workspace.snapshot_id
     }
 
+    fn finalize(&self, value: Value) -> Value {
+        output::with_workspace_root(value, &self.workspace.root)
+    }
+
     // ------------------------------------------------------------------
     //  Search operations
     // ------------------------------------------------------------------
@@ -85,7 +89,7 @@ impl QueryService {
     pub fn find(&self, text: &str, opts: &QueryOptions) -> Result<Value> {
         let scan = opts.to_scan_options();
         let qo = search::find(&self.workspace, &scan, text, "literal", opts.context, false)?;
-        Ok(output::response_with_index(
+        Ok(self.finalize(output::response_with_index(
             "find",
             "find",
             json!({ "pattern": text, "mode": "literal" }),
@@ -94,7 +98,7 @@ impl QueryService {
             qo.index,
             qo.results,
             Vec::new(),
-        ))
+        )))
     }
 
     /// Regex search (delegates to `search::find` with mode=regex).
@@ -108,7 +112,7 @@ impl QueryService {
             opts.context,
             false,
         )?;
-        Ok(output::response_with_index(
+        Ok(self.finalize(output::response_with_index(
             "grep",
             "find",
             json!({ "pattern": pattern, "mode": "regex", "context": opts.context }),
@@ -117,14 +121,14 @@ impl QueryService {
             qo.index,
             qo.results,
             Vec::new(),
-        ))
+        )))
     }
 
     /// Find files whose path contains `pattern` (substring match).
     pub fn files(&self, pattern: &str, opts: &QueryOptions) -> Result<Value> {
         let scan = opts.to_scan_options();
         let qo = search::files(&self.workspace, &scan, pattern, false)?;
-        Ok(output::response_with_index(
+        Ok(self.finalize(output::response_with_index(
             "files",
             "files",
             json!({ "pattern": pattern, "mode": "path_substring_or_glob" }),
@@ -133,14 +137,14 @@ impl QueryService {
             qo.index,
             qo.results,
             Vec::new(),
-        ))
+        )))
     }
 
     /// Find files by strict glob pattern.
     pub fn glob(&self, pattern: &str, opts: &QueryOptions) -> Result<Value> {
         let scan = opts.to_scan_options();
         let qo = search::files(&self.workspace, &scan, pattern, true)?;
-        Ok(output::response_with_index(
+        Ok(self.finalize(output::response_with_index(
             "glob",
             "files",
             json!({ "pattern": pattern, "mode": "strict_glob" }),
@@ -149,7 +153,7 @@ impl QueryService {
             qo.index,
             qo.results,
             Vec::new(),
-        ))
+        )))
     }
 
     // ------------------------------------------------------------------
@@ -159,7 +163,7 @@ impl QueryService {
     /// Read file contents (optionally with a line-range like `path:1-10`).
     pub fn read_file(&self, target: &str) -> Result<Value> {
         let result = search::read(&self.workspace, target)?;
-        Ok(output::response(
+        Ok(self.finalize(output::response(
             "read",
             "read",
             json!({ "target": target }),
@@ -167,12 +171,12 @@ impl QueryService {
             output::source_fact(),
             json!([result]),
             Vec::new(),
-        ))
+        )))
     }
 
     /// List directory contents (non-recursive).
     pub fn list_dir(&self, dir: &str) -> Result<Value> {
-        Ok(output::response(
+        Ok(self.finalize(output::response(
             "list",
             "list",
             json!({ "dir": dir, "recursive": false }),
@@ -180,7 +184,7 @@ impl QueryService {
             output::source_fact(),
             search::list(&self.workspace, Some(dir), false)?,
             Vec::new(),
-        ))
+        )))
     }
 
     // ------------------------------------------------------------------
@@ -193,7 +197,7 @@ impl QueryService {
 
         // 1. Try SCIP precise index first.
         if let Some(precise) = scip_index::defs(&self.workspace, &scan, identifier)? {
-            return Ok(output::response_with_index(
+            return Ok(self.finalize(output::response_with_index(
                 "defs",
                 "defs",
                 json!({ "identifier": identifier, "producer": "scip" }),
@@ -202,12 +206,12 @@ impl QueryService {
                 precise.index,
                 precise.results,
                 Vec::new(),
-            ));
+            )));
         }
 
         // 2. Fall back to tree-sitter parser.
         let (results, warnings) = syntax::defs(&self.workspace, &scan, identifier)?;
-        Ok(output::response(
+        Ok(self.finalize(output::response(
             "defs",
             "defs",
             json!({ "identifier": identifier, "producer": "tree_sitter_parser_fallback", "fallbackReason": "precise_scip_index_unavailable" }),
@@ -215,7 +219,7 @@ impl QueryService {
             output::parser_fact(),
             results,
             warnings,
-        ))
+        )))
     }
 
     /// Find references to `identifier` — prefers SCIP; falls back to text search.
@@ -224,7 +228,7 @@ impl QueryService {
 
         // 1. Try SCIP precise index first.
         if let Some(precise) = scip_index::refs(&self.workspace, &scan, identifier)? {
-            return Ok(output::response_with_index(
+            return Ok(self.finalize(output::response_with_index(
                 "refs",
                 "refs",
                 json!({ "identifier": identifier, "producer": "scip" }),
@@ -233,7 +237,7 @@ impl QueryService {
                 precise.index,
                 precise.results,
                 Vec::new(),
-            ));
+            )));
         }
 
         // 2. Fall back to identifier-boundary text search.
@@ -245,7 +249,7 @@ impl QueryService {
             opts.context,
             true,
         )?;
-        Ok(output::response_with_index(
+        Ok(self.finalize(output::response_with_index(
             "refs",
             "refs",
             json!({ "identifier": identifier, "mode": "identifier_boundary_text_search" }),
@@ -255,7 +259,7 @@ impl QueryService {
             qo.results,
             vec!["refs is identifier-boundary text search unless a precise occurrence index is available"
                 .to_string()],
-        ))
+        )))
     }
 
     /// Find symbols matching `query` — prefers SCIP; falls back to tree-sitter.
@@ -264,7 +268,7 @@ impl QueryService {
 
         // 1. Try SCIP precise index first.
         if let Some(precise) = scip_index::symbols(&self.workspace, &scan, query)? {
-            return Ok(output::response_with_index(
+            return Ok(self.finalize(output::response_with_index(
                 "symbols",
                 "symbols",
                 json!({ "query": query, "producer": "scip" }),
@@ -273,12 +277,12 @@ impl QueryService {
                 precise.index,
                 precise.results,
                 Vec::new(),
-            ));
+            )));
         }
 
         // 2. Fall back to tree-sitter.
         let (results, warnings) = syntax::symbols(&self.workspace, &scan, query)?;
-        Ok(output::response(
+        Ok(self.finalize(output::response(
             "symbols",
             "symbols",
             json!({ "query": query, "producer": "tree_sitter_parser" }),
@@ -286,7 +290,7 @@ impl QueryService {
             output::parser_fact(),
             results,
             warnings,
-        ))
+        )))
     }
 
     // ------------------------------------------------------------------
@@ -303,7 +307,7 @@ impl QueryService {
             if store.freshness_check().unwrap_or(false) {
                 let results = store.query_calls(identifier).unwrap_or_default();
                 let index_meta = store.index_meta(true);
-                return Ok(output::response_with_index(
+                return Ok(self.finalize(output::response_with_index(
                     "calls",
                     "calls",
                     json!({ "identifier": identifier, "producer": "graph" }),
@@ -312,13 +316,13 @@ impl QueryService {
                     index_meta,
                     json!(results),
                     Vec::new(),
-                ));
+                )));
             }
         }
 
         // 2. Fall back to tree-sitter heuristic.
         let (results, warnings) = syntax::calls(&self.workspace, &scan, identifier)?;
-        Ok(output::response(
+        Ok(self.finalize(output::response(
             "calls",
             "calls",
             json!({ "identifier": identifier, "producer": "tree_sitter_call_heuristic" }),
@@ -326,7 +330,7 @@ impl QueryService {
             output::inferred_candidate(),
             results,
             warnings,
-        ))
+        )))
     }
 
     /// Find incoming callers of `identifier`.
@@ -339,7 +343,7 @@ impl QueryService {
             if store.freshness_check().unwrap_or(false) {
                 let results = store.query_callers(identifier).unwrap_or_default();
                 let index_meta = store.index_meta(true);
-                return Ok(output::response_with_index(
+                return Ok(self.finalize(output::response_with_index(
                     "callers",
                     "callers",
                     json!({ "identifier": identifier, "producer": "graph" }),
@@ -348,13 +352,13 @@ impl QueryService {
                     index_meta,
                     json!(results),
                     Vec::new(),
-                ));
+                )));
             }
         }
 
         // 2. Fall back to tree-sitter heuristic.
         let (results, warnings) = syntax::callers(&self.workspace, &scan, identifier)?;
-        Ok(output::response(
+        Ok(self.finalize(output::response(
             "callers",
             "callers",
             json!({ "identifier": identifier, "producer": "tree_sitter_call_heuristic" }),
@@ -362,7 +366,7 @@ impl QueryService {
             output::inferred_candidate(),
             results,
             warnings,
-        ))
+        )))
     }
 
     // ------------------------------------------------------------------
@@ -371,7 +375,7 @@ impl QueryService {
 
     /// Return a list of changed / dirty files (git-status porcelain).
     pub fn changed(&self) -> Result<Value> {
-        Ok(output::response(
+        Ok(self.finalize(output::response(
             "changed",
             "changed",
             json!({}),
@@ -379,12 +383,12 @@ impl QueryService {
             output::source_fact(),
             search::changed(&self.workspace)?,
             Vec::new(),
-        ))
+        )))
     }
 
     /// Return workspace status including snapshot_id, dirty flag, etc.
     pub fn status(&self) -> Result<Value> {
-        Ok(output::response(
+        Ok(self.finalize(output::response(
             "status",
             "status",
             json!({}),
@@ -392,7 +396,7 @@ impl QueryService {
             output::source_fact(),
             json!([search::status(&self.workspace)]),
             Vec::new(),
-        ))
+        )))
     }
 }
 
@@ -450,6 +454,20 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("worktree:"));
+    }
+
+    #[test]
+    fn query_service_read_command_preserves_workspace_root() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src dir")).unwrap();
+        fs::write(dir.path().join("src dir/a b.rs"), "needle\n").unwrap();
+        let svc = QueryService::new(dir.path()).unwrap();
+
+        let result = svc.find("needle", &QueryOptions::default()).unwrap();
+        let argv = result["results"][0]["readCommandArgv"].as_array().unwrap();
+        assert_eq!(argv[1], "--path");
+        assert_eq!(argv[3], "read");
+        assert_eq!(argv[4], "src dir/a b.rs:1");
     }
 
     // -- grep -----------------------------------------------------------

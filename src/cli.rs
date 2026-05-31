@@ -36,6 +36,8 @@ pub struct Cli {
 #[derive(Clone, Debug, ValueEnum)]
 pub enum OutputFormat {
     Json,
+    CompactJson,
+    Jsonl,
     Text,
 }
 

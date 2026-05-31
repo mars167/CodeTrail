@@ -106,6 +106,302 @@ fn warnings_are_structured_with_stable_codes() {
 }
 
 #[test]
+fn json_output_includes_read_suggestions_and_next_actions() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/main.rs"),
+        "fn main() {\n    println!(\"needle\");\n}\n",
+    )
+    .unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["find", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert!(json["results"][0]["readCommand"]
+        .as_str()
+        .unwrap()
+        .contains("--path"));
+    assert_eq!(json["results"][0]["readCommandArgv"][3], "read");
+    assert_eq!(json["results"][0]["readCommandArgv"][4], "src/main.rs:2");
+    assert_eq!(json["suggestedReads"][0], json["results"][0]["readCommand"]);
+    assert_eq!(
+        json["nextActions"][0]["command"],
+        json["results"][0]["readCommand"]
+    );
+    assert_eq!(json["truncated"], false);
+    assert!(json["nextCursor"].is_null());
+}
+
+#[test]
+fn read_commands_are_replayable_with_path_and_spaces() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src dir")).unwrap();
+    fs::write(
+        dir.path().join("src dir/a b.rs"),
+        "fn main() { /* needle */ }\n",
+    )
+    .unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["find", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    let canonical_root = fs::canonicalize(dir.path()).unwrap();
+    let argv = json["results"][0]["readCommandArgv"].as_array().unwrap();
+    assert_eq!(argv[0], "code-search");
+    assert_eq!(argv[1], "--path");
+    assert_eq!(argv[2], canonical_root.to_string_lossy().as_ref());
+    assert_eq!(argv[3], "read");
+    assert_eq!(argv[4], "src dir/a b.rs:1");
+
+    let read_output = code_search()
+        .args(argv.iter().skip(1).map(|value| value.as_str().unwrap()))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let read_json: Value = serde_json::from_slice(&read_output).unwrap();
+    assert_eq!(
+        read_json["results"][0]["content"],
+        "fn main() { /* needle */ }"
+    );
+}
+
+#[test]
+fn read_command_argv_handles_paths_that_look_like_flags() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("--odd.txt"), "needle\n").unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["find", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let argv = json["results"][0]["readCommandArgv"].as_array().unwrap();
+    assert_eq!(argv[4], "--");
+    assert_eq!(argv[5], "--odd.txt:1");
+
+    let read_output = code_search()
+        .args(argv.iter().skip(1).map(|value| value.as_str().unwrap()))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let read_json: Value = serde_json::from_slice(&read_output).unwrap();
+    assert_eq!(read_json["results"][0]["content"], "needle");
+}
+
+#[test]
+fn directory_results_do_not_emit_read_next_actions() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["list"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let src = json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|result| result["path"] == "src")
+        .unwrap();
+    assert_eq!(src["kind"], "directory");
+    assert!(src.get("readCommand").is_none());
+    assert!(json["suggestedReads"].as_array().unwrap().is_empty());
+    assert!(json["nextActions"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn deleted_changed_files_do_not_emit_read_next_actions() {
+    let dir = tempdir().unwrap();
+    std::process::Command::new("git")
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    fs::write(dir.path().join("gone.txt"), "removed\n").unwrap();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["add", "gone.txt"])
+        .output()
+        .unwrap();
+    fs::remove_file(dir.path().join("gone.txt")).unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["changed"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["results"][0]["path"], "gone.txt");
+    assert_eq!(json["results"][0]["worktreeStatus"], "D");
+    assert!(json["results"][0].get("readCommand").is_none());
+    assert!(json["suggestedReads"].as_array().unwrap().is_empty());
+    assert!(json["nextActions"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn index_status_metadata_does_not_emit_read_next_actions() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert!(json["results"][0].get("readCommand").is_none());
+    assert!(json["suggestedReads"].as_array().unwrap().is_empty());
+    assert!(json["nextActions"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn error_envelopes_keep_stable_output_fields() {
+    let dir = tempdir().unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["read", "missing.txt"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["schemaVersion"], "1.0");
+    assert_eq!(json["truncated"], false);
+    assert!(json["nextCursor"].is_null());
+    assert!(json["warnings"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn jsonl_parse_errors_are_error_events() {
+    let output = code_search()
+        .args(["--output", "jsonl", "definitely-not-a-command"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let lines: Vec<Value> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["event"], "error");
+    assert_eq!(lines[0]["error"]["code"], "cli_usage_error");
+    assert_eq!(lines[0]["truncated"], false);
+    assert!(lines[0]["nextCursor"].is_null());
+    assert!(lines[0]["warnings"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn compact_json_omits_large_fields_but_keeps_read_command() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/main.rs"),
+        "before\nneedle here\nafter\n",
+    )
+    .unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args([
+            "--output",
+            "compact-json",
+            "--context",
+            "1",
+            "find",
+            "needle",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["results"][0]["readCommandArgv"][4], "src/main.rs:2");
+    assert!(json["results"][0].get("preview").is_none());
+    assert!(json["results"][0].get("context").is_none());
+    assert!(json["results"][0].get("matchText").is_none());
+}
+
+#[test]
+fn jsonl_output_streams_result_events_and_summary() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("sample.txt"), "needle one\nneedle two\n").unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "jsonl", "find", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let lines: Vec<Value> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+
+    assert_eq!(lines[0]["event"], "result");
+    assert_eq!(lines[0]["result"]["readCommandArgv"][4], "sample.txt:1");
+    assert_eq!(lines[2]["event"], "summary");
+    assert_eq!(lines[2]["resultCount"], 2);
+    assert_eq!(lines[2]["schemaVersion"], "1.0");
+}
+
+#[test]
 fn cli_parse_errors_use_json_error_schema() {
     let output = code_search()
         .args(["definitely-not-a-command"])
