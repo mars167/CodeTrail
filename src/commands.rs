@@ -121,14 +121,31 @@ pub fn run(cli: Cli) -> AppResult<i32> {
         ),
         Command::Read { target } => {
             let result = search::read(&workspace, target)?;
+            let reliability = if result
+                .get("exact")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                output::source_fact()
+            } else {
+                output::source_fact_inexact()
+            };
+            let warnings = result
+                .get("warnings")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .map(ToString::to_string)
+                .collect();
             output::response(
                 "read",
                 "read",
                 json!({ "target": target }),
                 &workspace.snapshot_id,
-                output::source_fact(),
+                reliability,
                 json!([result]),
-                Vec::new(),
+                warnings,
             )
         }
         Command::Refs { identifier } => {

@@ -509,6 +509,112 @@ fn read_returns_exact_line_range() {
 }
 
 #[test]
+fn read_rejects_invalid_ranges_with_structured_errors() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("sample.txt"), "one\ntwo\nthree\n").unwrap();
+
+    for target in ["sample.txt:0", "sample.txt:3-2", "sample.txt:2-"] {
+        let output = code_search()
+            .arg("--path")
+            .arg(dir.path())
+            .args(["read", target])
+            .assert()
+            .failure()
+            .get_output()
+            .stdout
+            .clone();
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["error"]["code"], "invalid_line_range");
+    }
+}
+
+#[test]
+fn read_blocks_paths_outside_workspace() {
+    let workspace = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    fs::write(outside.path().join("secret.txt"), "secret\n").unwrap();
+    let target = format!(
+        "../{}/secret.txt",
+        outside.path().file_name().unwrap().to_string_lossy()
+    );
+
+    let output = code_search()
+        .arg("--path")
+        .arg(workspace.path())
+        .args(["read", &target])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["error"]["code"], "path_escapes_workspace_root");
+}
+
+#[test]
+fn read_binary_file_returns_warning_without_content() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("blob.bin"), b"abc\0def").unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["read", "blob.bin"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["reliability"]["exact"], false);
+    assert_eq!(json["results"][0]["binary"], true);
+    assert_eq!(json["results"][0]["content"], "");
+    assert_eq!(json["results"][0]["exact"], false);
+    assert!(json["results"][0].get("readCommand").is_none());
+    assert!(json["nextActions"].as_array().unwrap().is_empty());
+    assert_eq!(json["warnings"][0]["code"], "binary_file_not_displayed");
+}
+
+#[test]
+fn read_large_file_truncates_full_read_but_allows_range() {
+    let dir = tempdir().unwrap();
+    let content = (0..7000)
+        .map(|idx| format!("line {idx}\n"))
+        .collect::<String>();
+    fs::write(dir.path().join("large.txt"), content).unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["read", "large.txt"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["reliability"]["exact"], false);
+    assert_eq!(json["results"][0]["truncated"], true);
+    assert_eq!(json["results"][0]["exact"], false);
+    assert!(json["results"][0].get("readCommand").is_none());
+    assert!(json["nextActions"].as_array().unwrap().is_empty());
+    assert_eq!(json["warnings"][0]["code"], "large_file_truncated");
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["read", "large.txt:6999-7000"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["results"][0]["content"], "line 6998\nline 6999");
+    assert_eq!(json["results"][0]["truncated"], false);
+}
+
+#[test]
 fn parser_commands_expose_symbols_and_call_candidates() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
