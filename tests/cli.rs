@@ -31,9 +31,165 @@ fn find_returns_reliable_source_fact() {
     let json: Value = serde_json::from_slice(&output).unwrap();
 
     assert_eq!(json["ok"], true);
+    assert_eq!(json["schemaVersion"], "1.0");
     assert_eq!(json["reliability"]["level"], "source_fact");
+    assert_eq!(json["query"]["normalized"], true);
     assert_eq!(json["results"][0]["path"], "src/main.rs");
     assert_eq!(json["results"][0]["range"]["start"]["line"], 2);
+}
+
+#[test]
+fn schema_contract_covers_core_commands_and_errors() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+
+    for args in [
+        vec!["files", "main"],
+        vec!["read", "src/main.rs:1"],
+        vec!["status"],
+        vec!["changed"],
+        vec!["index", "status"],
+    ] {
+        let output = code_search()
+            .arg("--path")
+            .arg(dir.path())
+            .args(args)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["schemaVersion"], "1.0");
+        assert_eq!(json["query"]["normalized"], true);
+    }
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["find", "main", "--mode", "bogus"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["schemaVersion"], "1.0");
+    assert_eq!(json["error"]["code"], "unsupported_search_mode");
+}
+
+#[test]
+fn warnings_are_structured_with_stable_codes() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/main.rs"), "fn helper() {}\n").unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["refs", "helper"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(
+        json["warnings"][0]["code"],
+        "refs_identifier_boundary_text_search_unless_a_precise_occurrence_index_is_available"
+    );
+    assert!(json["warnings"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("precise occurrence index"));
+}
+
+#[test]
+fn cli_parse_errors_use_json_error_schema() {
+    let output = code_search()
+        .args(["definitely-not-a-command"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["schemaVersion"], "1.0");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], "cli_usage_error");
+}
+
+#[test]
+fn dynamic_error_details_do_not_change_error_code() {
+    let dir = tempdir().unwrap();
+
+    let first = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["read", "missing-one.txt"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let second = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["read", "missing-two.txt"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+
+    let first_json: Value = serde_json::from_slice(&first).unwrap();
+    let second_json: Value = serde_json::from_slice(&second).unwrap();
+    assert_eq!(first_json["error"]["code"], "read_failed");
+    assert_eq!(first_json["error"]["code"], second_json["error"]["code"]);
+
+    let first = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["list", "missing-one"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let second = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["list", "missing-two"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+
+    let first_json: Value = serde_json::from_slice(&first).unwrap();
+    let second_json: Value = serde_json::from_slice(&second).unwrap();
+    assert_eq!(first_json["error"]["code"], "directory_does_not_exist");
+    assert_eq!(first_json["error"]["code"], second_json["error"]["code"]);
+}
+
+#[test]
+fn dynamic_warning_details_do_not_change_warning_code() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/broken.rs"), "fn broken( {\n").unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["symbols", "broken"])
+        .assert()
+        .code(2)
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["warnings"][0]["code"], "partial_parse_syntax_errors");
 }
 
 #[test]

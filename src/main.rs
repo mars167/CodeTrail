@@ -1,8 +1,24 @@
-use clap::Parser;
-use code_search_cli::{cli::Cli, commands, output};
+use clap::{error::ErrorKind, Parser};
+use code_search_cli::{cli::Cli, cli::OutputFormat, commands, output};
 
 fn main() {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            if matches!(
+                error.kind(),
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+            ) {
+                print!("{error}");
+                std::process::exit(0);
+            }
+            let value = output::error_response_with_code("cli_usage_error", error.to_string());
+            if output::emit(&OutputFormat::Json, &value).is_err() {
+                eprintln!("failed to render error response");
+            }
+            std::process::exit(1);
+        }
+    };
     let output = cli.output.clone();
 
     let exit_code = match commands::run(cli) {
