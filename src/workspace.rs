@@ -9,6 +9,7 @@ use anyhow::{anyhow, Context, Result};
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 #[derive(Clone, Debug)]
 pub struct ScanOptions {
@@ -131,10 +132,10 @@ impl Workspace {
             let Some(file_type) = entry.file_type() else {
                 continue;
             };
-            if file_type.is_dir() && should_skip_dir(path) {
+            if file_type.is_dir() && should_skip_dir(path, opts.no_ignore) {
                 continue;
             }
-            if !file_type.is_file() || should_skip_path(path) {
+            if !file_type.is_file() || should_skip_path(path, opts.no_ignore) {
                 continue;
             }
 
@@ -186,6 +187,65 @@ impl Workspace {
     pub fn scan_files(&self, opts: &ScanOptions) -> Result<Vec<FileRecord>> {
         let catalog = self.scan_catalog(opts)?;
         self.materialize_proofs(&catalog)
+    }
+
+    pub fn scan_summary(&self, opts: &ScanOptions) -> Result<Value> {
+        let mut generated_skipped = 0_u64;
+        let mut binary_skipped = 0_u64;
+        let mut unreadable_skipped = 0_u64;
+        let mut total_seen = 0_u64;
+        let mut included = 0_u64;
+
+        let mut builder = WalkBuilder::new(&self.root);
+        builder
+            .hidden(!opts.hidden)
+            .ignore(!opts.no_ignore)
+            .git_ignore(!opts.no_ignore)
+            .git_global(!opts.no_ignore)
+            .git_exclude(!opts.no_ignore)
+            .parents(!opts.no_ignore);
+
+        for entry in builder.build() {
+            let entry = entry?;
+            let path = entry.path();
+            let Some(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                if should_skip_dir(path, opts.no_ignore) && is_generated_path(path) {
+                    generated_skipped += 1;
+                }
+                continue;
+            }
+            if !file_type.is_file() || should_skip_path(path, opts.no_ignore) {
+                if file_type.is_file() && is_generated_path(path) && !opts.no_ignore {
+                    generated_skipped += 1;
+                }
+                continue;
+            }
+
+            total_seen += 1;
+            let rel = self.rel_path(path);
+            if !matches_filters(&rel, &opts.include, &opts.exclude) {
+                continue;
+            }
+            match probably_binary_result(path) {
+                Ok(true) => binary_skipped += 1,
+                Ok(false) => included += 1,
+                Err(_) => unreadable_skipped += 1,
+            }
+        }
+
+        Ok(json!({
+            "totalSeen": total_seen,
+            "includedCount": included,
+            "skippedCount": generated_skipped + binary_skipped + unreadable_skipped,
+            "skipped": {
+                "generated": generated_skipped,
+                "binary": binary_skipped,
+                "unreadable": unreadable_skipped
+            }
+        }))
     }
 }
 
@@ -286,17 +346,16 @@ pub fn language_for_path(path: &Path) -> &'static str {
     }
 }
 
-fn should_skip_dir(path: &Path) -> bool {
-    should_skip_path(path)
+fn should_skip_dir(path: &Path, no_ignore: bool) -> bool {
+    should_skip_path(path, no_ignore)
 }
 
-fn should_skip_path(path: &Path) -> bool {
+fn should_skip_path(path: &Path, no_ignore: bool) -> bool {
     path.components().any(|component| {
         let value = component.as_os_str().to_string_lossy();
-        matches!(
-            value.as_ref(),
-            ".git" | ".code-search" | "target" | "node_modules" | "dist" | ".next"
-        )
+        matches!(value.as_ref(), ".git" | ".code-search")
+            || (!no_ignore
+                && matches!(value.as_ref(), "target" | "node_modules" | "dist" | ".next"))
     })
 }
 
@@ -307,15 +366,26 @@ pub fn matches_filters(path: &str, include: &[String], exclude: &[String]) -> bo
     include.is_empty() || include.iter().any(|pattern| path.contains(pattern))
 }
 
+fn is_generated_path(path: &Path) -> bool {
+    path.components().any(|component| {
+        let value = component.as_os_str().to_string_lossy();
+        matches!(value.as_ref(), "target" | "node_modules" | "dist" | ".next")
+    })
+}
+
 fn is_probably_binary(path: &Path) -> bool {
+    probably_binary_result(path).unwrap_or(true)
+}
+
+fn probably_binary_result(path: &Path) -> Result<bool> {
     let mut file = match fs::File::open(path) {
         Ok(file) => file,
-        Err(_) => return true,
+        Err(error) => return Err(error.into()),
     };
     let mut bytes = Vec::with_capacity(8192);
     match file.by_ref().take(8192).read_to_end(&mut bytes) {
-        Ok(_) => bytes.iter().any(|byte| *byte == 0),
-        Err(_) => true,
+        Ok(_) => Ok(bytes.iter().any(|byte| *byte == 0)),
+        Err(error) => Err(error.into()),
     }
 }
 

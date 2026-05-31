@@ -615,6 +615,129 @@ fn read_large_file_truncates_full_read_but_allows_range() {
 }
 
 #[test]
+fn find_truncates_very_long_preview_and_summarizes_it() {
+    let dir = tempdir().unwrap();
+    let long_line = format!("prefix needle {}\n", "x".repeat(2000));
+    fs::write(dir.path().join("long.txt"), long_line).unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--context", "1", "find", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let preview = json["results"][0]["preview"].as_str().unwrap();
+    assert!(preview.len() < 400);
+    assert_eq!(json["results"][0]["previewTruncated"], true);
+    assert_eq!(json["summary"]["truncatedCount"], 1);
+}
+
+#[test]
+fn generated_directories_are_default_excluded_but_explicitly_searchable() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("target/generated")).unwrap();
+    fs::write(dir.path().join("target/generated/out.rs"), "needle\n").unwrap();
+    fs::write(dir.path().join("src.rs"), "needle\n").unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["find", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert!(json["summary"]["skippedCount"].as_u64().unwrap() >= 1);
+    assert!(json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|result| result["path"] != "target/generated/out.rs"));
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--no-ignore")
+        .args(["find", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert!(json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|result| result["path"] == "target/generated/out.rs"));
+}
+
+#[test]
+fn fresh_index_reports_generated_skips_in_summary() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("target/generated")).unwrap();
+    fs::write(dir.path().join("target/generated/out.rs"), "needle\n").unwrap();
+    fs::write(dir.path().join("src.rs"), "needle\n").unwrap();
+
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["find", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["index"]["used"], true);
+    assert!(json["summary"]["skippedCount"].as_u64().unwrap() >= 1);
+    assert!(json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|result| result["path"] != "target/generated/out.rs"));
+}
+
+#[test]
+fn jsonl_summary_includes_large_content_summary_counts() {
+    let dir = tempdir().unwrap();
+    let long_line = format!("prefix needle {}\n", "x".repeat(2000));
+    fs::write(dir.path().join("long.txt"), long_line).unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "jsonl", "--context", "1", "find", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let lines: Vec<Value> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let summary = lines.last().unwrap();
+    assert_eq!(summary["event"], "summary");
+    assert_eq!(summary["summary"]["truncatedCount"], 1);
+    assert!(summary["summary"]["skippedCount"].as_u64().is_some());
+}
+
+#[test]
 fn parser_commands_expose_symbols_and_call_candidates() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();

@@ -15,6 +15,7 @@ use crate::{
 };
 
 const MAX_FULL_READ_BYTES: usize = 64 * 1024;
+const MAX_PREVIEW_CHARS: usize = 240;
 
 pub struct QueryOutput {
     pub results: Value,
@@ -206,11 +207,13 @@ pub fn find(
                 continue;
             }
             let range = byte_range_to_line_range(&content, mat.start(), mat.end());
+            let (preview, preview_truncated) = preview_line(&content, mat.start());
             results.push(json!({
                 "path": file.path,
                 "range": range,
                 "matchText": mat.as_str(),
-                "preview": preview_line(&content, mat.start()),
+                "preview": preview,
+                "previewTruncated": preview_truncated,
                 "context": context_lines(&content, range["start"]["line"].as_u64().unwrap_or(1) as usize, context),
                 "fileHash": file.hash,
                 "language": file.language,
@@ -379,7 +382,7 @@ fn candidate_file_catalog(
             .into_iter()
             .map(FileEntry::from)
             .collect(),
-        index: index::live_scan_index_meta("index_missing_or_stale"),
+        index: live_scan_index_with_summary(workspace, &scan_opts)?,
     })
 }
 
@@ -400,8 +403,14 @@ fn candidate_text_files(
     scan_opts.limit = 0;
     Ok(CandidateFiles {
         records: workspace.scan_files(&scan_opts)?,
-        index: index::live_scan_index_meta("index_missing_or_stale"),
+        index: live_scan_index_with_summary(workspace, &scan_opts)?,
     })
+}
+
+fn live_scan_index_with_summary(workspace: &Workspace, opts: &ScanOptions) -> Result<Value> {
+    let mut index = index::live_scan_index_meta("index_missing_or_stale");
+    index["scanSummary"] = workspace.scan_summary(opts)?;
+    Ok(index)
 }
 
 fn filter_records(records: Vec<FileRecord>, opts: &ScanOptions) -> Vec<FileRecord> {
@@ -447,13 +456,13 @@ fn text_search_producer(refs_mode: bool, index_used: bool) -> &'static str {
     }
 }
 
-fn preview_line(content: &str, byte: usize) -> String {
+fn preview_line(content: &str, byte: usize) -> (String, bool) {
     let start = content[..byte].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
     let end = content[byte..]
         .find('\n')
         .map(|idx| byte + idx)
         .unwrap_or(content.len());
-    content[start..end].trim_end().to_string()
+    truncate_preview(content[start..end].trim_end())
 }
 
 fn context_lines(content: &str, line: usize, context: u16) -> Value {
@@ -470,11 +479,20 @@ fn context_lines(content: &str, line: usize, context: u16) -> Value {
         .map(|(idx, text)| {
             json!({
                 "line": start + idx + 1,
-                "text": text
+                "text": truncate_preview(text).0,
+                "truncated": truncate_preview(text).1
             })
         })
         .collect();
     Value::Array(values)
+}
+
+fn truncate_preview(text: &str) -> (String, bool) {
+    if text.chars().count() <= MAX_PREVIEW_CHARS {
+        return (text.to_string(), false);
+    }
+    let truncated = text.chars().take(MAX_PREVIEW_CHARS).collect::<String>();
+    (format!("{truncated}..."), true)
 }
 
 fn byte_range_to_line_range(content: &str, start: usize, end: usize) -> Value {

@@ -112,6 +112,7 @@ pub fn response_with_index(
     let results = enrich_results(results);
     let suggested_reads = suggested_reads(&results);
     let next_actions = next_actions_from_results(&results);
+    let summary = response_summary(&results, &warnings, &index);
     json!({
         "schemaVersion": SCHEMA_VERSION,
         "ok": true,
@@ -123,6 +124,7 @@ pub fn response_with_index(
         "index": index,
         "truncated": false,
         "nextCursor": Value::Null,
+        "summary": summary,
         "results": results,
         "suggestedReads": suggested_reads,
         "nextActions": next_actions,
@@ -222,7 +224,7 @@ fn render_jsonl(value: &Value, out: &mut dyn Write) -> io::Result<()> {
         .transpose()?
         .unwrap_or(0);
 
-    let summary = json!({
+    let mut summary = json!({
         "schemaVersion": value.get("schemaVersion").cloned().unwrap_or_else(|| json!(SCHEMA_VERSION)),
         "event": "summary",
         "ok": true,
@@ -236,6 +238,9 @@ fn render_jsonl(value: &Value, out: &mut dyn Write) -> io::Result<()> {
         "suggestedReads": value.get("suggestedReads").cloned().unwrap_or_else(|| json!([])),
         "nextActions": value.get("nextActions").cloned().unwrap_or_else(|| json!([]))
     });
+    if let Some(summary_value) = value.get("summary") {
+        summary["summary"] = summary_value.clone();
+    }
     serde_json::to_writer(&mut *out, &summary)?;
     writeln!(out)?;
     Ok(())
@@ -507,6 +512,48 @@ fn structured_warnings(warnings: Vec<String>) -> Value {
             })
             .collect(),
     )
+}
+
+fn response_summary(results: &Value, warnings: &[String], index: &Value) -> Value {
+    let result_count = results.as_array().map(Vec::len).unwrap_or(0);
+    let truncated_count = results
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|result| {
+            result.get("truncated").and_then(Value::as_bool) == Some(true)
+                || result.get("previewTruncated").and_then(Value::as_bool) == Some(true)
+                || result
+                    .get("context")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .any(|line| line.get("truncated").and_then(Value::as_bool) == Some(true))
+        })
+        .count();
+    let skipped_count = warnings
+        .iter()
+        .filter(|warning| {
+            matches!(
+                warning.as_str(),
+                "binary_file_not_displayed" | "unreadable_file_skipped"
+            )
+        })
+        .count();
+    let scan_skipped_count = index
+        .pointer("/scanSummary/skippedCount")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let scan_summary = index
+        .get("scanSummary")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    json!({
+        "resultCount": result_count,
+        "truncatedCount": truncated_count,
+        "skippedCount": skipped_count as u64 + scan_skipped_count,
+        "scan": scan_summary
+    })
 }
 
 fn stable_code(message: &str) -> String {
