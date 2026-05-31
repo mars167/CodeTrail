@@ -1,4 +1,7 @@
-use std::io::{self, Write};
+use std::{
+    io::{self, Write},
+    path::Path,
+};
 
 use anyhow::Error;
 use serde::Serialize;
@@ -96,6 +99,9 @@ pub fn response_with_index(
     warnings: Vec<String>,
 ) -> Value {
     let query = normalized_query(query);
+    let results = enrich_results(results);
+    let suggested_reads = suggested_reads(&results);
+    let next_actions = next_actions_from_results(&results);
     json!({
         "schemaVersion": SCHEMA_VERSION,
         "ok": true,
@@ -105,7 +111,11 @@ pub fn response_with_index(
         "snapshot_id": snapshot_id,
         "reliability": reliability,
         "index": index,
+        "truncated": false,
+        "nextCursor": Value::Null,
         "results": results,
+        "suggestedReads": suggested_reads,
+        "nextActions": next_actions,
         "warnings": structured_warnings(warnings)
     })
 }
@@ -128,6 +138,11 @@ pub fn error_response_with_code(code: &str, message: impl Into<String>) -> Value
     json!({
         "schemaVersion": SCHEMA_VERSION,
         "ok": false,
+        "truncated": false,
+        "nextCursor": Value::Null,
+        "warnings": [],
+        "suggestedReads": [],
+        "nextActions": [],
         "error": {
             "code": code,
             "message": message.into()
@@ -143,11 +158,76 @@ pub fn emit(format: &OutputFormat, value: &Value) -> io::Result<()> {
             serde_json::to_writer_pretty(&mut handle, value)?;
             writeln!(handle)?;
         }
+        OutputFormat::CompactJson => {
+            let stdout = io::stdout();
+            let mut handle = stdout.lock();
+            serde_json::to_writer_pretty(&mut handle, &compact_value(value))?;
+            writeln!(handle)?;
+        }
+        OutputFormat::Jsonl => {
+            let mut handle = io::stdout().lock();
+            render_jsonl(value, &mut handle)?;
+        }
         OutputFormat::Text => {
             let mut handle = io::stdout().lock();
             render_text(value, &mut handle)?;
         }
     }
+    Ok(())
+}
+
+fn render_jsonl(value: &Value, out: &mut dyn Write) -> io::Result<()> {
+    if value.get("ok").and_then(Value::as_bool) == Some(false) {
+        let event = json!({
+            "schemaVersion": value.get("schemaVersion").cloned().unwrap_or_else(|| json!(SCHEMA_VERSION)),
+            "event": "error",
+            "ok": false,
+            "truncated": value.get("truncated").cloned().unwrap_or_else(|| json!(false)),
+            "nextCursor": value.get("nextCursor").cloned().unwrap_or(Value::Null),
+            "warnings": value.get("warnings").cloned().unwrap_or_else(|| json!([])),
+            "suggestedReads": value.get("suggestedReads").cloned().unwrap_or_else(|| json!([])),
+            "nextActions": value.get("nextActions").cloned().unwrap_or_else(|| json!([])),
+            "error": value.get("error").cloned().unwrap_or_else(|| json!({ "code": "error", "message": "unknown error" }))
+        });
+        serde_json::to_writer(&mut *out, &event)?;
+        writeln!(out)?;
+        return Ok(());
+    }
+
+    let result_count = value
+        .get("results")
+        .and_then(Value::as_array)
+        .map(|results| {
+            for result in results {
+                let event = json!({
+                    "schemaVersion": value.get("schemaVersion").cloned().unwrap_or_else(|| json!(SCHEMA_VERSION)),
+                    "event": "result",
+                    "result": result
+                });
+                serde_json::to_writer(&mut *out, &event)?;
+                writeln!(out)?;
+            }
+            Ok::<usize, io::Error>(results.len())
+        })
+        .transpose()?
+        .unwrap_or(0);
+
+    let summary = json!({
+        "schemaVersion": value.get("schemaVersion").cloned().unwrap_or_else(|| json!(SCHEMA_VERSION)),
+        "event": "summary",
+        "ok": true,
+        "command": value.get("command").cloned().unwrap_or(Value::Null),
+        "canonicalCommand": value.get("canonicalCommand").cloned().unwrap_or(Value::Null),
+        "snapshot_id": value.get("snapshot_id").cloned().unwrap_or(Value::Null),
+        "truncated": value.get("truncated").cloned().unwrap_or_else(|| json!(false)),
+        "nextCursor": value.get("nextCursor").cloned().unwrap_or(Value::Null),
+        "resultCount": result_count,
+        "warnings": value.get("warnings").cloned().unwrap_or_else(|| json!([])),
+        "suggestedReads": value.get("suggestedReads").cloned().unwrap_or_else(|| json!([])),
+        "nextActions": value.get("nextActions").cloned().unwrap_or_else(|| json!([]))
+    });
+    serde_json::to_writer(&mut *out, &summary)?;
+    writeln!(out)?;
     Ok(())
 }
 
@@ -206,6 +286,197 @@ fn normalized_query(query: Value) -> Value {
             "normalized": true,
             "value": other
         }),
+    }
+}
+
+fn enrich_results(results: Value) -> Value {
+    let Value::Array(values) = results else {
+        return results;
+    };
+
+    Value::Array(values.into_iter().map(enrich_result).collect())
+}
+
+fn enrich_result(result: Value) -> Value {
+    let Value::Object(mut object) = result else {
+        return result;
+    };
+    if is_readable_path_result(&object) && !object.contains_key("readCommand") {
+        if let Some(path) = object.get("path").and_then(Value::as_str) {
+            let target = read_target(path, object.get("range"));
+            object.insert(
+                "readCommand".to_string(),
+                Value::String(read_command_string(None, &target)),
+            );
+            object.insert(
+                "readCommandArgv".to_string(),
+                json!(read_argv(None, target)),
+            );
+        }
+    }
+    Value::Object(object)
+}
+
+pub fn with_workspace_root(mut value: Value, root: &Path) -> Value {
+    if let Some(results) = value.get_mut("results").and_then(Value::as_array_mut) {
+        for result in results {
+            enrich_result_with_root(result, root);
+        }
+    }
+    let suggested_reads = suggested_reads(&value["results"]);
+    let next_actions = next_actions_from_results(&value["results"]);
+    value["suggestedReads"] = suggested_reads;
+    value["nextActions"] = next_actions;
+    value
+}
+
+fn enrich_result_with_root(result: &mut Value, root: &Path) {
+    let Value::Object(object) = result else {
+        return;
+    };
+    if !is_readable_path_result(object) {
+        object.remove("readCommand");
+        object.remove("readCommandArgv");
+        return;
+    }
+    let Some(path) = object.get("path").and_then(Value::as_str) else {
+        return;
+    };
+    let target = read_target(path, object.get("range"));
+    let root = root.to_string_lossy().to_string();
+    object.insert(
+        "readCommand".to_string(),
+        Value::String(read_command_string(Some(&root), &target)),
+    );
+    object.insert(
+        "readCommandArgv".to_string(),
+        json!(read_argv(Some(root), target)),
+    );
+}
+
+fn is_readable_path_result(object: &serde_json::Map<String, Value>) -> bool {
+    let Some(path) = object.get("path").and_then(Value::as_str) else {
+        return false;
+    };
+    if path.starts_with('/')
+        || path == ".code-search"
+        || path.starts_with(".code-search/")
+        || path.contains("/.code-search/")
+    {
+        return false;
+    }
+    if object.get("indexStatus").and_then(Value::as_str) == Some("D")
+        || object.get("worktreeStatus").and_then(Value::as_str) == Some("D")
+    {
+        return false;
+    }
+    object.get("kind").and_then(Value::as_str) != Some("directory")
+}
+
+fn read_target(path: &str, range: Option<&Value>) -> String {
+    let Some(range) = range else {
+        return path.to_string();
+    };
+    let start = range
+        .pointer("/start/line")
+        .and_then(Value::as_u64)
+        .unwrap_or(1);
+    let end = range
+        .pointer("/end/line")
+        .and_then(Value::as_u64)
+        .unwrap_or(start);
+    if start == end {
+        format!("{path}:{start}")
+    } else {
+        format!("{path}:{start}-{end}")
+    }
+}
+
+fn suggested_reads(results: &Value) -> Value {
+    let reads = results
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|result| result.get("readCommand").and_then(Value::as_str))
+        .take(5)
+        .map(|command| Value::String(command.to_string()))
+        .collect();
+    Value::Array(reads)
+}
+
+fn next_actions_from_results(results: &Value) -> Value {
+    let actions = results
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|result| {
+            let command = result.get("readCommand").and_then(Value::as_str)?;
+            Some(json!({
+                "kind": "read",
+                "command": command,
+                "argv": result.get("readCommandArgv").cloned().unwrap_or(Value::Null),
+                "reason": "verify_source_range_before_edit"
+            }))
+        })
+        .take(5)
+        .collect();
+    Value::Array(actions)
+}
+
+fn read_command_string(root: Option<&str>, target: &str) -> String {
+    let read_target = if target.starts_with('-') {
+        format!("-- {}", shell_quote(target))
+    } else {
+        shell_quote(target)
+    };
+    match root {
+        Some(root) => format!(
+            "code-search --path {} read {read_target}",
+            shell_quote(root)
+        ),
+        None => format!("code-search read {read_target}"),
+    }
+}
+
+fn read_argv(root: Option<String>, target: String) -> Vec<String> {
+    let mut argv = vec!["code-search".to_string()];
+    if let Some(root) = root {
+        argv.push("--path".to_string());
+        argv.push(root);
+    }
+    argv.push("read".to_string());
+    if target.starts_with('-') {
+        argv.push("--".to_string());
+    }
+    argv.push(target);
+    argv
+}
+
+fn shell_quote(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | ':'))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn compact_value(value: &Value) -> Value {
+    let mut value = value.clone();
+    if let Some(results) = value.get_mut("results").and_then(Value::as_array_mut) {
+        for result in results {
+            compact_result(result);
+        }
+    }
+    value
+}
+
+fn compact_result(value: &mut Value) {
+    if let Value::Object(object) = value {
+        for field in ["preview", "context", "content", "matchText"] {
+            object.remove(field);
+        }
     }
 }
 

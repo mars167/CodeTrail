@@ -116,7 +116,7 @@ fn fish() -> String {
     let mut lines = vec![
         "complete -c code-search -f".to_string(),
         "complete -c code-search -l path -r".to_string(),
-        "complete -c code-search -l output -xa 'json text'".to_string(),
+        "complete -c code-search -l output -xa 'json compact-json jsonl text'".to_string(),
         "complete -c code-search -l include -r".to_string(),
         "complete -c code-search -l exclude -r".to_string(),
         "complete -c code-search -l hidden".to_string(),
