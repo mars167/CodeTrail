@@ -272,7 +272,7 @@ fn is_probably_binary(path: &Path) -> bool {
     }
 }
 
-fn mtime_ms(metadata: &fs::Metadata) -> u128 {
+pub(crate) fn mtime_ms(metadata: &fs::Metadata) -> u128 {
     metadata
         .modified()
         .ok()

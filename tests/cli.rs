@@ -123,7 +123,7 @@ fn index_verify_detects_stale_files() {
 }
 
 #[test]
-fn index_build_writes_target_text_storage_layout() {
+fn index_build_writes_lancedb_only_storage() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
 
@@ -135,31 +135,26 @@ fn index_build_writes_target_text_storage_layout() {
         .success();
 
     let code_search_dir = dir.path().join(".code-search");
-    assert!(code_search_dir.join("snapshots").is_dir());
-    assert!(code_search_dir.join("text").is_dir());
-    assert!(code_search_dir
-        .join("working")
-        .join("manifest.json")
-        .is_file());
+    // LanceDB store is the primary storage backend
+    assert!(code_search_dir.join("index.lance").is_dir());
+    // Old JSON/.idx artifacts are no longer written
+    assert!(!code_search_dir.join("snapshots").exists());
+    assert!(!code_search_dir.join("text").exists());
+    // working/manifest.json is written for pack/unpack compatibility
 
-    let snapshot = fs::read_dir(code_search_dir.join("snapshots"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    assert!(snapshot.join("manifest.json").is_file());
-    assert!(snapshot.join("files.parquet").is_file());
-    assert!(snapshot.join("blobs").is_dir());
-    let text_snapshot = fs::read_dir(code_search_dir.join("text"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    assert!(text_snapshot.join("docs.idx").is_file());
-    assert!(text_snapshot.join("paths.idx").is_file());
-    assert!(text_snapshot.join("grams.idx").is_file());
+    // Build output declares lancedb backend
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["results"][0]["index"]["used"], true);
+    assert_eq!(json["results"][0]["index"]["storageBackend"], "lancedb");
 }
 
 #[test]
@@ -250,22 +245,22 @@ fn imported_scip_index_drives_precise_defs_refs_and_symbols() {
     let scip_path = dir.path().join("index.scip.json");
     write_minimal_scip_json(&scip_path);
 
-    code_search()
+    let import_output = code_search()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "import-scip"])
         .arg(&scip_path)
         .assert()
-        .success();
-
-    let scip_snapshot = fs::read_dir(dir.path().join(".code-search/scip"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    assert!(scip_snapshot.join("occurrences.idx").is_file());
-    assert!(!scip_snapshot.join("occurrences.jsonl").exists());
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let import_json: Value = serde_json::from_slice(&import_output).unwrap();
+    assert_eq!(
+        import_json["results"][0]["index"]["storageBackend"],
+        "lancedb"
+    );
+    assert!(dir.path().join(".code-search/index.lance").is_dir());
 
     let defs = code_search()
         .arg("--path")
@@ -905,9 +900,7 @@ fn index_unpack_extracts_to_remote_dir_does_not_touch_working_or_staged() {
         .assert()
         .success();
 
-    // Record state before unpack
     let code_search_dir = dir.path().join(".code-search");
-    let has_snapshots_before = code_search_dir.join("snapshots").exists();
     // Clean local index to simulate fresh workspace without local index
     code_search()
         .arg("--path")
@@ -937,8 +930,6 @@ fn index_unpack_extracts_to_remote_dir_does_not_touch_working_or_staged() {
     let remote_dir = code_search_dir.join("remote");
     assert!(remote_dir.exists());
 
-    // Verify local snapshots dir was NOT recreated (remote != local)
-    let snapshots_dir = code_search_dir.join("snapshots");
     // snapshots may or may not exist after clean, but remote must be separate
     let remote_entries: Vec<_> = remote_dir
         .read_dir()

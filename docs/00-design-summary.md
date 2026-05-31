@@ -86,3 +86,23 @@ Source Snapshot
 - 不让 remote 覆盖本地 dirty/staged 状态。
 - 不让 watcher 替代 git hook。
 - 不让 Agent 在多套 shell 工具输出之间来回猜。
+
+## 质量看护
+
+测试架构见 `docs/18-quality-guard-test-architecture.md`。质量门禁按测试金字塔分层：
+
+- PR 默认阻断：格式、编译、单元测试、CLI contract、git diff whitespace。
+- 扩展阻断：真实仓库 L0 smoke、性能基准回归。
+- 趋势看护：SWE-bench agent 搜索效率和解决率。
+
+统一本地入口是 `scripts/quality-gate.sh quick|cli|bench|full`。
+
+## 性能优化
+
+性能优化技术方案见 `docs/19-performance-optimization-technical-plan.md`。核心方向是：
+
+- 拆分 workspace catalog 与内容 hash，路径类命令不做全仓内容读取。
+- freshness 使用 metadata 快路径，只对变化文件重新 hash。
+- text index 查询从顺序扫描改为 gram dictionary + postings seek。
+- warm index update 变成增量更新，而不是全量重建。
+- parser/关系命令先用索引预过滤，再读取 parser facts cache。
