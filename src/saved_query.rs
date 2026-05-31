@@ -75,7 +75,7 @@ pub fn replay(workspace: &Workspace, name: &str, mode: &ReplaySnapshot) -> Resul
     }
 
     let service = QueryService::new(&workspace.root)?;
-    let opts = query_options_from_saved(&saved)?;
+    let opts = query_options_from_saved(&saved, snapshot_match)?;
     let command = saved
         .get("command")
         .and_then(Value::as_str)
@@ -186,7 +186,7 @@ pub fn delete(workspace: &Workspace, name: &str) -> Result<Value> {
     }]))
 }
 
-fn query_options_from_saved(saved: &Value) -> Result<QueryOptions> {
+fn query_options_from_saved(saved: &Value, snapshot_match: bool) -> Result<QueryOptions> {
     let query = saved
         .get("query")
         .ok_or_else(|| anyhow!("saved query is missing query"))?;
@@ -201,7 +201,7 @@ fn query_options_from_saved(saved: &Value) -> Result<QueryOptions> {
         changed: bool_field(scope, "changed"),
         hidden: bool_field(scope, "hidden"),
         no_ignore: bool_field(scope, "noIgnore"),
-        cursor: replay_cursor(saved),
+        cursor: snapshot_match.then(|| replay_cursor(saved)).flatten(),
         allow_broad: bool_field(scope, "allowBroad"),
         limit: scope.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize,
         context: query.get("context").and_then(Value::as_u64).unwrap_or(0) as u16,

@@ -358,7 +358,10 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                         output::response_with_index(
                             "calls",
                             "calls",
-                            json!({ "identifier": identifier, "producer": "graph" }),
+                            scoped_query(
+                                json!({ "identifier": identifier, "producer": "graph" }),
+                                &scan_opts,
+                            ),
                             &workspace.snapshot_id,
                             output::inferred_candidate(),
                             index_meta,
@@ -376,7 +379,10 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             output::response(
                 "calls",
                 "calls",
-                json!({ "identifier": identifier, "producer": "tree_sitter_call_heuristic" }),
+                scoped_query(
+                    json!({ "identifier": identifier, "producer": "tree_sitter_call_heuristic" }),
+                    &scan_opts,
+                ),
                 &workspace.snapshot_id,
                 output::inferred_candidate(),
                 results,
@@ -396,7 +402,10 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                         output::response_with_index(
                             "callers",
                             "callers",
-                            json!({ "identifier": identifier, "producer": "graph" }),
+                            scoped_query(
+                                json!({ "identifier": identifier, "producer": "graph" }),
+                                &scan_opts,
+                            ),
                             &workspace.snapshot_id,
                             output::inferred_candidate(),
                             index_meta,
@@ -414,7 +423,10 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             output::response(
                 "callers",
                 "callers",
-                json!({ "identifier": identifier, "producer": "tree_sitter_call_heuristic" }),
+                scoped_query(
+                    json!({ "identifier": identifier, "producer": "tree_sitter_call_heuristic" }),
+                    &scan_opts,
+                ),
                 &workspace.snapshot_id,
                 output::inferred_candidate(),
                 results,

@@ -1122,6 +1122,98 @@ fn saved_query_replay_warns_when_snapshot_changes() {
 }
 
 #[test]
+fn saved_query_replay_drops_saved_cursor_when_snapshot_changes_to_current() {
+    let dir = tempdir().unwrap();
+    init_git_repo(dir.path());
+    fs::write(dir.path().join("a.txt"), "needle\n").unwrap();
+    fs::write(dir.path().join("b.txt"), "needle\n").unwrap();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["add", "."])
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["commit", "-m", "init"])
+        .output()
+        .unwrap();
+
+    let first_output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--limit")
+        .arg("1")
+        .arg("--save-query")
+        .arg("page")
+        .args(["find", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let first_json: Value = serde_json::from_slice(&first_output).unwrap();
+    assert!(first_json["nextCursor"].as_str().is_some());
+
+    fs::write(dir.path().join("aa.txt"), "needle\n").unwrap();
+    let replay_output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["query", "replay", "page"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let replay_json: Value = serde_json::from_slice(&replay_output).unwrap();
+
+    assert_eq!(replay_json["savedQuery"]["snapshotMatch"], false);
+    assert_eq!(replay_json["query"]["scope"]["cursor"], Value::Null);
+    assert_eq!(replay_json["results"][0]["path"], "a.txt");
+    assert!(replay_json["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|warning| warning["code"] == "saved_query_snapshot_mismatch"));
+}
+
+#[test]
+fn saved_query_replay_preserves_symbol_scope() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src/a")).unwrap();
+    fs::create_dir_all(dir.path().join("src/b")).unwrap();
+    fs::write(dir.path().join("src/a/mod.rs"), "fn needle() {}\n").unwrap();
+    fs::write(dir.path().join("src/b/mod.rs"), "fn needle() {}\n").unwrap();
+
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--include")
+        .arg("src/a")
+        .arg("--save-query")
+        .arg("defs-a")
+        .args(["defs", "needle"])
+        .assert()
+        .success();
+
+    let replay_output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["query", "replay", "defs-a"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let replay_json: Value = serde_json::from_slice(&replay_output).unwrap();
+
+    assert_eq!(replay_json["query"]["scope"]["include"], json!(["src/a"]));
+    assert_eq!(replay_json["results"].as_array().unwrap().len(), 1);
+    assert_eq!(replay_json["results"][0]["path"], "src/a/mod.rs");
+}
+
+#[test]
 fn jsonl_summary_includes_cursor_and_facets() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("a.rs"), "needle\n").unwrap();

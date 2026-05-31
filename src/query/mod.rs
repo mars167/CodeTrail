@@ -260,7 +260,10 @@ impl QueryService {
             return Ok(self.finalize(output::response_with_index(
                 "defs",
                 "defs",
-                json!({ "identifier": identifier, "producer": "scip" }),
+                scoped_query(
+                    json!({ "identifier": identifier, "producer": "scip" }),
+                    &scan,
+                ),
                 &self.workspace.snapshot_id,
                 output::precise_fact(),
                 precise.index,
@@ -274,7 +277,10 @@ impl QueryService {
         Ok(self.finalize(output::response(
             "defs",
             "defs",
-            json!({ "identifier": identifier, "producer": "tree_sitter_parser_fallback", "fallbackReason": "precise_scip_index_unavailable" }),
+            scoped_query(
+                json!({ "identifier": identifier, "producer": "tree_sitter_parser_fallback", "fallbackReason": "precise_scip_index_unavailable" }),
+                &scan,
+            ),
             &self.workspace.snapshot_id,
             output::parser_fact(),
             results,
@@ -424,7 +430,10 @@ impl QueryService {
                 return Ok(self.finalize(output::response_with_index(
                     "calls",
                     "calls",
-                    json!({ "identifier": identifier, "producer": "graph" }),
+                    scoped_query(
+                        json!({ "identifier": identifier, "producer": "graph" }),
+                        &scan,
+                    ),
                     &self.workspace.snapshot_id,
                     output::inferred_candidate(),
                     index_meta,
@@ -439,7 +448,10 @@ impl QueryService {
         Ok(self.finalize(output::response(
             "calls",
             "calls",
-            json!({ "identifier": identifier, "producer": "tree_sitter_call_heuristic" }),
+            scoped_query(
+                json!({ "identifier": identifier, "producer": "tree_sitter_call_heuristic" }),
+                &scan,
+            ),
             &self.workspace.snapshot_id,
             output::inferred_candidate(),
             results,
@@ -460,7 +472,10 @@ impl QueryService {
                 return Ok(self.finalize(output::response_with_index(
                     "callers",
                     "callers",
-                    json!({ "identifier": identifier, "producer": "graph" }),
+                    scoped_query(
+                        json!({ "identifier": identifier, "producer": "graph" }),
+                        &scan,
+                    ),
                     &self.workspace.snapshot_id,
                     output::inferred_candidate(),
                     index_meta,
@@ -475,7 +490,10 @@ impl QueryService {
         Ok(self.finalize(output::response(
             "callers",
             "callers",
-            json!({ "identifier": identifier, "producer": "tree_sitter_call_heuristic" }),
+            scoped_query(
+                json!({ "identifier": identifier, "producer": "tree_sitter_call_heuristic" }),
+                &scan,
+            ),
             &self.workspace.snapshot_id,
             output::inferred_candidate(),
             results,
