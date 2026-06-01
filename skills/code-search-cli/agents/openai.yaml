@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code Search CLI"
+  short_description: "Use code-search with verifiable evidence"
+  default_prompt: "Use $code-search-cli to find and verify source evidence in this repository."

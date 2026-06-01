@@ -17,6 +17,20 @@
 
 过程材料不进入 `docs/`：task breakdown、MR plan、临时测试计划、专项报告和历史竞品长报告应放在 issue、PR、CI artifact 或外部记录里。命令参数以 `code-search --help` 和 `src/cli.rs` 为准；实现细节以 `src/`、`tests/` 和 `scripts/` 为准。
 
+## Codex Skill
+
+本仓库包含一个给 Codex/LLM Agent 使用的 skill：
+
+```text
+skills/code-search-cli/
+```
+
+它说明了 agent 应如何用 `code-search` 获取可验证的源码证据、处理 reliability 分级、重放 saved query、检查 index freshness，并验证 MCP/JSON 契约。需要随项目使用时，可以把该目录复制到本机 Codex skills 目录：
+
+```bash
+cp -R skills/code-search-cli "${CODEX_HOME:-$HOME/.codex}/skills/"
+```
+
 ## 快速使用
 
 ```bash
