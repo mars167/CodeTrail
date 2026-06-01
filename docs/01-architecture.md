@@ -15,11 +15,13 @@ flowchart TB
   Store --> Occ["SCIP occurrences"]
   Fresh --> Parser["Tree-sitter fallback"]
   Fresh --> G["Petgraph call candidates"]
+  Snap --> Saved["Saved query metadata"]
 
   Text --> Query["Query service"]
   Occ --> Query
   Parser --> Query
   G --> Query
+  Saved --> Query
   Query --> CLI["CLI JSON/text"]
   Query --> MCP["MCP stdio JSON-RPC"]
 ```
@@ -41,6 +43,7 @@ flowchart LR
 - `commit`、`staged`、`worktree` 不能混成无来源结果。
 - 索引记录必须能回到 `snapshot_id`、`path`、`file_hash` 和 `range`。
 - freshness 失败时，查询必须回退到实时读取，或返回明确的 stale/error 信息。
+- dirty worktree 可以按文件混合：未变更且 proof 匹配的文件继续走 fresh index，变更或新增文件走 live overlay，并在结果上暴露 producer/source reason。
 - remote snapshot 只能加速或共享；不能覆盖本地 dirty/staged 事实。
 
 ## 存储边界
@@ -53,6 +56,7 @@ flowchart LR
   scip/<snapshot-key>/      # native or imported occurrences
   graph/<snapshot-key>/     # petgraph.bin + graph manifest
   remote/<snapshot-key>/    # unpacked remote snapshots
+  queries/<name>.json       # saved query replay metadata
 ```
 
 当前本地索引以 LanceDB 为主，保存 snapshot 行、file catalog、file proof 和 gram postings。SCIP occurrence 与 petgraph 使用各自目录；LanceDB 中保留 parser、SCIP 和 call graph 表结构，便于后续统一存储。历史上的 `snapshots/` 和 `text/*.idx` 只作为兼容或 remote 包格式出现，不是新构建的主查询存储。
@@ -66,6 +70,7 @@ flowchart TD
   Kind -->|find / grep / files / glob| Text["fresh text/path index"]
   Text -->|fresh| Verify["candidate verification"]
   Text -->|missing or stale| Scan["live scan"]
+  Text -->|partially stale| Overlay["per-file live overlay"]
 
   Kind -->|defs / refs / symbols| Scip["SCIP occurrence store"]
   Scip -->|available and fresh| Precise["precise_fact"]
@@ -76,6 +81,7 @@ flowchart TD
 
   Verify --> Json["JSON response"]
   Scan --> Json
+  Overlay --> Json
   Precise --> Json
   Fallback --> Json
   Candidate --> Json
@@ -113,3 +119,18 @@ flowchart LR
 ```
 
 Remote 适合 CI 产物、大仓预热和团队共享。只要本地文件无法与 remote snapshot 对齐，结果就必须降级，Agent 需要用 `read` 重新验证。
+
+## Saved Query
+
+```mermaid
+flowchart LR
+  Query["find / grep / files / refs / defs / symbols / calls"] --> Save["--save-query <name>"]
+  Save --> Store[".code-search/queries/<name>.json"]
+  Store --> Replay["query replay <name>"]
+  Replay --> Current{"snapshot match?"}
+  Current -->|yes| Cursor["reuse saved cursor when present"]
+  Current -->|no, default| Drop["replay current workspace without saved cursor + warning"]
+  Current -->|no, --snapshot saved| Error["reject replay"]
+```
+
+Saved query 只保存可重放命令、query 参数、scope、snapshot 和 cursor 元数据，不保存结果正文。它是 Agent 工作流加速层，不是事实源；重放结果仍受当前 snapshot、freshness 和 reliability 契约约束。
