@@ -41,15 +41,19 @@ scripts/quality-gate.sh full
 
 ```mermaid
 flowchart TB
-  PR["push / pull request"] --> QuickJob["Gitea quick job"]
-  QuickJob --> CliJob["Gitea cli job"]
-  Manual["workflow_dispatch run_bench=true"] --> BenchJob["Gitea bench job"]
+  PR["pull_request"] --> PrGate["Gitea PR Gate\nscripts/quality-gate.sh pr"]
+  Main["push main"] --> MainGate["Gitea Main Gate\nscripts/quality-gate.sh main"]
+  Manual["workflow_dispatch / schedule"] --> Cross["Cross-platform check"]
+  Manual --> BenchJob["Benchmark Gate\nscripts/quality-gate.sh bench"]
+  AnyPush["push branch/tag"] --> Mirror["Mirror to GitHub"]
   Tag["release tag"] --> Release["GitHub release build"]
 ```
 
 - `.gitea/workflows/quality-gate.yml` 调度质量门禁。
+- `.gitea/workflows/mirror-github.yml` 负责 GitHub mirror；mirror 失败不等同于 PR quality gate 失败。
 - `.github/workflows/release.yml` 只负责 release artifact 构建。
 - CI 不应重新发明测试规则；新增规则先进入脚本，再由 CI 调度。
+- Gitea runner 在 checkout 前只对 `https://git.home.arpa/` 设置 `git config --global http.https://git.home.arpa/.sslVerify false`，这是内部证书环境的 CI 编排配置，不是项目代码验证规则。
 
 ## 质量信号
 

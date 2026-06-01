@@ -29,7 +29,7 @@ flowchart LR
 
 - 内容搜索、路径搜索、目录浏览和范围读取。
 - 定义、引用、符号、调用候选和变更状态。
-- 本地索引、Git hook、watcher、remote pack/unpack 和 MCP 入口。
+- 本地索引、Git hook、watcher、saved query、remote pack/unpack 和 MCP 入口。
 - 每个响应的 snapshot、producer、freshness 与 reliability 信息。
 
 它不承诺：
@@ -46,17 +46,21 @@ flowchart LR
 flowchart TB
   Agent["Agent / developer"] --> Entry["CLI / MCP"]
   Entry --> Query["Query layer"]
+  Entry --> Saved["Saved query store"]
 
   Git["Git HEAD / staged / worktree"] --> Snapshot["Snapshot and freshness model"]
   Snapshot --> Text["Text and path facts"]
   Snapshot --> Scip["SCIP occurrence facts"]
   Snapshot --> Parser["Tree-sitter parser facts"]
   Snapshot --> Graph["Call graph candidates"]
+  Snapshot --> Remote["Remote snapshot verification"]
 
   Text --> Query
   Scip --> Query
   Parser --> Query
   Graph --> Query
+  Remote --> Query
+  Saved --> Query
 
   Query --> Read["read verifies file range"]
   Query --> Json["JSON response with reliability"]
@@ -73,6 +77,7 @@ flowchart TB
 | `parser_fact` | tree-sitter AST | `false` | 确定的语法事实，不等于语义精确引用 |
 | `inferred_candidate` | 图、AST heuristic、search-based inference | `false` | 只用于缩小范围，必须二次验证 |
 | `freshness` | manifest、hash、watcher、index status | `false` | 描述缓存状态，不提升代码事实准确性 |
+| `remote_verified` | 与本地 file proof 对齐的 remote snapshot | `false` | 可作为加速结果；关键编辑仍用 `read` 复核 |
 | `remote_unverified` | 未能与本地文件对齐的 remote snapshot | `false` | 只能作为线索，不能直接用于编辑决策 |
 
 ## 文档规则
