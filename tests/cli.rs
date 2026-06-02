@@ -128,6 +128,32 @@ fn schema_contract_covers_core_commands_and_errors() {
 }
 
 #[test]
+fn index_build_text_output_suppresses_progress_when_stderr_is_not_tty() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
+
+    let assert = raw_code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+    let output = assert.get_output();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stdout.contains("Indexed 1 files"),
+        "unexpected stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("Backend: lancedb"),
+        "unexpected stdout: {stdout}"
+    );
+    assert!(stderr.is_empty(), "progress leaked to stderr: {stderr:?}");
+}
+
+#[test]
 fn warnings_are_structured_with_stable_codes() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();

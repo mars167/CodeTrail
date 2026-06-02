@@ -290,7 +290,7 @@ pub struct ProgressIndicator {
 
 impl ProgressIndicator {
     pub fn start(format: &OutputFormat, message: impl Into<String>) -> Self {
-        if *format != OutputFormat::Text || !io::stderr().is_terminal() {
+        if !should_show_progress(format, io::stderr().is_terminal()) {
             return Self {
                 running: Arc::new(AtomicBool::new(false)),
                 handle: None,
@@ -331,6 +331,24 @@ impl ProgressIndicator {
                 let _ = writeln!(io::stderr(), "{message}");
             }
         }
+    }
+}
+
+fn should_show_progress(format: &OutputFormat, stderr_is_terminal: bool) -> bool {
+    *format == OutputFormat::Text && stderr_is_terminal
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn progress_indicator_is_enabled_only_for_text_tty_output() {
+        assert!(should_show_progress(&OutputFormat::Text, true));
+        assert!(!should_show_progress(&OutputFormat::Text, false));
+        assert!(!should_show_progress(&OutputFormat::Json, true));
+        assert!(!should_show_progress(&OutputFormat::CompactJson, true));
+        assert!(!should_show_progress(&OutputFormat::Jsonl, true));
     }
 }
 
