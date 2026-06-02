@@ -79,8 +79,11 @@ pub struct GraphStore {
 impl GraphStore {
     /// Create a new store, loading an existing graph if available.
     pub fn open(workspace: &Workspace) -> Result<Self> {
-        let graph_dir = graph_dir(workspace);
-        let snapshot_id = workspace.snapshot_id.clone();
+        Self::open_for_snapshot(workspace, &workspace.snapshot_id)
+    }
+
+    pub fn open_for_snapshot(workspace: &Workspace, snapshot_id: &str) -> Result<Self> {
+        let graph_dir = graph_dir_for_snapshot(workspace, snapshot_id);
 
         // Try loading the persisted graph; if missing or stale, start fresh.
         let bin_path = graph_dir.join("petgraph.bin");
@@ -96,7 +99,7 @@ impl GraphStore {
         Ok(Self {
             backend,
             graph_dir,
-            snapshot_id,
+            snapshot_id: snapshot_id.to_string(),
         })
     }
 
@@ -143,9 +146,22 @@ impl GraphStore {
 
 /// Compute the graph storage directory for the current workspace snapshot.
 pub fn graph_dir(workspace: &Workspace) -> PathBuf {
+    graph_dir_for_snapshot(workspace, &workspace.snapshot_id)
+}
+
+pub fn graph_dir_for_snapshot(workspace: &Workspace, snapshot_id: &str) -> PathBuf {
     let root = workspace.root.join(".code-search");
-    root.join("graph")
-        .join(index::snapshot_key(&workspace.snapshot_id))
+    root.join("graph").join(index::snapshot_key(snapshot_id))
+}
+
+pub fn graph_index_exists(workspace: &Workspace) -> bool {
+    graph_index_exists_for_snapshot(workspace, &workspace.snapshot_id)
+}
+
+pub fn graph_index_exists_for_snapshot(workspace: &Workspace, snapshot_id: &str) -> bool {
+    graph_dir_for_snapshot(workspace, snapshot_id)
+        .join("petgraph.bin")
+        .exists()
 }
 
 // ---------------------------------------------------------------------------
