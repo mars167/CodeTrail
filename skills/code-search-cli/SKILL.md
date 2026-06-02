@@ -32,6 +32,8 @@ Use `--path <dir>` when searching from outside the repository root or when the u
    - `code-search glob '<pattern>'`
    - `code-search defs|refs|symbols <name>`
 2. Inspect `reliability`, `index`, `warnings`, `suggestedReads`, and `nextActions`.
+   - Treat `severity=info, category=capability` as an expected capability-level note, not a risk warning.
+   - Treat `severity=warning, category=risk` and `severity=error, category=error` as requiring narrowing, verification, or remediation.
 3. Before editing or making a strong claim, verify key ranges with `code-search read <path[:start-end]>`.
 4. Treat `calls` and `callers` as `inferred_candidate`; inspect the returned ranges before relying on them.
 5. Treat `remote_unverified` as a lead only; verify with local `read`.

@@ -56,7 +56,9 @@ MCP tool result 的 `content[0].text` 使用同一 public JSON 投影。
 - `results` 是唯一的主要结果载体。每条结果只保留定位、文本、符号、关系或命令结果本身需要的字段；内部审计字段、producer、read command、index freshness 和 agent next action 不进入公开 JSON。
 - `page.truncated` 表示本次输出被裁切或分页，调用方应缩小查询、降低 context 或使用 `page.nextCursor` 翻页。
 - `page.nextCursor` 是下一页游标；没有下一页时为 `null`。
-- `caveats` 是机器可匹配的边界说明，结构为 `{code,message}`。无匹配、fallback、候选图关系、宽查询保护、输出裁切和错误都通过 caveats 表示。
+- `caveats` 是机器可匹配的边界说明，结构为 `{code,message,severity,category}`。`severity` 目前使用 `info`、`warning` 或 `error`；`category` 目前使用 `capability`、`risk` 或 `error`。
+- `severity=info, category=capability` 表示预期能力级别说明，例如没有 SCIP 时的 parser fallback、`refs` 的 identifier-boundary text search、`calls/callers` 的 `inferred_candidate`。这些不是风险警告，但调用方仍要按 `reliability` 契约验证结果。
+- `severity=warning, category=risk` 表示需要调用方调整或复核的风险边界，例如 `ambiguous_results`、无匹配不可证明、宽查询保护和输出裁切。错误 caveat 使用 `severity=error, category=error`。
 
 `--output compact-json` 是兼容别名，输出同一公开 JSON 形态。
 
@@ -95,7 +97,7 @@ flowchart LR
 - `parser_fact` 可以是确定性语法事实，但不能代表 precise semantic reference resolution。
 - `calls` 和 `callers` 即使来自图索引，也必须标为候选。
 - remote 结果必须声明是否与本地文件 proof 对齐；`remote_verified` 仍是共享缓存结果，关键编辑前仍要 `read`。
-- 公开输出通过 caveats 暴露这些边界；自动化工具或开发者修改代码前应对关键结果执行 `read <file[:range]>`。
+- 公开输出通过 caveats 暴露这些边界；自动化工具应先看 `severity/category`，不要把 `info/capability` 的能力说明当成风险告警。开发者修改代码前仍应对关键结果执行 `read <file[:range]>`。
 
 ## Saved Query Replay
 

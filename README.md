@@ -48,7 +48,7 @@ cargo run -- index status
 cargo run -- mcp
 ```
 
-默认输出是短文本；需要机器读取时使用 `--output json` 或 `--output jsonl`。公开 JSON 只包含 `results`、`page` 和 `caveats`；修改代码前用 `read` 验证搜索、remote 或图候选结果。
+默认输出是短文本；需要机器读取时使用 `--output json` 或 `--output jsonl`。公开 JSON 只包含 `results`、`page` 和 `caveats`；每个 caveat 都带稳定 `severity` 与 `category`，用于区分风险警告和预期能力级别说明。修改代码前用 `read` 验证搜索、remote 或图候选结果。
 
 ## 当前实现
 
@@ -58,7 +58,7 @@ cargo run -- mcp
 - `--save-query` 将可重放查询保存到 `.code-search/queries/`；`query replay/show/list/delete` 管理 saved query。snapshot 不匹配时，默认按当前 workspace 重放并给 caveat；`--snapshot saved` 会拒绝不匹配的重放。
 - `index build` 使用 LanceDB 作为主要本地索引存储，保存 snapshot、file catalog、file proof 和 gram postings，并保留 manifest 供 pack/unpack 兼容。dirty worktree 查询会对仍 fresh 的文件使用索引，对变更文件使用 live overlay。
 - `index pack/unpack` 支持 remote snapshot；remote 结果必须标记 `remote_verified` 或 `remote_unverified`，关键结果仍需 `read` 验证。
-- `defs`、`refs`、`symbols` 优先使用 SCIP occurrence store；没有 precise index 时回退到 tree-sitter 或文本搜索。parser fallback 和候选关系通过 caveats 标出，调用方用结果里的 `path`/`range` 再执行 `read`。
+- `defs`、`refs`、`symbols` 优先使用 SCIP occurrence store；没有 precise index 时回退到 tree-sitter 或文本搜索。parser fallback 通过 `severity=info, category=capability` 的 caveat 标出；`ambiguous_results` 等需要缩小范围的情况仍是 `severity=warning, category=risk`。调用方用结果里的 `path`/`range` 再执行 `read`。
 - `calls`、`callers` 通过当前 petgraph 后端返回调用候选，可靠性始终是 `inferred_candidate`。
 - `watch --once` 提供按需 reconcile；`serve` 暴露本地 query service 状态；`mcp` 通过 stdio JSON-RPC 包装同一套查询能力，并输出同一 public JSON 投影。
 - `scripts/quality-gate.sh` 是本地与 CI 的统一质量入口。
