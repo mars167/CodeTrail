@@ -2675,6 +2675,83 @@ fn index_verify_detects_stale_files() {
 }
 
 #[test]
+fn index_verify_ignores_missing_best_effort_graph_artifact() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("sample.txt"), "one\n").unwrap();
+
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    fs::remove_dir_all(dir.path().join(".code-search/graph")).unwrap();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "verify"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["results"][0]["fresh"], true);
+    assert!(json["results"][0]["graphFresh"].is_null());
+}
+
+#[test]
+fn index_verify_checks_graph_against_active_manifest_snapshot() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    init_git_repo(dir.path());
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "fn alpha() {\n    beta();\n}\n\nfn beta() {}\n",
+    )
+    .unwrap();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["add", "src/lib.rs"])
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["commit", "-m", "init"])
+        .output()
+        .unwrap();
+
+    code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let output = code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "verify"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let result = &json["results"][0];
+    assert_eq!(result["fresh"], true);
+    assert!(result["manifest"]["snapshotId"]
+        .as_str()
+        .unwrap()
+        .starts_with("commit:"));
+    assert_eq!(result["graphFresh"], true);
+}
+
+#[test]
 fn git_dirty_index_status_uses_active_manifest_for_per_file_freshness() {
     let dir = tempdir().unwrap();
     init_git_repo(dir.path());

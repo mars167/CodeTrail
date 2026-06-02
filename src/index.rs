@@ -431,9 +431,15 @@ pub fn verify(workspace: &Workspace) -> Result<(Value, i32)> {
     let mut value = status(workspace)?;
     let mut fresh = value.get("fresh").and_then(Value::as_bool).unwrap_or(false);
 
-    // Also verify graph freshness
-    if fresh {
-        if let Ok(store) = graph::GraphStore::open(workspace) {
+    let graph_snapshot_id = value
+        .get("manifest")
+        .and_then(|manifest| manifest.get("snapshotId"))
+        .and_then(Value::as_str)
+        .unwrap_or(&workspace.snapshot_id);
+
+    // Graph build is best-effort; only verify it when a persisted graph exists.
+    if fresh && graph::graph_index_exists_for_snapshot(workspace, graph_snapshot_id) {
+        if let Ok(store) = graph::GraphStore::open_for_snapshot(workspace, graph_snapshot_id) {
             let graph_fresh = store.freshness_check().unwrap_or(false);
             value["graphFresh"] = json!(graph_fresh);
             if !graph_fresh {
