@@ -482,7 +482,7 @@ fn public_caveats(value: &Value) -> Vec<Value> {
             .pointer("/error/message")
             .and_then(Value::as_str)
             .unwrap_or("unknown error");
-        push_public_caveat(&mut caveats, &mut seen, code, message);
+        push_public_caveat_with(&mut caveats, &mut seen, code, message, "error", "error");
     }
 
     let guard_triggered = value.pointer("/guard/triggered").and_then(Value::as_bool) == Some(true);
@@ -558,8 +558,38 @@ fn push_public_caveat(
     code: &str,
     message: &str,
 ) {
+    let (severity, category) = caveat_metadata(code);
+    push_public_caveat_with(caveats, seen, code, message, severity, category);
+}
+
+fn push_public_caveat_with(
+    caveats: &mut Vec<Value>,
+    seen: &mut std::collections::BTreeSet<String>,
+    code: &str,
+    message: &str,
+    severity: &str,
+    category: &str,
+) {
     if seen.insert(code.to_string()) {
-        caveats.push(json!({ "code": code, "message": message }));
+        caveats.push(json!({
+            "code": code,
+            "message": message,
+            "severity": severity,
+            "category": category
+        }));
+    }
+}
+
+fn caveat_metadata(code: &str) -> (&'static str, &'static str) {
+    match code {
+        "precise_scip_index_unavailable"
+        | "parser_fact"
+        | "refs_identifier_boundary_text_search_unless_a_precise_occurrence_index_is_available"
+        | "inferred_candidate" => ("info", "capability"),
+        "unknown_tool" | "invalid_mcp_argument" | "unsupported_mcp_scope" | "cli_usage_error" => {
+            ("error", "error")
+        }
+        _ => ("warning", "risk"),
     }
 }
 
@@ -1589,9 +1619,13 @@ fn structured_warnings(warnings: Vec<String>) -> Value {
         warnings
             .into_iter()
             .map(|message| {
+                let code = stable_code(&message);
+                let (severity, category) = caveat_metadata(&code);
                 json!({
-                    "code": stable_code(&message),
-                    "message": message
+                    "code": code,
+                    "message": message,
+                    "severity": severity,
+                    "category": category
                 })
             })
             .collect(),

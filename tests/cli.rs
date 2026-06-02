@@ -57,6 +57,15 @@ fn replay_read_result(result: &Value) -> Value {
     serde_json::from_slice(&output).unwrap()
 }
 
+fn caveat_with_code<'a>(json: &'a Value, code: &str) -> &'a Value {
+    json["caveats"]
+        .as_array()
+        .expect("caveats is an array")
+        .iter()
+        .find(|caveat| caveat["code"] == code)
+        .unwrap_or_else(|| panic!("missing caveat {code}: {}", json["caveats"]))
+}
+
 #[test]
 fn find_returns_reliable_source_fact() {
     let dir = tempdir().unwrap();
@@ -173,10 +182,82 @@ fn warnings_are_structured_with_stable_codes() {
         json["warnings"][0]["code"],
         "refs_identifier_boundary_text_search_unless_a_precise_occurrence_index_is_available"
     );
+    assert_eq!(json["warnings"][0]["severity"], "info");
+    assert_eq!(json["warnings"][0]["category"], "capability");
     assert!(json["warnings"][0]["message"]
         .as_str()
         .unwrap()
         .contains("precise occurrence index"));
+}
+
+#[test]
+fn public_json_classifies_advanced_command_caveats_by_severity_and_category() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "fn alpha() {\n    beta();\n}\nfn beta() {}\n",
+    )
+    .unwrap();
+    fs::create_dir_all(dir.path().join("src/api")).unwrap();
+    fs::create_dir_all(dir.path().join("src/web")).unwrap();
+    fs::write(
+        dir.path().join("src/api/User.java"),
+        "public class User {}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("src/web/User.java"),
+        "public class User {}\n",
+    )
+    .unwrap();
+
+    for args in [
+        ["defs", "beta"],
+        ["symbols", "beta"],
+        ["refs", "beta"],
+        ["calls", "alpha"],
+        ["callers", "beta"],
+    ] {
+        let output = raw_code_search()
+            .arg("--path")
+            .arg(dir.path())
+            .args(["--output", "json"])
+            .args(args)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        let expected_code = match args[0] {
+            "refs" => {
+                "refs_identifier_boundary_text_search_unless_a_precise_occurrence_index_is_available"
+            }
+            "calls" | "callers" => "inferred_candidate",
+            _ => "precise_scip_index_unavailable",
+        };
+        let caveat = caveat_with_code(&json, expected_code);
+        assert_eq!(caveat["severity"], "info", "{args:?}: {json}");
+        assert_eq!(caveat["category"], "capability", "{args:?}: {json}");
+    }
+
+    let output = raw_code_search()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "json", "symbols", "User"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let fallback = caveat_with_code(&json, "precise_scip_index_unavailable");
+    assert_eq!(fallback["severity"], "info");
+    assert_eq!(fallback["category"], "capability");
+    let ambiguous = caveat_with_code(&json, "ambiguous_results");
+    assert_eq!(ambiguous["severity"], "warning");
+    assert_eq!(ambiguous["category"], "risk");
 }
 
 #[test]
