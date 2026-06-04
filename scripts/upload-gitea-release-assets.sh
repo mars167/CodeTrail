@@ -66,6 +66,26 @@ if [ -z "$release_id" ]; then
   exit 1
 fi
 
+if [ -n "$target_sha" ]; then
+  current_target="$(jq -r '.target_commitish // ""' "$release_json")"
+  if [ "$current_target" != "$target_sha" ]; then
+    payload="$(mktemp)"
+    jq -n --arg target "$target_sha" '{target_commitish: $target}' > "$payload"
+    status="$(
+      curl -sS -o "$release_json" -w '%{http_code}' \
+        -X PATCH \
+        -H "$auth_header" \
+        -H "Content-Type: application/json" \
+        -d @"$payload" \
+        "${api_base}/repos/${GITEA_REPOSITORY}/releases/${release_id}"
+    )"
+    if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+      cat "$release_json"
+      exit 1
+    fi
+  fi
+fi
+
 assets_json="$(mktemp)"
 curl -fsS \
   -H "$auth_header" \
