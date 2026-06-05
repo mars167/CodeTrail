@@ -1,11 +1,11 @@
 #!/bin/bash
-# code-search-cli 性能基准采集和对比脚本
+# codetrail 性能基准采集和对比脚本
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-CS="${CS_BIN:-$ROOT/target/release/code-search}"
+CS="${CS_BIN:-$ROOT/target/release/codetrail}"
 REPO="${TEST_REPO:-$ROOT/../RuoYi}"
 BASELINE_FILE="$SCRIPT_DIR/baseline.json"
 BASELINE_VALUES_DIR="$SCRIPT_DIR/baseline_values"
@@ -31,7 +31,7 @@ declare -a TESTS=(
   "l1-parser|symbols|symbols selectUserList|2|5|--ignore-failure"
   "l2-relation|calls|calls selectUserList|2|5|--ignore-failure"
   "l2-relation|callers|callers selectUserList|2|5|--ignore-failure"
-  "index|index-build-cold|index build|0|3|--prepare 'rm -rf .code-search 2>/dev/null; true'"
+  "index|index-build-cold|index build|0|3|--prepare 'rm -rf .codetrail 2>/dev/null; true'"
   "index|index-build-warm|index build|1|5|"
   "index|find-indexed|find RuoYiApplication|2|5|"
 )
@@ -42,7 +42,7 @@ run_hyperfine_json() {
   local raw_opts="$3"
   local full_cmd="$4"
   local json_file
-  json_file="$(mktemp "${TMPDIR:-/tmp}/code-search-bench.XXXXXX.json")"
+  json_file="$(mktemp "${TMPDIR:-/tmp}/codetrail-bench.XXXXXX.json")"
   local args=(--warmup "$warmup" --min-runs "$runs" --export-json "$json_file")
 
   case "$raw_opts" in
@@ -51,8 +51,8 @@ run_hyperfine_json() {
     "--ignore-failure")
       args+=(--ignore-failure)
       ;;
-    "--prepare 'rm -rf .code-search 2>/dev/null; true'")
-      args+=(--prepare "rm -rf .code-search 2>/dev/null; true")
+    "--prepare 'rm -rf .codetrail 2>/dev/null; true'")
+      args+=(--prepare "rm -rf .codetrail 2>/dev/null; true")
       ;;
     *)
       echo "Unsupported hyperfine option set: $raw_opts" >&2

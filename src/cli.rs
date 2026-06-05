@@ -1,9 +1,9 @@
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
-#[command(name = "code-search")]
+#[command(name = "codetrail")]
 #[command(version)]
-#[command(about = "Deterministic-first code search with reliability-labeled evidence")]
+#[command(about = "CodeTrail: deterministic-first code search with reliability-labeled evidence")]
 pub struct Cli {
     #[arg(short, long, default_value = ".")]
     pub path: String,

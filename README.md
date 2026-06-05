@@ -1,8 +1,8 @@
-# code-search-cli
+# CodeTrail
 
 面向开发者和 LLM Agent 的本地优先代码搜索 CLI。
 
-`code-search` 的核心承诺不是“理解代码”，而是快速给出可验证的代码证据：搜索、路径定位、范围读取、定义、引用、调用候选、索引状态和 MCP 工具输出都围绕可读取的结果、分页和 caveats 组织。
+CodeTrail 的核心承诺不是“理解代码”，而是快速给出可验证的代码证据：搜索、路径定位、范围读取、定义、引用、调用候选、索引状态和 MCP 工具输出都围绕可读取的结果、分页和 caveats 组织。
 
 ## 文档
 
@@ -15,20 +15,20 @@
 | [`docs/02-command-contract.md`](docs/02-command-contract.md) | 命令族、JSON 响应、可靠性契约 |
 | [`docs/03-quality.md`](docs/03-quality.md) | 本地质量门禁、CI 映射、性能看护边界 |
 
-命令参数以 `code-search --help` 和 `src/cli.rs` 为准；实现细节以 `src/`、`tests/` 和 `scripts/` 为准。
+命令参数以 `codetrail --help` 和 `src/cli.rs` 为准；实现细节以 `src/`、`tests/` 和 `scripts/` 为准。
 
 ## Codex Skill
 
 本仓库包含一个给 Codex/LLM Agent 使用的 skill：
 
 ```text
-skills/code-search-cli/
+skills/codetrail/
 ```
 
-它说明了 agent 应如何用 `code-search` 获取可验证的源码证据、处理 reliability 分级、重放 saved query、检查 index freshness，并验证 MCP/JSON 契约。需要随项目使用时，可以把该目录复制到本机 Codex skills 目录：
+它说明了 agent 应如何用 `codetrail` 获取可验证的源码证据、处理 reliability 分级、重放 saved query、检查 index freshness，并验证 MCP/JSON 契约。需要随项目使用时，可以把该目录复制到本机 Codex skills 目录：
 
 ```bash
-cp -R skills/code-search-cli "${CODEX_HOME:-$HOME/.codex}/skills/"
+cp -R skills/codetrail "${CODEX_HOME:-$HOME/.codex}/skills/"
 ```
 
 ## 快速使用
@@ -38,25 +38,25 @@ cp -R skills/code-search-cli "${CODEX_HOME:-$HOME/.codex}/skills/"
 macOS/Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mars167/code-search-cli/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/mars167/CodeTrail/main/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/mars167/code-search-cli/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/mars167/CodeTrail/main/install.ps1 | iex
 ```
 
-安装器会根据当前系统下载最新 GitHub Release 资产，校验 `SHA256SUMS`，并安装 `code-search`。macOS/Linux 默认安装到 `~/.local/bin`，Windows 默认安装到 `%LOCALAPPDATA%\Programs\code-search-cli\bin` 并写入用户 `PATH`。
+安装器会根据当前系统下载最新 GitHub Release 资产，校验 `SHA256SUMS`，并安装 `codetrail`。macOS/Linux 默认安装到 `~/.local/bin`，Windows 默认安装到 `%LOCALAPPDATA%\Programs\codetrail\bin` 并写入用户 `PATH`。
 
 安装指定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mars167/code-search-cli/main/install.sh | sh -s -- --version v0.1.3
+curl -fsSL https://raw.githubusercontent.com/mars167/CodeTrail/main/install.sh | sh -s -- --version v0.1.4
 ```
 
 ```powershell
-$env:CODE_SEARCH_VERSION = "v0.1.3"; irm https://raw.githubusercontent.com/mars167/code-search-cli/main/install.ps1 | iex
+$env:CODETRAIL_VERSION = "v0.1.4"; irm https://raw.githubusercontent.com/mars167/CodeTrail/main/install.ps1 | iex
 ```
 
 ```bash
@@ -78,7 +78,7 @@ cargo run -- mcp
 默认输出是短文本；需要机器读取时使用 `--output json` 或 `--output jsonl`。公开 JSON 只包含 `results`、`page` 和 `caveats`；每个 caveat 都带稳定 `severity` 与 `category`，用于区分风险警告和预期能力级别说明。调试本地问题时可以加 `-v`/`--verbose`，诊断日志会写到 stderr，不污染 stdout 的 JSON/text 结果。例如排查 Windows 索引构建问题时可运行：
 
 ```bash
-code-search -v --output json index build --force > out.json 2> debug.log
+codetrail -v --output json index build --force > out.json 2> debug.log
 ```
 
 修改代码前用 `read` 验证搜索、remote 或图候选结果。
@@ -88,7 +88,7 @@ code-search -v --output json index build --force > out.json 2> debug.log
 - CLI 命令面由 `clap` 定义，默认 `text`，支持 `json`、`compact-json`、`jsonl` 与 `text` 输出；`-v`/`--verbose` 输出命令、workspace、索引扫描和 LanceDB 写入阶段的诊断日志到 stderr。
 - L0 源码事实命令覆盖内容搜索、路径搜索、目录浏览、范围读取、git changed/status。
 - 全局 scope 参数包括 `--include`、`--exclude`、`--lang`、`--changed`、`--cursor`、`--allow-broad`、`--limit`、`--context` 和 `--save-query`。
-- `--save-query` 将可重放查询保存到 `.code-search/queries/`；`query replay/show/list/delete` 管理 saved query。snapshot 不匹配时，默认按当前 workspace 重放并给 caveat；`--snapshot saved` 会拒绝不匹配的重放。
+- `--save-query` 将可重放查询保存到 `.codetrail/queries/`；`query replay/show/list/delete` 管理 saved query。snapshot 不匹配时，默认按当前 workspace 重放并给 caveat；`--snapshot saved` 会拒绝不匹配的重放。
 - `index build` 使用 LanceDB 作为主要本地索引存储，保存 snapshot、file catalog、file proof 和 gram postings，并保留 manifest 供 pack/unpack 兼容。`index build --changed` 只扫描 git changed 文件；`index update` 在需要重建时仍按当前 scope 完整刷新索引。dirty worktree 查询会对仍 fresh 的文件使用索引，对变更文件使用 live overlay。
 - 索引构建和文件扫描错误会保留 cause chain，并在 metadata、manifest、LanceDB 等边界带上路径或阶段上下文，便于定位底层 OS 错误。
 - `index pack/unpack` 支持 remote snapshot；remote 结果必须标记 `remote_verified` 或 `remote_unverified`，关键结果仍需 `read` 验证。

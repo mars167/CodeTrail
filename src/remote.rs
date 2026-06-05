@@ -1,7 +1,7 @@
 //! Remote index dispatch layer.
 //!
 //! When local snapshots are stale or missing, this module queries
-//! remote-unpacked snapshots in `.code-search/remote/`. Results from
+//! remote-unpacked snapshots in `.codetrail/remote/`. Results from
 //! remote sources carry `remote_verified` / `remote_unverified` reliability
 //! annotations and NEVER override local state.
 
@@ -203,7 +203,7 @@ pub fn remote_reliability(remote_verified: bool) -> Value {
             "source": "remote_unverified",
             "exact": false,
             "remote_verified": false,
-            "llm_instruction": "These results come from a remote index that does NOT match current local files. Verify every result with code-search read before relying on them."
+            "llm_instruction": "These results come from a remote index that does NOT match current local files. Verify every result with codetrail read before relying on them."
         })
     }
 }

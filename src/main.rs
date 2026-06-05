@@ -1,5 +1,5 @@
 use clap::{error::ErrorKind, Parser};
-use code_search_cli::{cli::Cli, cli::OutputFormat, commands, output};
+use codetrail::{cli::Cli, cli::OutputFormat, commands, output};
 
 fn main() {
     let parse_error_format = requested_output_format(std::env::args().skip(1));

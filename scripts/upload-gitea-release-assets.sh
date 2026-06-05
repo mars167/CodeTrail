@@ -13,7 +13,7 @@ done
 : "${RELEASE_TAG:?RELEASE_TAG is required}"
 : "${GITEA_TOKEN:?GITEA_TOKEN is required}"
 : "${GITEA_URL:=https://git.home.arpa}"
-: "${GITEA_REPOSITORY:=mars/code-search-cli}"
+: "${GITEA_REPOSITORY:=mars/CodeTrail}"
 
 if [ ! -d "$assets_dir" ]; then
   echo "Assets directory does not exist: $assets_dir" >&2
@@ -93,7 +93,7 @@ curl -fsS \
   > "$assets_json"
 
 uploaded=0
-for file in "$assets_dir"/code-search-* "$assets_dir"/SHA256SUMS; do
+for file in "$assets_dir"/codetrail-* "$assets_dir"/SHA256SUMS; do
   [ -f "$file" ] || continue
   name="$(basename "$file")"
 

@@ -5,17 +5,17 @@ use serde_json::json;
 use serde_json::Value;
 use tempfile::tempdir;
 
-fn code_search() -> Command {
-    let mut command = raw_code_search();
+fn codetrail() -> Command {
+    let mut command = raw_codetrail();
     command
-        .env("CODE_SEARCH_INTERNAL_JSON", "1")
+        .env("CODETRAIL_INTERNAL_JSON", "1")
         .arg("--output")
         .arg("json");
     command
 }
 
-fn raw_code_search() -> Command {
-    Command::cargo_bin("code-search").expect("binary exists")
+fn raw_codetrail() -> Command {
+    Command::cargo_bin("codetrail").expect("binary exists")
 }
 
 fn init_git_repo(path: &std::path::Path) {
@@ -45,9 +45,9 @@ fn replay_read_result(result: &Value) -> Value {
         .iter()
         .map(|arg| arg.as_str().expect("argv item is string").to_string())
         .collect::<Vec<_>>();
-    assert_eq!(argv.first().map(String::as_str), Some("code-search"));
+    assert_eq!(argv.first().map(String::as_str), Some("codetrail"));
 
-    let output = code_search()
+    let output = codetrail()
         .args(argv.iter().skip(1))
         .assert()
         .success()
@@ -76,7 +76,7 @@ fn find_returns_reliable_source_fact() {
     )
     .unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "needle"])
@@ -108,7 +108,7 @@ fn schema_contract_covers_core_commands_and_errors() {
         vec!["changed"],
         vec!["index", "status"],
     ] {
-        let output = code_search()
+        let output = codetrail()
             .arg("--path")
             .arg(dir.path())
             .args(args)
@@ -122,7 +122,7 @@ fn schema_contract_covers_core_commands_and_errors() {
         assert_eq!(json["query"]["normalized"], true);
     }
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "main", "--mode", "bogus"])
@@ -141,7 +141,7 @@ fn index_build_text_output_suppresses_progress_when_stderr_is_not_tty() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
 
-    let assert = raw_code_search()
+    let assert = raw_codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
@@ -167,7 +167,7 @@ fn verbose_index_build_emits_diagnostics_to_stderr() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("-v")
         .arg("--path")
         .arg(dir.path())
@@ -182,15 +182,15 @@ fn verbose_index_build_emits_diagnostics_to_stderr() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("code-search: command=index build"),
+        stderr.contains("codetrail: command=index build"),
         "missing command diagnostic: {stderr:?}"
     );
     assert!(
-        stderr.contains("code-search: index build: catalog files=1"),
+        stderr.contains("codetrail: index build: catalog files=1"),
         "missing catalog diagnostic: {stderr:?}"
     );
     assert!(
-        stderr.contains("code-search: index build: writing LanceDB file proofs"),
+        stderr.contains("codetrail: index build: writing LanceDB file proofs"),
         "missing LanceDB diagnostic: {stderr:?}"
     );
 }
@@ -201,7 +201,7 @@ fn warnings_are_structured_with_stable_codes() {
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src/main.rs"), "fn helper() {}\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["refs", "helper"])
@@ -252,7 +252,7 @@ fn public_json_classifies_advanced_command_caveats_by_severity_and_category() {
         ["calls", "alpha"],
         ["callers", "beta"],
     ] {
-        let output = raw_code_search()
+        let output = raw_codetrail()
             .arg("--path")
             .arg(dir.path())
             .args(["--output", "json"])
@@ -275,7 +275,7 @@ fn public_json_classifies_advanced_command_caveats_by_severity_and_category() {
         assert_eq!(caveat["category"], "capability", "{args:?}: {json}");
     }
 
-    let output = raw_code_search()
+    let output = raw_codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["--output", "json", "symbols", "User"])
@@ -298,7 +298,7 @@ fn public_json_keeps_only_results_page_and_caveats() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "before\nneedle\nafter\n").unwrap();
 
-    let output = raw_code_search()
+    let output = raw_codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["--output", "json", "--context", "1", "find", "needle"])
@@ -336,7 +336,7 @@ fn public_json_uses_cursor_without_truncated_caveat_for_limited_pages() {
         fs::write(dir.path().join(path), "needle\n").unwrap();
     }
 
-    let first_output = raw_code_search()
+    let first_output = raw_codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["--output", "json", "--limit", "1", "find", "needle"])
@@ -352,7 +352,7 @@ fn public_json_uses_cursor_without_truncated_caveat_for_limited_pages() {
     assert_eq!(first["page"]["truncated"], false);
     assert!(first["caveats"].as_array().unwrap().is_empty());
 
-    let second_output = raw_code_search()
+    let second_output = raw_codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["--output", "json", "--limit", "1", "--cursor"])
@@ -378,7 +378,7 @@ fn l0_literal_and_regex_modes_are_predictable() {
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src/main.rs"), "literal a.b\nregex acb\n").unwrap();
 
-    let find_output = code_search()
+    let find_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "a.b"])
@@ -392,7 +392,7 @@ fn l0_literal_and_regex_modes_are_predictable() {
     assert_eq!(find_json["results"].as_array().unwrap().len(), 1);
     assert_eq!(find_json["results"][0]["matchText"], "a.b");
 
-    let grep_output = code_search()
+    let grep_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["grep", "a.b"])
@@ -412,7 +412,7 @@ fn l0_literal_and_regex_modes_are_predictable() {
     assert!(grep_matches.contains(&"a.b"));
     assert!(grep_matches.contains(&"acb"));
 
-    let literal_grep = code_search()
+    let literal_grep = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["grep", "a.b", "--mode", "literal"])
@@ -436,7 +436,7 @@ fn refs_text_fallback_uses_identifier_boundaries() {
     )
     .unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["refs", "User"])
@@ -486,7 +486,7 @@ fn refs_text_fallback_only_marks_definition_name_as_definition() {
     )
     .unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["refs", "needle"])
@@ -513,7 +513,7 @@ fn find_no_match_returns_structured_next_actions() {
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "MissingThing"])
@@ -551,7 +551,7 @@ fn invalid_regex_is_not_reported_as_no_match() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["grep", "["])
@@ -574,7 +574,7 @@ fn files_is_path_substring_while_glob_is_strict_glob() {
     fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
     fs::write(dir.path().join("src/*.rs"), "literal star path\n").unwrap();
 
-    let files_output = code_search()
+    let files_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["files", "src/*.rs"])
@@ -593,7 +593,7 @@ fn files_is_path_substring_while_glob_is_strict_glob() {
     assert_eq!(files_json["query"]["mode"], "path_substring");
     assert_eq!(files_paths, vec!["src/*.rs"]);
 
-    let glob_output = code_search()
+    let glob_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["glob", "src/*.rs"])
@@ -618,15 +618,15 @@ fn list_and_tree_respect_hidden_no_ignore_and_filters() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::create_dir_all(dir.path().join("target/generated")).unwrap();
-    fs::create_dir_all(dir.path().join(".code-search")).unwrap();
+    fs::create_dir_all(dir.path().join(".codetrail")).unwrap();
     fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
     fs::write(dir.path().join(".ignore"), "ignored.log\n").unwrap();
     fs::write(dir.path().join(".hidden.rs"), "hidden\n").unwrap();
     fs::write(dir.path().join("ignored.log"), "ignored\n").unwrap();
     fs::write(dir.path().join("target/generated/out.rs"), "generated\n").unwrap();
-    fs::write(dir.path().join(".code-search/cache"), "internal\n").unwrap();
+    fs::write(dir.path().join(".codetrail/cache"), "internal\n").unwrap();
 
-    let default_list = code_search()
+    let default_list = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["list"])
@@ -646,9 +646,9 @@ fn list_and_tree_respect_hidden_no_ignore_and_filters() {
     assert!(!default_paths.contains(&".hidden.rs"));
     assert!(!default_paths.contains(&"ignored.log"));
     assert!(!default_paths.contains(&"target"));
-    assert!(!default_paths.contains(&".code-search"));
+    assert!(!default_paths.contains(&".codetrail"));
 
-    let expanded_list = code_search()
+    let expanded_list = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--hidden")
@@ -669,9 +669,9 @@ fn list_and_tree_respect_hidden_no_ignore_and_filters() {
     assert!(expanded_paths.contains(&".hidden.rs"));
     assert!(expanded_paths.contains(&"ignored.log"));
     assert!(expanded_paths.contains(&"target"));
-    assert!(!expanded_paths.contains(&".code-search"));
+    assert!(!expanded_paths.contains(&".codetrail"));
 
-    let filtered_tree = code_search()
+    let filtered_tree = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--include")
@@ -701,7 +701,7 @@ fn lang_scope_filters_find_and_is_echoed() {
     fs::write(dir.path().join("src/lib.rs"), "let value = \"needle\";\n").unwrap();
     fs::write(dir.path().join("src/app.py"), "value = 'needle'\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--lang")
@@ -726,7 +726,7 @@ fn lang_scope_filters_symbols() {
     fs::write(dir.path().join("src/lib.rs"), "fn alpha() {}\n").unwrap();
     fs::write(dir.path().join("src/app.py"), "def alpha():\n    pass\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--lang")
@@ -793,7 +793,7 @@ fn changed_scope_searches_only_git_changed_files() {
     )
     .unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--changed")
@@ -861,7 +861,7 @@ fn changed_output_distinguishes_staged_unstaged_and_untracked() {
     fs::write(dir.path().join("src/unstaged.rs"), "new unstaged\n").unwrap();
     fs::write(dir.path().join("src/untracked.rs"), "new untracked\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["changed"])
@@ -935,7 +935,7 @@ fn empty_changed_scope_returns_noop_warning_without_full_workspace_fallback() {
         .output()
         .unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--changed")
@@ -963,7 +963,7 @@ fn cursor_paginates_stably_and_reports_facets() {
         fs::write(dir.path().join(path), "needle\n").unwrap();
     }
 
-    let first_output = code_search()
+    let first_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--limit")
@@ -986,7 +986,7 @@ fn cursor_paginates_stably_and_reports_facets() {
         .iter()
         .any(|facet| facet["value"] == "rust" && facet["count"] == 3));
 
-    let second_output = code_search()
+    let second_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--limit")
@@ -1013,7 +1013,7 @@ fn cursor_rejects_query_scope_mismatch() {
     fs::write(dir.path().join("a.txt"), "needle\nother\n").unwrap();
     fs::write(dir.path().join("b.txt"), "needle\n").unwrap();
 
-    let first_output = code_search()
+    let first_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--limit")
@@ -1027,7 +1027,7 @@ fn cursor_rejects_query_scope_mismatch() {
     let first: Value = serde_json::from_slice(&first_output).unwrap();
     let cursor = first["nextCursor"].as_str().unwrap();
 
-    let mismatch_output = code_search()
+    let mismatch_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--limit")
@@ -1081,7 +1081,7 @@ fn cursor_rejects_snapshot_mismatch_after_worktree_changes() {
         .output()
         .unwrap();
 
-    let first_output = code_search()
+    let first_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--limit")
@@ -1097,7 +1097,7 @@ fn cursor_rejects_snapshot_mismatch_after_worktree_changes() {
 
     fs::write(dir.path().join("src/aa.rs"), "needle\n").unwrap();
 
-    let mismatch_output = code_search()
+    let mismatch_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--limit")
@@ -1152,7 +1152,7 @@ fn cursor_rejects_dirty_worktree_result_set_changes() {
     fs::write(dir.path().join("src/a.rs"), "needle\n").unwrap();
     fs::write(dir.path().join("src/b.rs"), "needle\n").unwrap();
 
-    let first_output = code_search()
+    let first_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--limit")
@@ -1169,7 +1169,7 @@ fn cursor_rejects_dirty_worktree_result_set_changes() {
 
     fs::write(dir.path().join("src/aa.rs"), "needle\n").unwrap();
 
-    let mismatch_output = code_search()
+    let mismatch_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--limit")
@@ -1194,7 +1194,7 @@ fn saved_query_replay_matches_direct_query_and_can_be_deleted() {
     fs::write(dir.path().join("a.txt"), "needle\n").unwrap();
     fs::write(dir.path().join("b.txt"), "needle\n").unwrap();
 
-    let saved_output = code_search()
+    let saved_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--save-query")
@@ -1208,14 +1208,14 @@ fn saved_query_replay_matches_direct_query_and_can_be_deleted() {
     let saved_json: Value = serde_json::from_slice(&saved_output).unwrap();
     assert_eq!(saved_json["savedQuery"]["name"], "needles");
 
-    let saved_path = dir.path().join(".code-search/queries/needles.json");
+    let saved_path = dir.path().join(".codetrail/queries/needles.json");
     let saved_file: Value = serde_json::from_slice(&fs::read(&saved_path).unwrap()).unwrap();
     assert_eq!(saved_file["command"], "find");
     assert_eq!(saved_file["query"]["pattern"], "needle");
     assert_eq!(saved_file["query"]["scope"]["limit"], 100);
     assert!(saved_file.get("results").is_none());
 
-    let direct_output = code_search()
+    let direct_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "needle"])
@@ -1226,7 +1226,7 @@ fn saved_query_replay_matches_direct_query_and_can_be_deleted() {
         .clone();
     let direct_json: Value = serde_json::from_slice(&direct_output).unwrap();
 
-    let replay_output = code_search()
+    let replay_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["query", "replay", "needles"])
@@ -1240,7 +1240,7 @@ fn saved_query_replay_matches_direct_query_and_can_be_deleted() {
     assert_eq!(replay_json["results"], direct_json["results"]);
     assert_eq!(replay_json["savedQuery"]["snapshotMatch"], true);
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["query", "delete", "needles"])
@@ -1255,7 +1255,7 @@ fn saved_query_replay_continues_from_saved_next_cursor() {
     fs::write(dir.path().join("a.txt"), "needle\n").unwrap();
     fs::write(dir.path().join("b.txt"), "needle\n").unwrap();
 
-    let first_output = code_search()
+    let first_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--limit")
@@ -1272,7 +1272,7 @@ fn saved_query_replay_continues_from_saved_next_cursor() {
     let saved_cursor = first_json["nextCursor"].as_str().unwrap().to_string();
     assert_eq!(first_json["results"][0]["path"], "a.txt");
 
-    let replay_output = code_search()
+    let replay_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["query", "replay", "page"])
@@ -1305,7 +1305,7 @@ fn saved_query_replay_warns_when_snapshot_changes() {
         .output()
         .unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--save-query")
@@ -1315,7 +1315,7 @@ fn saved_query_replay_warns_when_snapshot_changes() {
         .success();
     fs::write(dir.path().join("b.txt"), "needle\n").unwrap();
 
-    let replay_output = code_search()
+    let replay_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["query", "replay", "stable"])
@@ -1333,7 +1333,7 @@ fn saved_query_replay_warns_when_snapshot_changes() {
         .iter()
         .any(|warning| warning["code"] == "saved_query_snapshot_mismatch"));
 
-    let saved_snapshot_output = code_search()
+    let saved_snapshot_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["query", "replay", "stable", "--snapshot", "saved"])
@@ -1368,7 +1368,7 @@ fn saved_query_replay_drops_saved_cursor_when_snapshot_changes_to_current() {
         .output()
         .unwrap();
 
-    let first_output = code_search()
+    let first_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--limit")
@@ -1385,7 +1385,7 @@ fn saved_query_replay_drops_saved_cursor_when_snapshot_changes_to_current() {
     assert!(first_json["nextCursor"].as_str().is_some());
 
     fs::write(dir.path().join("aa.txt"), "needle\n").unwrap();
-    let replay_output = code_search()
+    let replay_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["query", "replay", "page"])
@@ -1414,7 +1414,7 @@ fn saved_query_replay_preserves_symbol_scope() {
     fs::write(dir.path().join("src/a/mod.rs"), "fn needle() {}\n").unwrap();
     fs::write(dir.path().join("src/b/mod.rs"), "fn needle() {}\n").unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--include")
@@ -1425,7 +1425,7 @@ fn saved_query_replay_preserves_symbol_scope() {
         .assert()
         .success();
 
-    let replay_output = code_search()
+    let replay_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["query", "replay", "defs-a"])
@@ -1447,7 +1447,7 @@ fn jsonl_summary_includes_cursor_and_facets() {
     fs::write(dir.path().join("a.rs"), "needle\n").unwrap();
     fs::write(dir.path().join("b.rs"), "needle\n").unwrap();
 
-    let output = raw_code_search()
+    let output = raw_codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--output")
@@ -1474,7 +1474,7 @@ fn small_workspace_uses_generous_output_budget() {
     let preview = format!("needle {}\n", "a".repeat(180));
     fs::write(dir.path().join("small.rs"), preview).unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "needle"])
@@ -1504,7 +1504,7 @@ fn medium_workspace_truncates_preview_with_reason() {
         .unwrap();
     }
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "needle"])
@@ -1545,7 +1545,7 @@ fn large_high_hit_workspace_reduces_preview_and_context_budget() {
         .unwrap();
     }
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--context")
@@ -1603,7 +1603,7 @@ fn broad_find_returns_guarded_summary_samples() {
         .unwrap();
     }
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "public"])
@@ -1637,7 +1637,7 @@ fn broad_grep_regex_is_guarded_by_default() {
         fs::write(dir.path().join(format!("file{idx}.txt")), "anything\n").unwrap();
     }
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["grep", ".*"])
@@ -1666,7 +1666,7 @@ fn broad_files_star_returns_summary_samples() {
         .unwrap();
     }
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["files", "*"])
@@ -1699,7 +1699,7 @@ fn public_broad_guard_reports_one_explanatory_caveat() {
         .unwrap();
     }
 
-    let output = raw_code_search()
+    let output = raw_codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["--output", "json", "find", "public"])
@@ -1732,7 +1732,7 @@ fn allow_broad_expands_with_limit_and_cursor() {
         fs::write(dir.path().join(format!("file{idx}.txt")), "content\n").unwrap();
     }
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--allow-broad")
@@ -1759,7 +1759,7 @@ fn public_allow_broad_limited_page_uses_cursor_without_truncated_caveat() {
         fs::write(dir.path().join(format!("file{idx}.txt")), "content\n").unwrap();
     }
 
-    let output = raw_code_search()
+    let output = raw_codetrail()
         .arg("--path")
         .arg(dir.path())
         .args([
@@ -1795,7 +1795,7 @@ fn limit_does_not_bypass_broad_query_guard() {
         .unwrap();
     }
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--limit")
@@ -1819,7 +1819,7 @@ fn small_broad_literal_match_does_not_trigger_guard() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("file.txt"), "x\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "x"])
@@ -1846,7 +1846,7 @@ fn text_output_reports_broad_guard_warning() {
         fs::write(dir.path().join(format!("file{idx}.txt")), "anything\n").unwrap();
     }
 
-    let output = raw_code_search()
+    let output = raw_codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--output")
@@ -1872,7 +1872,7 @@ fn text_output_regular_search_stays_path_line_focused() {
     )
     .unwrap();
 
-    let output = raw_code_search()
+    let output = raw_codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "needle"])
@@ -1891,7 +1891,7 @@ fn text_output_no_match_shows_hint_and_exit_code_two() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
 
-    let output = raw_code_search()
+    let output = raw_codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--output")
@@ -1920,7 +1920,7 @@ fn text_output_broad_query_shows_summary_facets_and_next_action() {
         .unwrap();
     }
 
-    let output = raw_code_search()
+    let output = raw_codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--output")
@@ -1945,7 +1945,7 @@ fn text_output_fallback_warning_is_visible() {
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src/lib.rs"), "fn helper() {}\n").unwrap();
 
-    let output = raw_code_search()
+    let output = raw_codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--output")
@@ -1967,7 +1967,7 @@ fn text_output_error_is_single_readable_line() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
 
-    let output = raw_code_search()
+    let output = raw_codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--output")
@@ -1986,7 +1986,7 @@ fn text_output_error_is_single_readable_line() {
 
 #[test]
 fn text_output_parse_error_is_single_readable_line() {
-    let output = raw_code_search()
+    let output = raw_codetrail()
         .args(["--output", "text", "--definitely-not-an-option"])
         .assert()
         .failure()
@@ -2010,7 +2010,7 @@ fn json_output_includes_read_suggestions_and_next_actions() {
     )
     .unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "needle"])
@@ -2046,7 +2046,7 @@ fn read_commands_are_replayable_with_path_and_spaces() {
     )
     .unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "needle"])
@@ -2059,13 +2059,13 @@ fn read_commands_are_replayable_with_path_and_spaces() {
 
     let canonical_root = fs::canonicalize(dir.path()).unwrap();
     let argv = json["results"][0]["readCommandArgv"].as_array().unwrap();
-    assert_eq!(argv[0], "code-search");
+    assert_eq!(argv[0], "codetrail");
     assert_eq!(argv[1], "--path");
     assert_eq!(argv[2], canonical_root.to_string_lossy().as_ref());
     assert_eq!(argv[3], "read");
     assert_eq!(argv[4], "src dir/a b.rs:1");
 
-    let read_output = code_search()
+    let read_output = codetrail()
         .args(argv.iter().skip(1).map(|value| value.as_str().unwrap()))
         .assert()
         .success()
@@ -2084,7 +2084,7 @@ fn read_command_argv_handles_paths_that_look_like_flags() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("--odd.txt"), "needle\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "needle"])
@@ -2098,7 +2098,7 @@ fn read_command_argv_handles_paths_that_look_like_flags() {
     assert_eq!(argv[4], "--");
     assert_eq!(argv[5], "--odd.txt:1");
 
-    let read_output = code_search()
+    let read_output = codetrail()
         .args(argv.iter().skip(1).map(|value| value.as_str().unwrap()))
         .assert()
         .success()
@@ -2115,7 +2115,7 @@ fn directory_results_do_not_emit_read_next_actions() {
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["list"])
@@ -2154,7 +2154,7 @@ fn deleted_changed_files_do_not_emit_read_next_actions() {
         .unwrap();
     fs::remove_file(dir.path().join("gone.txt")).unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["changed"])
@@ -2176,7 +2176,7 @@ fn index_status_metadata_does_not_emit_read_next_actions() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "status"])
@@ -2195,7 +2195,7 @@ fn index_status_metadata_does_not_emit_read_next_actions() {
 fn error_envelopes_keep_stable_output_fields() {
     let dir = tempdir().unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["read", "missing.txt"])
@@ -2214,7 +2214,7 @@ fn error_envelopes_keep_stable_output_fields() {
 
 #[test]
 fn jsonl_parse_errors_are_error_events() {
-    let output = raw_code_search()
+    let output = raw_codetrail()
         .args(["--output", "jsonl", "definitely-not-a-command"])
         .assert()
         .failure()
@@ -2244,7 +2244,7 @@ fn compact_json_omits_large_fields_but_keeps_read_command() {
     )
     .unwrap();
 
-    let output = raw_code_search()
+    let output = raw_codetrail()
         .arg("--path")
         .arg(dir.path())
         .args([
@@ -2273,7 +2273,7 @@ fn jsonl_output_streams_result_events_and_summary() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle one\nneedle two\n").unwrap();
 
-    let output = raw_code_search()
+    let output = raw_codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["--output", "jsonl", "find", "needle"])
@@ -2297,7 +2297,7 @@ fn jsonl_output_streams_result_events_and_summary() {
 
 #[test]
 fn cli_parse_errors_use_json_error_schema() {
-    let output = code_search()
+    let output = codetrail()
         .args(["definitely-not-a-command"])
         .assert()
         .failure()
@@ -2314,7 +2314,7 @@ fn cli_parse_errors_use_json_error_schema() {
 fn dynamic_error_details_do_not_change_error_code() {
     let dir = tempdir().unwrap();
 
-    let first = code_search()
+    let first = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["read", "missing-one.txt"])
@@ -2323,7 +2323,7 @@ fn dynamic_error_details_do_not_change_error_code() {
         .get_output()
         .stdout
         .clone();
-    let second = code_search()
+    let second = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["read", "missing-two.txt"])
@@ -2338,7 +2338,7 @@ fn dynamic_error_details_do_not_change_error_code() {
     assert_eq!(first_json["error"]["code"], "read_failed");
     assert_eq!(first_json["error"]["code"], second_json["error"]["code"]);
 
-    let first = code_search()
+    let first = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["list", "missing-one"])
@@ -2347,7 +2347,7 @@ fn dynamic_error_details_do_not_change_error_code() {
         .get_output()
         .stdout
         .clone();
-    let second = code_search()
+    let second = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["list", "missing-two"])
@@ -2369,7 +2369,7 @@ fn dynamic_warning_details_do_not_change_warning_code() {
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src/broken.rs"), "fn broken( {\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["symbols", "broken"])
@@ -2387,7 +2387,7 @@ fn read_returns_exact_line_range() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "one\ntwo\nthree\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["read", "sample.txt:2-3"])
@@ -2408,7 +2408,7 @@ fn read_rejects_invalid_ranges_with_structured_errors() {
     fs::write(dir.path().join("sample.txt"), "one\ntwo\nthree\n").unwrap();
 
     for target in ["sample.txt:0", "sample.txt:3-2", "sample.txt:2-"] {
-        let output = code_search()
+        let output = codetrail()
             .arg("--path")
             .arg(dir.path())
             .args(["read", target])
@@ -2432,7 +2432,7 @@ fn read_blocks_paths_outside_workspace() {
         outside.path().file_name().unwrap().to_string_lossy()
     );
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(workspace.path())
         .args(["read", &target])
@@ -2450,7 +2450,7 @@ fn read_binary_file_returns_warning_without_content() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("blob.bin"), b"abc\0def").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["read", "blob.bin"])
@@ -2477,7 +2477,7 @@ fn read_large_file_truncates_full_read_but_allows_range() {
         .collect::<String>();
     fs::write(dir.path().join("large.txt"), content).unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["read", "large.txt"])
@@ -2494,7 +2494,7 @@ fn read_large_file_truncates_full_read_but_allows_range() {
     assert!(json["nextActions"].as_array().unwrap().is_empty());
     assert_eq!(json["warnings"][0]["code"], "large_file_truncated");
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["read", "large.txt:6999-7000"])
@@ -2514,7 +2514,7 @@ fn find_truncates_very_long_preview_and_summarizes_it() {
     let long_line = format!("prefix needle {}\n", "x".repeat(2000));
     fs::write(dir.path().join("long.txt"), long_line).unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["--context", "1", "find", "needle"])
@@ -2537,7 +2537,7 @@ fn generated_directories_are_default_excluded_but_explicitly_searchable() {
     fs::write(dir.path().join("target/generated/out.rs"), "needle\n").unwrap();
     fs::write(dir.path().join("src.rs"), "needle\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "needle"])
@@ -2554,7 +2554,7 @@ fn generated_directories_are_default_excluded_but_explicitly_searchable() {
         .iter()
         .all(|result| result["path"] != "target/generated/out.rs"));
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--no-ignore")
@@ -2579,14 +2579,14 @@ fn fresh_index_reports_generated_skips_in_summary() {
     fs::write(dir.path().join("target/generated/out.rs"), "needle\n").unwrap();
     fs::write(dir.path().join("src.rs"), "needle\n").unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
         .assert()
         .success();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "needle"])
@@ -2611,7 +2611,7 @@ fn jsonl_summary_includes_large_content_summary_counts() {
     let long_line = format!("prefix needle {}\n", "x".repeat(2000));
     fs::write(dir.path().join("long.txt"), long_line).unwrap();
 
-    let output = raw_code_search()
+    let output = raw_codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["--output", "jsonl", "--context", "1", "find", "needle"])
@@ -2644,7 +2644,7 @@ fn parser_commands_expose_symbols_and_call_candidates() {
     )
     .unwrap();
 
-    let defs = code_search()
+    let defs = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["defs", "beta"])
@@ -2657,7 +2657,7 @@ fn parser_commands_expose_symbols_and_call_candidates() {
     assert_eq!(defs_json["reliability"]["level"], "parser_fact");
     assert_eq!(defs_json["results"][0]["name"], "beta");
 
-    let callers = code_search()
+    let callers = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["callers", "beta"])
@@ -2676,14 +2676,14 @@ fn index_verify_detects_stale_files() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "one\n").unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
         .assert()
         .success();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "verify"])
@@ -2692,7 +2692,7 @@ fn index_verify_detects_stale_files() {
 
     fs::write(dir.path().join("sample.txt"), "one\ntwo\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "verify"])
@@ -2712,16 +2712,16 @@ fn index_verify_ignores_missing_best_effort_graph_artifact() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "one\n").unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
         .assert()
         .success();
 
-    fs::remove_dir_all(dir.path().join(".code-search/graph")).unwrap();
+    fs::remove_dir_all(dir.path().join(".codetrail/graph")).unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "verify"])
@@ -2758,14 +2758,14 @@ fn index_verify_checks_graph_against_active_manifest_snapshot() {
         .output()
         .unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
         .assert()
         .success();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "verify"])
@@ -2802,7 +2802,7 @@ fn git_dirty_index_status_uses_active_manifest_for_per_file_freshness() {
         .output()
         .unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
@@ -2811,7 +2811,7 @@ fn git_dirty_index_status_uses_active_manifest_for_per_file_freshness() {
 
     fs::write(dir.path().join("sample.txt"), "one\ntwo\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "status"])
@@ -2842,23 +2842,23 @@ fn index_build_writes_lancedb_only_storage() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
         .assert()
         .success();
 
-    let code_search_dir = dir.path().join(".code-search");
+    let codetrail_dir = dir.path().join(".codetrail");
     // LanceDB store is the primary storage backend
-    assert!(code_search_dir.join("index.lance").is_dir());
+    assert!(codetrail_dir.join("index.lance").is_dir());
     // Old JSON/.idx artifacts are no longer written
-    assert!(!code_search_dir.join("snapshots").exists());
-    assert!(!code_search_dir.join("text").exists());
+    assert!(!codetrail_dir.join("snapshots").exists());
+    assert!(!codetrail_dir.join("text").exists());
     // working/manifest.json is written for pack/unpack compatibility
 
     // Build output declares lancedb backend
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
@@ -2894,7 +2894,7 @@ fn index_build_changed_limits_catalog_to_changed_files() {
 
     fs::write(dir.path().join("src/changed.txt"), "new\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build", "--changed"])
@@ -2915,14 +2915,14 @@ fn find_uses_fresh_text_index_for_candidates() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
         .assert()
         .success();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "needle"])
@@ -2949,14 +2949,14 @@ fn path_queries_use_fresh_index_catalog() {
     fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
     fs::write(dir.path().join("README.md"), "hello\n").unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
         .assert()
         .success();
 
-    let files_output = code_search()
+    let files_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["files", "main"])
@@ -2974,7 +2974,7 @@ fn path_queries_use_fresh_index_catalog() {
     );
     assert_eq!(files_json["results"][0]["sourceReason"], "indexed_fresh");
 
-    let glob_output = code_search()
+    let glob_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["glob", "**/*.rs"])
@@ -3020,7 +3020,7 @@ fn dirty_worktree_uses_index_for_fresh_files_and_live_overlay_for_changed_files(
         .output()
         .unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
@@ -3033,7 +3033,7 @@ fn dirty_worktree_uses_index_for_fresh_files_and_live_overlay_for_changed_files(
     )
     .unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "needle"])
@@ -3074,7 +3074,7 @@ fn non_git_added_file_uses_live_overlay_after_index_build() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("stable.txt"), "needle stable\n").unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
@@ -3083,7 +3083,7 @@ fn non_git_added_file_uses_live_overlay_after_index_build() {
 
     fs::write(dir.path().join("added.txt"), "needle added\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "needle"])
@@ -3114,7 +3114,7 @@ fn added_files_outside_index_scope_do_not_dirty_scoped_index() {
     fs::create_dir_all(dir.path().join("docs")).unwrap();
     fs::write(dir.path().join("src/lib.rs"), "fn main() {}\n").unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["--include", "src", "index", "build"])
@@ -3123,7 +3123,7 @@ fn added_files_outside_index_scope_do_not_dirty_scoped_index() {
 
     fs::write(dir.path().join("docs/new.md"), "outside scope\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "status"])
@@ -3152,14 +3152,14 @@ fn find_uses_lancedb_gram_prefilter_for_candidates() {
     )
     .unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
         .assert()
         .success();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "needle_rare_literal"])
@@ -3182,14 +3182,14 @@ fn regex_search_reports_prefilter_plan_when_using_index_catalog() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle_123\n").unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
         .assert()
         .success();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["grep", "needle_[0-9]+"])
@@ -3217,14 +3217,14 @@ fn index_update_noops_when_index_is_fresh() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
         .assert()
         .success();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "update"])
@@ -3246,7 +3246,7 @@ fn index_update_replaces_stale_gram_postings() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "alpha oldtoken\n").unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
@@ -3255,14 +3255,14 @@ fn index_update_replaces_stale_gram_postings() {
 
     fs::write(dir.path().join("sample.txt"), "alpha newtoken\n").unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "update"])
         .assert()
         .success();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "oldtoken"])
@@ -3284,7 +3284,7 @@ fn files_live_scan_uses_catalog_without_content_hash() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["files", "sample"])
@@ -3305,14 +3305,14 @@ fn query_falls_back_when_scan_options_do_not_match_index() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join(".hidden.txt"), "needle\n").unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
         .assert()
         .success();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--hidden")
@@ -3331,7 +3331,7 @@ fn query_falls_back_when_scan_options_do_not_match_index() {
 
 #[test]
 fn completions_print_shell_script_without_workspace() {
-    let output = code_search()
+    let output = codetrail()
         .args(["--path", "/definitely/missing", "completions", "bash"])
         .assert()
         .success()
@@ -3340,13 +3340,13 @@ fn completions_print_shell_script_without_workspace() {
         .clone();
     let script = String::from_utf8(output).unwrap();
 
-    assert!(script.contains("complete -F _code_search code-search"));
+    assert!(script.contains("complete -F _codetrail codetrail"));
     assert!(script.contains("find grep files"));
 }
 
 #[test]
 fn zsh_completions_include_allow_broad_option() {
-    let output = code_search()
+    let output = codetrail()
         .args(["--path", "/definitely/missing", "completions", "zsh"])
         .assert()
         .success()
@@ -3370,7 +3370,7 @@ fn imported_scip_index_drives_precise_defs_refs_and_symbols() {
     let scip_path = dir.path().join("index.scip.json");
     write_minimal_scip_json(&scip_path);
 
-    let import_output = code_search()
+    let import_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "import-scip"])
@@ -3385,9 +3385,9 @@ fn imported_scip_index_drives_precise_defs_refs_and_symbols() {
         import_json["results"][0]["index"]["storageBackend"],
         "lancedb"
     );
-    assert!(dir.path().join(".code-search/index.lance").is_dir());
+    assert!(dir.path().join(".codetrail/index.lance").is_dir());
 
-    let defs = code_search()
+    let defs = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["defs", "needle"])
@@ -3413,7 +3413,7 @@ fn imported_scip_index_drives_precise_defs_refs_and_symbols() {
         .unwrap()
         .contains("fn needle()"));
 
-    let refs = code_search()
+    let refs = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["refs", "needle"])
@@ -3438,7 +3438,7 @@ fn imported_scip_index_drives_precise_defs_refs_and_symbols() {
         .unwrap()
         .contains("needle();"));
 
-    let symbols = code_search()
+    let symbols = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["symbols", "needle"])
@@ -3464,14 +3464,14 @@ fn defs_falls_back_to_parser_after_plain_index_build_without_scip() {
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src/lib.rs"), "fn needle() {}\n").unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
         .assert()
         .success();
 
-    let defs = code_search()
+    let defs = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["defs", "needle"])
@@ -3506,7 +3506,7 @@ fn defs_falls_back_to_parser_for_java_classes() {
     )
     .unwrap();
 
-    let defs = code_search()
+    let defs = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["defs", "SampleService"])
@@ -3572,7 +3572,7 @@ fn parser_defs_read_closure_covers_python_typescript_and_javascript() {
         ("tsTarget", "typescript", "src/app.ts:1"),
         ("jsTarget", "javascript", "src/app.js:1"),
     ] {
-        let output = code_search()
+        let output = codetrail()
             .arg("--path")
             .arg(dir.path())
             .args(["defs", identifier])
@@ -3606,7 +3606,7 @@ fn defs_ambiguous_symbol_results_include_grouped_hints() {
         .unwrap();
     }
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["defs", "User"])
@@ -3644,7 +3644,7 @@ fn parser_fallback_supports_java_methods_and_callers() {
     )
     .unwrap();
 
-    let defs = code_search()
+    let defs = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["defs", "run"])
@@ -3658,7 +3658,7 @@ fn parser_fallback_supports_java_methods_and_callers() {
     assert_eq!(defs_json["results"][0]["kind"], "function");
     assert_eq!(defs_json["results"][0]["language"], "java");
 
-    let callers = code_search()
+    let callers = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["callers", "run"])
@@ -3683,14 +3683,14 @@ fn calls_and_callers_do_not_claim_graph_store_before_kuzu_backend_exists() {
     )
     .unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
         .assert()
         .success();
 
-    let calls = code_search()
+    let calls = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["calls", "alpha"])
@@ -3708,7 +3708,7 @@ fn calls_and_callers_do_not_claim_graph_store_before_kuzu_backend_exists() {
     let producer = calls_json["results"][0]["producer"].as_str().unwrap_or("");
     assert!(producer.starts_with("graph:"));
 
-    let callers = code_search()
+    let callers = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["callers", "beta"])
@@ -3762,7 +3762,7 @@ fn native_scip_import_missing_path_uses_stable_caveat_code() {
     let dir = tempdir().unwrap();
     let scip_path = dir.path().join("missing.scip");
 
-    let output = raw_code_search()
+    let output = raw_codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["--output", "json"])
@@ -3797,9 +3797,9 @@ fn native_scip_import_drives_precise_defs_refs_and_symbols() {
     .unwrap();
 
     let scip_path = dir.path().join("index.scip");
-    code_search_cli::scip::write_minimal_test_index(&scip_path).unwrap();
+    codetrail::scip::write_minimal_test_index(&scip_path).unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "import-scip"])
@@ -3808,7 +3808,7 @@ fn native_scip_import_drives_precise_defs_refs_and_symbols() {
         .success();
 
     // Verify occurrence DB was created
-    let scip_dir = fs::read_dir(dir.path().join(".code-search/scip"))
+    let scip_dir = fs::read_dir(dir.path().join(".codetrail/scip"))
         .unwrap()
         .next()
         .unwrap()
@@ -3818,7 +3818,7 @@ fn native_scip_import_drives_precise_defs_refs_and_symbols() {
     assert!(db_path.is_file());
 
     // defs
-    let defs = code_search()
+    let defs = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["defs", "needle"])
@@ -3835,7 +3835,7 @@ fn native_scip_import_drives_precise_defs_refs_and_symbols() {
     assert_eq!(defs_json["index"]["source"], "scip_native");
 
     // refs
-    let refs = code_search()
+    let refs = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["refs", "needle"])
@@ -3852,7 +3852,7 @@ fn native_scip_import_drives_precise_defs_refs_and_symbols() {
     assert_eq!(refs_json["index"]["source"], "scip_native");
 
     // symbols
-    let symbols = code_search()
+    let symbols = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["symbols", "needle"])
@@ -3878,7 +3878,7 @@ fn native_scip_precise_results_respect_hidden_and_no_ignore() {
     let scip_path = dir.path().join("index.scip");
     write_scip_index_for_paths(&scip_path, &[".hidden/lib.rs", "target/generated/lib.rs"]);
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "import-scip"])
@@ -3886,7 +3886,7 @@ fn native_scip_precise_results_respect_hidden_and_no_ignore() {
         .assert()
         .success();
 
-    let default_output = code_search()
+    let default_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["refs", "needle"])
@@ -3899,7 +3899,7 @@ fn native_scip_precise_results_respect_hidden_and_no_ignore() {
     assert_eq!(default_json["index"]["source"], "scip_native");
     assert!(default_json["results"].as_array().unwrap().is_empty());
 
-    let hidden_output = code_search()
+    let hidden_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--hidden")
@@ -3918,7 +3918,7 @@ fn native_scip_precise_results_respect_hidden_and_no_ignore() {
         .collect();
     assert_eq!(hidden_paths, vec![".hidden/lib.rs"]);
 
-    let expanded_output = code_search()
+    let expanded_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--hidden")
@@ -3952,10 +3952,10 @@ fn native_scip_stale_detection_simulates_staleness_by_db_removal() {
     .unwrap();
 
     let scip_path = dir.path().join("index.scip");
-    code_search_cli::scip::write_minimal_test_index(&scip_path).unwrap();
+    codetrail::scip::write_minimal_test_index(&scip_path).unwrap();
 
     // Import native SCIP
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "import-scip"])
@@ -3964,7 +3964,7 @@ fn native_scip_stale_detection_simulates_staleness_by_db_removal() {
         .success();
 
     // Remove the occurrence DB to simulate staleness
-    let scip_dir = fs::read_dir(dir.path().join(".code-search/scip"))
+    let scip_dir = fs::read_dir(dir.path().join(".codetrail/scip"))
         .unwrap()
         .next()
         .unwrap()
@@ -3976,7 +3976,7 @@ fn native_scip_stale_detection_simulates_staleness_by_db_removal() {
 
     // After DB removal, queries MUST fall back to tree-sitter,
     // and tree-sitter results are NEVER marked as precise
-    let defs = code_search()
+    let defs = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["defs", "needle"])
@@ -3993,7 +3993,7 @@ fn native_scip_stale_detection_simulates_staleness_by_db_removal() {
 }
 
 fn write_scip_index_for_paths(path: &std::path::Path, rel_paths: &[&str]) {
-    use code_search_cli::scip_proto::proto;
+    use codetrail::scip_proto::proto;
     use prost::Message;
 
     let documents = rel_paths
@@ -4052,7 +4052,7 @@ fn watch_once_reconcile_detects_file_changes() {
     fs::write(dir.path().join("sample.txt"), "hello\n").unwrap();
 
     // Build an index first to create a snapshot
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
@@ -4060,7 +4060,7 @@ fn watch_once_reconcile_detects_file_changes() {
         .success();
 
     // run watch --once to check reconcile
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["watch", "--once"])
@@ -4087,7 +4087,7 @@ fn watch_once_reconcile_detects_file_changes() {
     // Modify the file and run watch --once again
     fs::write(dir.path().join("sample.txt"), "hello\nworld\n").unwrap();
 
-    let output2 = code_search()
+    let output2 = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["watch", "--once"])
@@ -4116,7 +4116,7 @@ fn watch_status_output_format() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "hello\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["watch", "--status"])
@@ -4183,7 +4183,7 @@ fn watcher_does_not_modify_git_staged_state() {
         .unwrap();
 
     // Run watch --once
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["watch", "--once"])
@@ -4213,7 +4213,7 @@ fn watch_run_once_returns_reconcile_info_without_modifying_files() {
 
     let original_content = fs::read_to_string(dir.path().join("sample.txt")).unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["watch", "--once"])
@@ -4244,7 +4244,7 @@ fn serve_no_watch_returns_service_status() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "hello\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["serve", "--no-watch"])
@@ -4273,7 +4273,7 @@ fn public_serve_no_watch_returns_note_without_caveat() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "hello\n").unwrap();
 
-    let output = raw_code_search()
+    let output = raw_codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["--output", "json", "serve", "--no-watch"])
@@ -4296,7 +4296,7 @@ fn serve_with_watch_includes_watcher_status() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "hello\n").unwrap();
 
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["serve"])
@@ -4329,7 +4329,7 @@ fn mcp_subcommand_is_registered_in_help() {
     fs::write(dir.path().join("sample.txt"), "hello\n").unwrap();
 
     // Verify "mcp" appears in the subcommand list
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("--help")
@@ -4355,7 +4355,7 @@ fn mcp_stdio_find_matches_cli_core_json_and_read_flow() {
     )
     .unwrap();
 
-    let cli_output = raw_code_search()
+    let cli_output = raw_codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["--output", "json"])
@@ -4372,11 +4372,11 @@ fn mcp_stdio_find_matches_cli_core_json_and_read_flow() {
         "id": 1,
         "method": "tools/call",
         "params": {
-            "name": "code_search_find",
+            "name": "codetrail_find",
             "arguments": { "text": "needle" }
         }
     });
-    let first_output = code_search()
+    let first_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("mcp")
@@ -4400,12 +4400,12 @@ fn mcp_stdio_find_matches_cli_core_json_and_read_flow() {
         "id": 2,
         "method": "tools/call",
         "params": {
-            "name": "code_search_read",
+            "name": "codetrail_read",
             "arguments": { "target": read_target }
         }
     });
     let stdin = format!("{find_request}\n{read_request}\n");
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("mcp")
@@ -4458,7 +4458,7 @@ fn index_pack_produces_valid_archive_with_checksums() {
     fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
 
     // Build index first
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
@@ -4467,7 +4467,7 @@ fn index_pack_produces_valid_archive_with_checksums() {
 
     // Pack
     let archive_path = dir.path().join("output.tar.gz");
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "pack", "--output"])
@@ -4503,7 +4503,7 @@ fn index_unpack_extracts_to_remote_dir_does_not_touch_working_or_staged() {
     fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
 
     // Build index
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
@@ -4512,7 +4512,7 @@ fn index_unpack_extracts_to_remote_dir_does_not_touch_working_or_staged() {
 
     // Pack
     let archive_path = dir.path().join("output.tar.gz");
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "pack", "--output"])
@@ -4520,9 +4520,9 @@ fn index_unpack_extracts_to_remote_dir_does_not_touch_working_or_staged() {
         .assert()
         .success();
 
-    let code_search_dir = dir.path().join(".code-search");
+    let codetrail_dir = dir.path().join(".codetrail");
     // Clean local index to simulate fresh workspace without local index
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "clean"])
@@ -4530,7 +4530,7 @@ fn index_unpack_extracts_to_remote_dir_does_not_touch_working_or_staged() {
         .success();
 
     // Unpack
-    let output = code_search()
+    let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "unpack"])
@@ -4547,7 +4547,7 @@ fn index_unpack_extracts_to_remote_dir_does_not_touch_working_or_staged() {
     assert_eq!(unpacked["source"], "remote_unpacked");
 
     // Verify remote dir exists
-    let remote_dir = code_search_dir.join("remote");
+    let remote_dir = codetrail_dir.join("remote");
     assert!(remote_dir.exists());
 
     // snapshots may or may not exist after clean, but remote must be separate
@@ -4586,7 +4586,7 @@ fn remote_snapshot_never_overrides_local_when_local_is_fresh() {
     fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
 
     // Build local index
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
@@ -4595,7 +4595,7 @@ fn remote_snapshot_never_overrides_local_when_local_is_fresh() {
 
     // Pack
     let archive_path = dir.path().join("output.tar.gz");
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "pack", "--output"])
@@ -4604,7 +4604,7 @@ fn remote_snapshot_never_overrides_local_when_local_is_fresh() {
         .success();
 
     // Unpack to create remote snapshot
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "unpack"])
@@ -4613,7 +4613,7 @@ fn remote_snapshot_never_overrides_local_when_local_is_fresh() {
         .success();
 
     // Local snapshot should still be active (not the remote one)
-    let status_output = code_search()
+    let status_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "status"])
@@ -4648,7 +4648,7 @@ fn remote_query_is_used_when_local_is_clean_missing() {
     .unwrap();
 
     // Build and pack
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
@@ -4656,7 +4656,7 @@ fn remote_query_is_used_when_local_is_clean_missing() {
         .success();
 
     let archive_path = dir.path().join("output.tar.gz");
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "pack", "--output"])
@@ -4665,7 +4665,7 @@ fn remote_query_is_used_when_local_is_clean_missing() {
         .success();
 
     // Clean local index
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "clean"])
@@ -4673,7 +4673,7 @@ fn remote_query_is_used_when_local_is_clean_missing() {
         .success();
 
     // Unpack remote
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "unpack"])
@@ -4682,7 +4682,7 @@ fn remote_query_is_used_when_local_is_clean_missing() {
         .success();
 
     // Now find should use remote index (since local is missing)
-    let find_output = code_search()
+    let find_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "needle"])
@@ -4716,7 +4716,7 @@ fn remote_fallback_respects_packed_scan_scope() {
     .unwrap();
     fs::write(dir.path().join("docs/guide.md"), "needle docs\n").unwrap();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["--include", "src", "index", "build"])
@@ -4724,7 +4724,7 @@ fn remote_fallback_respects_packed_scan_scope() {
         .success();
 
     let archive_path = dir.path().join("output.tar.gz");
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "pack", "--output"])
@@ -4732,14 +4732,14 @@ fn remote_fallback_respects_packed_scan_scope() {
         .assert()
         .success();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "clean"])
         .assert()
         .success();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "unpack"])
@@ -4747,7 +4747,7 @@ fn remote_fallback_respects_packed_scan_scope() {
         .assert()
         .success();
 
-    let unscoped_output = code_search()
+    let unscoped_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["find", "needle"])
@@ -4760,7 +4760,7 @@ fn remote_fallback_respects_packed_scan_scope() {
     assert_eq!(unscoped_json["index"]["used"], false);
     assert_eq!(unscoped_json["results"][0]["path"], "docs/guide.md");
 
-    let scoped_output = code_search()
+    let scoped_output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["--include", "src", "find", "srctoken"])
@@ -4789,7 +4789,7 @@ fn remote_mismatch_labels_results_as_unverified() {
     .unwrap();
 
     // Build index
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "build"])
@@ -4798,7 +4798,7 @@ fn remote_mismatch_labels_results_as_unverified() {
 
     // Pack
     let archive_path = dir.path().join("output.tar.gz");
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "pack", "--output"])
@@ -4814,14 +4814,14 @@ fn remote_mismatch_labels_results_as_unverified() {
     .unwrap();
 
     // Clean and unpack remote
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "clean"])
         .assert()
         .success();
 
-    code_search()
+    codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "unpack"])
@@ -4831,7 +4831,7 @@ fn remote_mismatch_labels_results_as_unverified() {
 
     // Query should still work via remote but should indicate remote_unverified
     // (the remote records won't match changed local files)
-    let status = code_search()
+    let status = codetrail()
         .arg("--path")
         .arg(dir.path())
         .args(["index", "status"])
@@ -4849,7 +4849,7 @@ fn remote_mismatch_labels_results_as_unverified() {
             if let Some(first) = arr.first() {
                 // remoteVerified should be false since file hashes don't match
                 assert_eq!(first["remoteVerified"], json!(false));
-                let files_output = code_search()
+                let files_output = codetrail()
                     .arg("--path")
                     .arg(dir.path())
                     .args(["files", "main"])

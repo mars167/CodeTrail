@@ -1,7 +1,7 @@
 param(
-    [string]$Version = $env:CODE_SEARCH_VERSION,
-    [string]$Repo = $env:CODE_SEARCH_REPO,
-    [string]$InstallDir = $env:CODE_SEARCH_INSTALL_DIR,
+    [string]$Version = $env:CODETRAIL_VERSION,
+    [string]$Repo = $env:CODETRAIL_REPO,
+    [string]$InstallDir = $env:CODETRAIL_INSTALL_DIR,
     [switch]$DryRun
 )
 
@@ -11,21 +11,21 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
     $Version = "latest"
 }
 if ([string]::IsNullOrWhiteSpace($Repo)) {
-    $Repo = "mars167/code-search-cli"
+    $Repo = "mars167/CodeTrail"
 }
 if ([string]::IsNullOrWhiteSpace($InstallDir)) {
     $localAppData = $env:LOCALAPPDATA
     if ([string]::IsNullOrWhiteSpace($localAppData)) {
         $localAppData = Join-Path $HOME ".local"
     }
-    $InstallDir = Join-Path $localAppData "Programs\code-search-cli\bin"
+    $InstallDir = Join-Path $localAppData "Programs\codetrail\bin"
 }
-if ($env:CODE_SEARCH_DRY_RUN -eq "1") {
+if ($env:CODETRAIL_DRY_RUN -eq "1") {
     $DryRun = $true
 }
 
-function Get-CodeSearchArchitecture {
-    $arch = $env:CODE_SEARCH_ARCH
+function Get-CodeTrailArchitecture {
+    $arch = $env:CODETRAIL_ARCH
     if ([string]::IsNullOrWhiteSpace($arch)) {
         $arch = $env:PROCESSOR_ARCHITEW6432
     }
@@ -44,8 +44,8 @@ function Get-CodeSearchArchitecture {
     }
 }
 
-$assetArch = Get-CodeSearchArchitecture
-$asset = "code-search-windows-$assetArch.exe.zip"
+$assetArch = Get-CodeTrailArchitecture
+$asset = "codetrail-windows-$assetArch.exe.zip"
 if ($Version -eq "latest") {
     $baseUrl = "https://github.com/$Repo/releases/latest/download"
 } else {
@@ -61,7 +61,7 @@ if ($DryRun) {
     return
 }
 
-$tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("code-search-install-" + [System.Guid]::NewGuid().ToString("N"))
+$tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ("codetrail-install-" + [System.Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $tmpDir | Out-Null
 
 try {
@@ -91,13 +91,13 @@ try {
 
     $extractDir = Join-Path $tmpDir "extract"
     Expand-Archive -Path $assetPath -DestinationPath $extractDir -Force
-    $exePath = Join-Path $extractDir "code-search.exe"
+    $exePath = Join-Path $extractDir "codetrail.exe"
     if (-not (Test-Path $exePath)) {
-        throw "Release archive did not contain code-search.exe."
+        throw "Release archive did not contain codetrail.exe."
     }
 
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    Copy-Item -Path $exePath -Destination (Join-Path $InstallDir "code-search.exe") -Force
+    Copy-Item -Path $exePath -Destination (Join-Path $InstallDir "codetrail.exe") -Force
 
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $pathParts = @()
@@ -112,8 +112,8 @@ try {
         $env:Path = "$env:Path;$InstallDir"
     }
 
-    Write-Output "Installed code-search to $(Join-Path $InstallDir 'code-search.exe')"
-    Write-Output "Restart your terminal if code-search is not found immediately."
+    Write-Output "Installed codetrail to $(Join-Path $InstallDir 'codetrail.exe')"
+    Write-Output "Restart your terminal if codetrail is not found immediately."
 }
 finally {
     Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue

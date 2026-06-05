@@ -34,7 +34,7 @@ impl VerboseLogger {
 
     pub fn log(self, message: impl AsRef<str>) {
         if self.enabled() {
-            let _ = writeln!(io::stderr(), "code-search: {}", message.as_ref());
+            let _ = writeln!(io::stderr(), "codetrail: {}", message.as_ref());
         }
     }
 }
@@ -80,7 +80,7 @@ pub fn source_fact() -> Reliability {
         level: "source_fact",
         source: "text_path_git_filesystem",
         exact: true,
-        llm_instruction: "这些结果是可验证源码事实。修改前仍应使用 code-search read 读取精确范围。",
+        llm_instruction: "这些结果是可验证源码事实。修改前仍应使用 codetrail read 读取精确范围。",
     }
 }
 
@@ -90,7 +90,7 @@ pub fn source_fact_inexact() -> Reliability {
         source: "text_path_git_filesystem",
         exact: false,
         llm_instruction:
-            "这些结果来自源码文件，但内容被省略或截断。需要使用更小范围的 code-search read 验证。",
+            "这些结果来自源码文件，但内容被省略或截断。需要使用更小范围的 codetrail read 验证。",
     }
 }
 
@@ -109,7 +109,7 @@ pub fn precise_fact() -> Reliability {
         level: "precise_fact",
         source: "scip_occurrence_index",
         exact: true,
-        llm_instruction: "这些结果来自 precise code intelligence index。修改前仍应使用 code-search read 验证源码范围。",
+        llm_instruction: "这些结果来自 precise code intelligence index。修改前仍应使用 codetrail read 验证源码范围。",
     }
 }
 
@@ -119,7 +119,7 @@ pub fn inferred_candidate() -> Reliability {
         source: "tree_sitter_ast_heuristic",
         exact: false,
         llm_instruction:
-            "这些结果只能作为候选关系，不是完整调用图。推理前必须用 code-search read 验证每个匹配。",
+            "这些结果只能作为候选关系，不是完整调用图。推理前必须用 codetrail read 验证每个匹配。",
     }
 }
 
@@ -309,7 +309,7 @@ pub fn emit(format: &OutputFormat, value: &Value) -> io::Result<()> {
 }
 
 fn internal_json_enabled() -> bool {
-    cfg!(debug_assertions) && std::env::var_os("CODE_SEARCH_INTERNAL_JSON").is_some()
+    cfg!(debug_assertions) && std::env::var_os("CODETRAIL_INTERNAL_JSON").is_some()
 }
 
 pub struct ProgressIndicator {
@@ -1236,7 +1236,7 @@ fn enrich_action_with_root(action: &mut Value, root: &str) {
         .filter_map(Value::as_str)
         .map(ToString::to_string)
         .collect();
-    if argv.first().map(String::as_str) != Some("code-search") || has_path_arg(&argv) {
+    if argv.first().map(String::as_str) != Some("codetrail") || has_path_arg(&argv) {
         return;
     }
     argv.insert(1, "--path".to_string());
@@ -1279,9 +1279,9 @@ fn is_readable_path_result(object: &serde_json::Map<String, Value>) -> bool {
         return false;
     };
     if path.starts_with('/')
-        || path == ".code-search"
-        || path.starts_with(".code-search/")
-        || path.contains("/.code-search/")
+        || path == ".codetrail"
+        || path.starts_with(".codetrail/")
+        || path.contains("/.codetrail/")
     {
         return false;
     }
@@ -1416,28 +1416,28 @@ fn no_match_next_actions(value: &Value) -> Vec<Value> {
     if canonical == "find" && query.get("mode").and_then(Value::as_str) == Some("literal") {
         actions.push(command_action(
             "try_regex",
-            vec!["code-search", "grep", term],
+            vec!["codetrail", "grep", term],
             "try the same text as a regex search",
         ));
     }
     if matches!(canonical, "find" | "defs" | "refs" | "symbols") {
         actions.push(command_action(
             "search_paths",
-            vec!["code-search", "files", term],
+            vec!["codetrail", "files", term],
             "check whether the token appears in paths before widening content search",
         ));
     }
     if matches!(canonical, "defs" | "symbols") {
         actions.push(command_action(
             "try_definitions",
-            vec!["code-search", "defs", term],
+            vec!["codetrail", "defs", term],
             "search definitions before choosing an implementation site",
         ));
     }
     if value.pointer("/index/fallback").and_then(Value::as_bool) == Some(true) {
         actions.push(command_action(
             "update_index",
-            vec!["code-search", "index", "update"],
+            vec!["codetrail", "index", "update"],
             "refresh the local index before retrying the query",
         ));
     }
@@ -1498,14 +1498,14 @@ fn attach_ambiguity(value: &mut Value) {
     if let Some(prefix) = results.iter().find_map(result_parent_dir) {
         actions.push(command_action(
             "narrow_scope",
-            vec!["code-search", "--include", &prefix, &command, &term],
+            vec!["codetrail", "--include", &prefix, &command, &term],
             "rerun with a path scope that selects one candidate group",
         ));
     }
     if canonical != "defs" {
         actions.push(command_action(
             "inspect_definitions",
-            vec!["code-search", "defs", &term],
+            vec!["codetrail", "defs", &term],
             "inspect definitions before choosing a candidate",
         ));
     }
@@ -1616,16 +1616,13 @@ fn read_command_string(root: Option<&str>, target: &str) -> String {
         shell_quote(target)
     };
     match root {
-        Some(root) => format!(
-            "code-search --path {} read {read_target}",
-            shell_quote(root)
-        ),
-        None => format!("code-search read {read_target}"),
+        Some(root) => format!("codetrail --path {} read {read_target}", shell_quote(root)),
+        None => format!("codetrail read {read_target}"),
     }
 }
 
 fn read_argv(root: Option<String>, target: String) -> Vec<String> {
-    let mut argv = vec!["code-search".to_string()];
+    let mut argv = vec!["codetrail".to_string()];
     if let Some(root) = root {
         argv.push("--path".to_string());
         argv.push(root);

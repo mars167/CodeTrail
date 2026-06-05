@@ -150,7 +150,7 @@ pub fn graph_dir(workspace: &Workspace) -> PathBuf {
 }
 
 pub fn graph_dir_for_snapshot(workspace: &Workspace, snapshot_id: &str) -> PathBuf {
-    let root = workspace.root.join(".code-search");
+    let root = workspace.root.join(".codetrail");
     root.join("graph").join(index::snapshot_key(snapshot_id))
 }
 

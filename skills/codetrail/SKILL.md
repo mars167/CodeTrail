@@ -1,18 +1,18 @@
 ---
-name: code-search-cli
-description: Use when searching, navigating, validating, or documenting the code-search-cli repository with the local code-search CLI; especially when an agent needs reliable source evidence, saved query replay, freshness-aware index results, remote snapshot verification, or MCP/JSON command contracts.
+name: codetrail
+description: Use when searching, navigating, validating, or documenting the CodeTrail repository with the local codetrail CLI; especially when an agent needs reliable source evidence, saved query replay, freshness-aware index results, remote snapshot verification, or MCP/JSON command contracts.
 ---
 
-# code-search-cli
+# CodeTrail
 
-Use `code-search` for narrow, verifiable source evidence in this repository. Prefer JSON output for agent work, and verify important matches with `read` before editing.
+Use `codetrail` for narrow, verifiable source evidence in this repository. Prefer JSON output for agent work, and verify important matches with `read` before editing.
 
 ## Command Prefix
 
 Prefer the installed binary when available:
 
 ```bash
-code-search <command> ...
+codetrail <command> ...
 ```
 
 When the binary is not installed, run through Cargo from the repository root:
@@ -26,15 +26,15 @@ Use `--path <dir>` when searching from outside the repository root or when the u
 ## Core Workflow
 
 1. Start with the narrowest command that can answer the question:
-   - `code-search find <literal>`
-   - `code-search grep <regex>`
-   - `code-search files <substring>`
-   - `code-search glob '<pattern>'`
-   - `code-search defs|refs|symbols <name>`
+   - `codetrail find <literal>`
+   - `codetrail grep <regex>`
+   - `codetrail files <substring>`
+   - `codetrail glob '<pattern>'`
+   - `codetrail defs|refs|symbols <name>`
 2. Inspect `reliability`, `index`, `warnings`, `suggestedReads`, and `nextActions`.
    - Treat `severity=info, category=capability` as an expected capability-level note, not a risk warning.
    - Treat `severity=warning, category=risk` and `severity=error, category=error` as requiring narrowing, verification, or remediation.
-3. Before editing or making a strong claim, verify key ranges with `code-search read <path[:start-end]>`.
+3. Before editing or making a strong claim, verify key ranges with `codetrail read <path[:start-end]>`.
 4. Treat `calls` and `callers` as `inferred_candidate`; inspect the returned ranges before relying on them.
 5. Treat `remote_unverified` as a lead only; verify with local `read`.
 
@@ -52,22 +52,22 @@ Use global options to keep output useful:
 Use saved queries for repeatable investigations, not as a fact store.
 
 ```bash
-code-search find "needle" --include src --save-query needle-src
-code-search query replay needle-src
-code-search query replay needle-src --snapshot saved
-code-search query show needle-src
-code-search query list
-code-search query delete needle-src
+codetrail find "needle" --include src --save-query needle-src
+codetrail query replay needle-src
+codetrail query replay needle-src --snapshot saved
+codetrail query show needle-src
+codetrail query list
+codetrail query delete needle-src
 ```
 
-Saved queries live in `.code-search/queries/<name>.json` and store command, query, scope, snapshot, and cursor metadata. They do not store result bodies. If the current snapshot differs, default replay runs against the current workspace and warns; `--snapshot saved` rejects the mismatch.
+Saved queries live in `.codetrail/queries/<name>.json` and store command, query, scope, snapshot, and cursor metadata. They do not store result bodies. If the current snapshot differs, default replay runs against the current workspace and warns; `--snapshot saved` rejects the mismatch.
 
 ## Index And Freshness
 
-- `code-search index build` writes the primary LanceDB store at `.code-search/index.lance`.
-- `code-search index status` and `code-search index verify` report freshness, stale files, and active snapshot state.
+- `codetrail index build` writes the primary LanceDB store at `.codetrail/index.lance`.
+- `codetrail index status` and `codetrail index verify` report freshness, stale files, and active snapshot state.
 - Dirty worktrees can combine fresh indexed files with live overlay for changed files.
-- `code-search index pack` and `code-search index unpack` support remote snapshot sharing under `.code-search/remote/`.
+- `codetrail index pack` and `codetrail index unpack` support remote snapshot sharing under `.codetrail/remote/`.
 
 ## Reliability Levels
 

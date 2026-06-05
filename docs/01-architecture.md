@@ -10,7 +10,7 @@ flowchart TB
   WS --> Snap["Snapshot identity\ncommit / staged / worktree"]
   Snap --> Fresh["Freshness proof\npath + size + mtime + hash"]
 
-  Fresh --> Store["Primary local store\n.code-search/index.lance"]
+  Fresh --> Store["Primary local store\n.codetrail/index.lance"]
   Store --> Text["Text/path candidates"]
   Store --> Occ["SCIP occurrences"]
   Fresh --> Parser["Tree-sitter fallback"]
@@ -49,7 +49,7 @@ flowchart LR
 ## 存储边界
 
 ```text
-.code-search/
+.codetrail/
   index.lance/              # primary local store
   working/manifest.json     # pack/unpack compatibility
   staged/manifest.json
@@ -112,7 +112,7 @@ flowchart LR
   Local["local index build"] --> Pack["index pack"]
   Pack --> Archive["tar.gz with manifest and checksums"]
   Archive --> Unpack["index unpack"]
-  Unpack --> Remote[".code-search/remote/<snapshot>"]
+  Unpack --> Remote[".codetrail/remote/<snapshot>"]
   Remote --> Verify["compare remote file proofs with local files"]
   Verify -->|match| RV["remote_verified"]
   Verify -->|mismatch| RU["remote_unverified"]
@@ -125,7 +125,7 @@ Remote 适合 CI 产物、大仓预热和团队共享。只要本地文件无法
 ```mermaid
 flowchart LR
   Query["find / grep / files / refs / defs / symbols / calls"] --> Save["--save-query <name>"]
-  Save --> Store[".code-search/queries/<name>.json"]
+  Save --> Store[".codetrail/queries/<name>.json"]
   Store --> Replay["query replay <name>"]
   Replay --> Current{"snapshot match?"}
   Current -->|yes| Cursor["reuse saved cursor when present"]

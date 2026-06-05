@@ -561,7 +561,7 @@ fn browse_entries(
 
 fn should_skip_browse_path(root: &Path, path: &Path, no_ignore: bool) -> bool {
     rel_path(root, path).split('/').any(|component| {
-        matches!(component, ".git" | ".code-search")
+        matches!(component, ".git" | ".codetrail")
             || (!no_ignore && matches!(component, "target" | "node_modules" | "dist" | ".next"))
     })
 }
