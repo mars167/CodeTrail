@@ -98,6 +98,7 @@ run_pr() {
   cd "$ROOT"
   run_step "cargo fmt --check" cargo fmt --check
   run_step "git diff --check" git diff --check
+  run_step "installer smoke tests" "$ROOT/scripts/test-installers.sh"
   run_step "cargo test --all-targets --locked --no-fail-fast" cargo test --all-targets --locked --no-fail-fast
 }
 

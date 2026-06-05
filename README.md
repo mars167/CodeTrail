@@ -33,6 +33,32 @@ cp -R skills/code-search-cli "${CODEX_HOME:-$HOME/.codex}/skills/"
 
 ## 快速使用
 
+### 一行安装
+
+macOS/Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mars167/code-search-cli/main/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/mars167/code-search-cli/main/install.ps1 | iex
+```
+
+安装器会根据当前系统下载最新 GitHub Release 资产，校验 `SHA256SUMS`，并安装 `code-search`。macOS/Linux 默认安装到 `~/.local/bin`，Windows 默认安装到 `%LOCALAPPDATA%\Programs\code-search-cli\bin` 并写入用户 `PATH`。
+
+安装指定版本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mars167/code-search-cli/main/install.sh | sh -s -- --version v0.1.3
+```
+
+```powershell
+$env:CODE_SEARCH_VERSION = "v0.1.3"; irm https://raw.githubusercontent.com/mars167/code-search-cli/main/install.ps1 | iex
+```
+
 ```bash
 cargo build
 cargo test
