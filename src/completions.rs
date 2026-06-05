@@ -38,7 +38,7 @@ pub fn script(shell: &CompletionShell) -> String {
 fn bash() -> String {
     let commands = COMMANDS.join(" ");
     format!(
-        r#"_code_search()
+        r#"_codetrail()
 {{
   local cur prev commands query_cmds index_cmds hooks_cmds shells
   COMPREPLY=()
@@ -75,7 +75,7 @@ fn bash() -> String {
     COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
   fi
 }}
-complete -F _code_search code-search
+complete -F _codetrail codetrail
 "#
     )
 }
@@ -83,9 +83,9 @@ complete -F _code_search code-search
 fn zsh() -> String {
     let commands = COMMANDS.join(" ");
     format!(
-        r#"#compdef code-search
+        r#"#compdef codetrail
 
-_code_search() {{
+_codetrail() {{
   local -a commands query_cmds index_cmds hooks_cmds shells global_opts
   commands=({commands})
   query_cmds=(replay show list delete)
@@ -123,36 +123,39 @@ _code_search() {{
   esac
 }}
 
-_code_search "$@"
+_codetrail "$@"
 "#
     )
 }
 
 fn fish() -> String {
     let mut lines = vec![
-        "complete -c code-search -f".to_string(),
-        "complete -c code-search -l path -r".to_string(),
-        "complete -c code-search -l output -xa 'json compact-json jsonl text'".to_string(),
-        "complete -c code-search -l include -r".to_string(),
-        "complete -c code-search -l exclude -r".to_string(),
-        "complete -c code-search -l hidden".to_string(),
-        "complete -c code-search -l no-ignore".to_string(),
-        "complete -c code-search -l lang -r".to_string(),
-        "complete -c code-search -l changed".to_string(),
-        "complete -c code-search -l cursor -r".to_string(),
-        "complete -c code-search -l allow-broad".to_string(),
-        "complete -c code-search -l limit -r".to_string(),
-        "complete -c code-search -l context -r".to_string(),
-        "complete -c code-search -l save-query -r".to_string(),
+        "complete -c codetrail -f".to_string(),
+        "complete -c codetrail -l path -r".to_string(),
+        "complete -c codetrail -l output -xa 'json compact-json jsonl text'".to_string(),
+        "complete -c codetrail -l include -r".to_string(),
+        "complete -c codetrail -l exclude -r".to_string(),
+        "complete -c codetrail -l hidden".to_string(),
+        "complete -c codetrail -l no-ignore".to_string(),
+        "complete -c codetrail -l lang -r".to_string(),
+        "complete -c codetrail -l changed".to_string(),
+        "complete -c codetrail -l cursor -r".to_string(),
+        "complete -c codetrail -l allow-broad".to_string(),
+        "complete -c codetrail -l limit -r".to_string(),
+        "complete -c codetrail -l context -r".to_string(),
+        "complete -c codetrail -l save-query -r".to_string(),
     ];
     for command in COMMANDS {
-        lines.push(format!("complete -c code-search -f -a {command}"));
+        lines.push(format!("complete -c codetrail -f -a {command}"));
     }
-    lines.push("complete -c code-search -n '__fish_seen_subcommand_from query' -a 'replay show list delete'".to_string());
-    lines.push("complete -c code-search -n '__fish_seen_subcommand_from index' -a 'build update status verify clean import-scip'".to_string());
-    lines.push("complete -c code-search -n '__fish_seen_subcommand_from hooks' -a 'install uninstall status'".to_string());
     lines.push(
-        "complete -c code-search -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish'"
+        "complete -c codetrail -n '__fish_seen_subcommand_from query' -a 'replay show list delete'"
+            .to_string(),
+    );
+    lines.push("complete -c codetrail -n '__fish_seen_subcommand_from index' -a 'build update status verify clean import-scip'".to_string());
+    lines.push("complete -c codetrail -n '__fish_seen_subcommand_from hooks' -a 'install uninstall status'".to_string());
+    lines.push(
+        "complete -c codetrail -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish'"
             .to_string(),
     );
     lines.push(String::new());

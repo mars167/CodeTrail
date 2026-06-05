@@ -148,8 +148,12 @@ pub fn build(
     write_manifest(&active_dir.join("manifest.json"), &manifest)
         .with_context(|| format!("failed to write index manifest in {}", active_dir.display()))?;
 
-    write_to_lancedb(workspace, &manifest, &records, staged, verbose)
-        .with_context(|| format!("LanceDB write failed for snapshot {}. Run 'code-search index build --force' to rebuild.", manifest.snapshot_id))?;
+    write_to_lancedb(workspace, &manifest, &records, staged, verbose).with_context(|| {
+        format!(
+            "LanceDB write failed for snapshot {}. Run 'codetrail index build --force' to rebuild.",
+            manifest.snapshot_id
+        )
+    })?;
 
     // Build call graph (best-effort; non-fatal on failure)
     if !staged {
@@ -516,23 +520,23 @@ pub fn hooks_install(workspace: &Workspace) -> Result<Value> {
     let hooks = [
         (
             "pre-commit",
-            "#!/bin/sh\ncode-search index build --staged >/dev/null 2>&1 || true\n",
+            "#!/bin/sh\ncodetrail index build --staged >/dev/null 2>&1 || true\n",
         ),
         (
             "post-commit",
-            "#!/bin/sh\ncode-search index build >/dev/null 2>&1 || true\n",
+            "#!/bin/sh\ncodetrail index build >/dev/null 2>&1 || true\n",
         ),
         (
             "post-checkout",
-            "#!/bin/sh\ncode-search index update >/dev/null 2>&1 || true\n",
+            "#!/bin/sh\ncodetrail index update >/dev/null 2>&1 || true\n",
         ),
         (
             "post-merge",
-            "#!/bin/sh\ncode-search index update >/dev/null 2>&1 || true\n",
+            "#!/bin/sh\ncodetrail index update >/dev/null 2>&1 || true\n",
         ),
         (
             "post-rewrite",
-            "#!/bin/sh\ncode-search index update >/dev/null 2>&1 || true\n",
+            "#!/bin/sh\ncodetrail index update >/dev/null 2>&1 || true\n",
         ),
     ];
 
@@ -563,12 +567,12 @@ pub fn hooks_uninstall(workspace: &Workspace) -> Result<Value> {
         let path = hooks_dir.join(name);
         if path.exists() {
             let content = fs::read_to_string(&path).unwrap_or_default();
-            if content.contains("code-search index") {
+            if content.contains("codetrail index") {
                 fs::remove_file(&path)?;
                 removed.push(json!({ "hook": name, "removed": true }));
             } else {
                 removed.push(
-                    json!({ "hook": name, "removed": false, "reason": "not_owned_by_code_search" }),
+                    json!({ "hook": name, "removed": false, "reason": "not_owned_by_codetrail" }),
                 );
             }
         }
@@ -594,7 +598,7 @@ pub fn hooks_status(workspace: &Workspace) -> Result<Value> {
             let path = hooks_dir.join(name);
             let installed = path.exists()
                 && fs::read_to_string(&path)
-                    .map(|content| content.contains("code-search index"))
+                    .map(|content| content.contains("codetrail index"))
                     .unwrap_or(false);
             json!({ "hook": name, "installed": installed, "path": path })
         })
@@ -648,7 +652,7 @@ pub(crate) fn scip_root(workspace: &Workspace) -> PathBuf {
 }
 
 fn storage_root(workspace: &Workspace) -> PathBuf {
-    workspace.root.join(".code-search")
+    workspace.root.join(".codetrail")
 }
 
 fn snapshot_dir(workspace: &Workspace, key: &str) -> PathBuf {
@@ -1067,7 +1071,7 @@ pub fn pack(workspace: &Workspace, output_path: &str) -> Result<Value> {
     let active_manifest_path = active_manifest_path(workspace, false);
     if !active_manifest_path.exists() {
         return Err(anyhow!(
-            "no local index exists; run 'code-search index build' first"
+            "no local index exists; run 'codetrail index build' first"
         ));
     }
 
@@ -1214,7 +1218,7 @@ pub fn pack(workspace: &Workspace, output_path: &str) -> Result<Value> {
     }]))
 }
 
-/// Unpack a .tar.gz archive into `.code-search/remote/<snapshot_id>/`.
+/// Unpack a .tar.gz archive into `.codetrail/remote/<snapshot_id>/`.
 /// NEVER overwrites local snapshots or modifies working/staged directories.
 pub fn unpack(workspace: &Workspace, archive_path: &str) -> Result<Value> {
     // Read archive
@@ -1296,7 +1300,7 @@ pub fn unpack(workspace: &Workspace, archive_path: &str) -> Result<Value> {
             changed: false,
         });
 
-    // Determine remote target directory: .code-search/remote/<snapshot_key>/
+    // Determine remote target directory: .codetrail/remote/<snapshot_key>/
     let remote_dir = remote_dir(workspace, &snapshot_key);
 
     // CRITICAL: never overwrite if already exists
@@ -1367,7 +1371,7 @@ pub fn unpack(workspace: &Workspace, archive_path: &str) -> Result<Value> {
         "remoteDir": remote_dir,
         "entryCount": entries.len() - 2,
         "source": "remote_unpacked",
-        "warning": "Remote snapshots live in .code-search/remote/ and will not override local state"
+        "warning": "Remote snapshots live in .codetrail/remote/ and will not override local state"
     }]))
 }
 

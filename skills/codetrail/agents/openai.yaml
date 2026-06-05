@@ -1,0 +1,4 @@
+interface:
+  display_name: "CodeTrail"
+  short_description: "Use codetrail with verifiable evidence"
+  default_prompt: "Use $codetrail to find and verify source evidence in this repository."

@@ -29,7 +29,7 @@ jobs:
         env:
           GH_MIRROR_TOKEN: ${{ secrets.GH_MIRROR_TOKEN }}
           GITEA_REF: ${{ github.ref }}
-          GITHUB_MIRROR_REPO: github.com/mars167/code-search-cli.git
+          GITHUB_MIRROR_REPO: github.com/mars167/CodeTrail.git
         run: |
           set -euo pipefail
 

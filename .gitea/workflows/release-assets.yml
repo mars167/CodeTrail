@@ -20,7 +20,7 @@ concurrency:
 
 env:
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
-  GITHUB_RELEASE_REPO: mars167/code-search-cli
+  GITHUB_RELEASE_REPO: mars167/CodeTrail
 
 jobs:
   sync:
@@ -70,11 +70,11 @@ jobs:
           mkdir -p dist
 
           expected=(
-            code-search-darwin-amd64.tar.gz
-            code-search-darwin-arm64.tar.gz
-            code-search-linux-amd64.tar.gz
-            code-search-windows-amd64.exe.zip
-            code-search-windows-arm64.exe.zip
+            codetrail-darwin-amd64.tar.gz
+            codetrail-darwin-arm64.tar.gz
+            codetrail-linux-amd64.tar.gz
+            codetrail-windows-amd64.exe.zip
+            codetrail-windows-arm64.exe.zip
             SHA256SUMS
           )
 

@@ -1,4 +1,4 @@
-//! Query service abstraction that wraps all code-search operations into a
+//! Query service abstraction that wraps all codetrail operations into a
 //! unified interface.  Each method delegates to the appropriate backend
 //! (text index, SCIP, tree-sitter parser, filesystem, git status) and
 //! returns a JSON value that carries reliability metadata.

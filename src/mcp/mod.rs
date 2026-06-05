@@ -1,5 +1,5 @@
 //! MCP (Model Context Protocol) adapter that wraps the [`QueryService`] and
-//! exposes code-search operations to LLM agents (Claude, Cursor, etc.) over
+//! exposes codetrail operations to LLM agents (Claude, Cursor, etc.) over
 //! stdio-based JSON-RPC 2.0.
 //!
 //! ## Protocol flow
@@ -42,7 +42,7 @@ use crate::mcp::protocol::{
 // ---------------------------------------------------------------------------
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
-const SERVER_NAME: &str = "code-search";
+const SERVER_NAME: &str = "codetrail";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // ---------------------------------------------------------------------------
@@ -53,7 +53,7 @@ const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 fn tool_definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {
-            name: "code_search_find".to_string(),
+            name: "codetrail_find".to_string(),
             description:
                 "Full-text / literal search across the codebase. Returns matching lines with file paths and line numbers."
                     .to_string(),
@@ -74,7 +74,7 @@ fn tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
-            name: "code_search_grep".to_string(),
+            name: "codetrail_grep".to_string(),
             description: "Regex search across the codebase. Returns matching lines with file paths and line numbers."
                 .to_string(),
             input_schema: json!({
@@ -94,7 +94,7 @@ fn tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
-            name: "code_search_files".to_string(),
+            name: "codetrail_files".to_string(),
             description:
                 "Find files whose path contains the given substring. Returns file metadata."
                     .to_string(),
@@ -114,7 +114,7 @@ fn tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
-            name: "code_search_glob".to_string(),
+            name: "codetrail_glob".to_string(),
             description: "Find files matching a strict glob pattern (e.g. `**/*.rs`). Returns file metadata."
                 .to_string(),
             input_schema: json!({
@@ -133,7 +133,7 @@ fn tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
-            name: "code_search_list".to_string(),
+            name: "codetrail_list".to_string(),
             description:
                 "List directory contents in the workspace. Returns path facts with file/directory metadata."
                     .to_string(),
@@ -150,7 +150,7 @@ fn tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
-            name: "code_search_tree".to_string(),
+            name: "codetrail_tree".to_string(),
             description:
                 "Return a recursive tree view for a workspace directory."
                     .to_string(),
@@ -167,7 +167,7 @@ fn tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
-            name: "code_search_read".to_string(),
+            name: "codetrail_read".to_string(),
             description:
                 "Read file contents, optionally with a line-range like `path:1-10`. Returns the file content with metadata."
                     .to_string(),
@@ -180,7 +180,7 @@ fn tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
-            name: "code_search_defs".to_string(),
+            name: "codetrail_defs".to_string(),
             description:
                 "Find definitions of a given identifier. Prefers SCIP precise index; falls back to tree-sitter parser."
                     .to_string(),
@@ -200,7 +200,7 @@ fn tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
-            name: "code_search_refs".to_string(),
+            name: "codetrail_refs".to_string(),
             description:
                 "Find references to a given identifier. Prefers SCIP precise index; falls back to text search."
                     .to_string(),
@@ -220,7 +220,7 @@ fn tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
-            name: "code_search_symbols".to_string(),
+            name: "codetrail_symbols".to_string(),
             description:
                 "Find symbols (functions, structs, classes, etc.) matching a query. Prefers SCIP; falls back to tree-sitter."
                     .to_string(),
@@ -240,7 +240,7 @@ fn tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
-            name: "code_search_calls".to_string(),
+            name: "codetrail_calls".to_string(),
             description:
                 "Find outgoing calls from a given function/symbol. Results are inferred candidates due to limitations in static analysis."
                     .to_string(),
@@ -256,7 +256,7 @@ fn tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
-            name: "code_search_callers".to_string(),
+            name: "codetrail_callers".to_string(),
             description:
                 "Find incoming callers of a given function/symbol. Results are inferred candidates due to limitations in static analysis."
                     .to_string(),
@@ -272,7 +272,7 @@ fn tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
-            name: "code_search_changed".to_string(),
+            name: "codetrail_changed".to_string(),
             description:
                 "List changed (git-modified or untracked) files in the workspace."
                     .to_string(),
@@ -283,7 +283,7 @@ fn tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
-            name: "code_search_status".to_string(),
+            name: "codetrail_status".to_string(),
             description:
                 "Return workspace status including snapshot_id, dirty flag, git root, and index information."
                     .to_string(),
@@ -458,60 +458,60 @@ impl Server {
         let opts = parse_query_options(args)?;
 
         match name {
-            "code_search_find" => {
+            "codetrail_find" => {
                 let text = required_str(args, "text")?;
                 self.service.find(text, &opts)
             }
-            "code_search_grep" => {
+            "codetrail_grep" => {
                 let pattern = required_str(args, "pattern")?;
                 self.service.grep(pattern, &opts)
             }
-            "code_search_files" => {
+            "codetrail_files" => {
                 let pattern = required_str(args, "pattern")?;
                 self.service.files(pattern, &opts)
             }
-            "code_search_glob" => {
+            "codetrail_glob" => {
                 let pattern = required_str(args, "pattern")?;
                 self.service.glob(pattern, &opts)
             }
-            "code_search_list" => {
+            "codetrail_list" => {
                 reject_unsupported_browse_scope(&opts)?;
                 let dir = optional_str(args, "dir");
                 let recursive = optional_bool(args, "recursive").unwrap_or(false);
                 self.service.list(dir, recursive, &opts)
             }
-            "code_search_tree" => {
+            "codetrail_tree" => {
                 reject_unsupported_browse_scope(&opts)?;
                 let dir = optional_str(args, "dir");
                 let depth = optional_depth(args)?;
                 self.service.tree(dir, depth, &opts)
             }
-            "code_search_read" => {
+            "codetrail_read" => {
                 let target = required_str(args, "target")?;
                 self.service.read_file(target)
             }
-            "code_search_defs" => {
+            "codetrail_defs" => {
                 let identifier = required_str(args, "identifier")?;
                 self.service.defs(identifier, &opts)
             }
-            "code_search_refs" => {
+            "codetrail_refs" => {
                 let identifier = required_str(args, "identifier")?;
                 self.service.refs(identifier, &opts)
             }
-            "code_search_symbols" => {
+            "codetrail_symbols" => {
                 let query = required_str(args, "query")?;
                 self.service.symbols(query, &opts)
             }
-            "code_search_calls" => {
+            "codetrail_calls" => {
                 let identifier = required_str(args, "identifier")?;
                 self.service.calls(identifier, &opts)
             }
-            "code_search_callers" => {
+            "codetrail_callers" => {
                 let identifier = required_str(args, "identifier")?;
                 self.service.callers(identifier, &opts)
             }
-            "code_search_changed" => self.service.changed(),
-            "code_search_status" => self.service.status(),
+            "codetrail_changed" => self.service.changed(),
+            "codetrail_status" => self.service.status(),
             _ => Err(anyhow::anyhow!("unknown tool: {name}")),
         }
     }
@@ -580,7 +580,7 @@ fn optional_depth(args: Option<&Value>) -> Result<Option<u8>> {
 fn reject_unsupported_browse_scope(opts: &QueryOptions) -> Result<()> {
     if !opts.lang.is_empty() || opts.changed {
         return Err(anyhow::anyhow!(
-            "unsupported_mcp_scope: code_search_list/tree support include/exclude/limit, but not lang or changed scope"
+            "unsupported_mcp_scope: codetrail_list/tree support include/exclude/limit, but not lang or changed scope"
         ));
     }
     Ok(())
@@ -724,7 +724,7 @@ mod tests {
             Envelope::SuccessResponse(sr) => {
                 let init: InitializeResult = serde_json::from_value(sr.result).unwrap();
                 assert_eq!(init.protocol_version, "2024-11-05");
-                assert_eq!(init.server_info.name, "code-search");
+                assert_eq!(init.server_info.name, "codetrail");
                 assert!(init.capabilities.get("tools").is_some());
             }
             _ => panic!("expected success response"),
@@ -749,11 +749,11 @@ mod tests {
             Envelope::SuccessResponse(sr) => {
                 let list: ToolsListResult = serde_json::from_value(sr.result).unwrap();
                 let names: Vec<&str> = list.tools.iter().map(|t| t.name.as_str()).collect();
-                assert!(names.contains(&"code_search_find"));
-                assert!(names.contains(&"code_search_defs"));
-                assert!(names.contains(&"code_search_list"));
-                assert!(names.contains(&"code_search_tree"));
-                assert!(names.contains(&"code_search_status"));
+                assert!(names.contains(&"codetrail_find"));
+                assert!(names.contains(&"codetrail_defs"));
+                assert!(names.contains(&"codetrail_list"));
+                assert!(names.contains(&"codetrail_tree"));
+                assert!(names.contains(&"codetrail_status"));
                 // All core CLI-backed tools should be present.
                 assert_eq!(list.tools.len(), 14);
             }
@@ -777,7 +777,7 @@ mod tests {
             id: json!(3),
             method: "tools/call".to_string(),
             params: Some(json!({
-                "name": "code_search_find",
+                "name": "codetrail_find",
                 "arguments": { "text": "needle" }
             })),
         };
@@ -814,7 +814,7 @@ mod tests {
             id: json!(4),
             method: "tools/call".to_string(),
             params: Some(json!({
-                "name": "code_search_defs",
+                "name": "codetrail_defs",
                 "arguments": { "identifier": "alpha" }
             })),
         };
@@ -846,7 +846,7 @@ mod tests {
             id: json!(5),
             method: "tools/call".to_string(),
             params: Some(json!({
-                "name": "code_search_nonexistent",
+                "name": "codetrail_nonexistent",
                 "arguments": {}
             })),
         };
@@ -897,7 +897,7 @@ mod tests {
             id: json!(7),
             method: "tools/call".to_string(),
             params: Some(json!({
-                "name": "code_search_changed",
+                "name": "codetrail_changed",
                 "arguments": {}
             })),
         };
@@ -928,7 +928,7 @@ mod tests {
             id: json!(8),
             method: "tools/call".to_string(),
             params: Some(json!({
-                "name": "code_search_status",
+                "name": "codetrail_status",
                 "arguments": {}
             })),
         };
@@ -958,7 +958,7 @@ mod tests {
 
         let list = call_tool_json(
             &server,
-            "code_search_list",
+            "codetrail_list",
             json!({ "dir": "src", "recursive": false }),
         );
         assert!(list.get("ok").is_none());
@@ -971,7 +971,7 @@ mod tests {
 
         let tree = call_tool_json(
             &server,
-            "code_search_tree",
+            "codetrail_tree",
             json!({ "dir": "src", "depth": 2 }),
         );
         assert!(tree.get("ok").is_none());
@@ -993,7 +993,7 @@ mod tests {
 
         let lang_result = call_tool(
             &server,
-            "code_search_list",
+            "codetrail_list",
             json!({ "dir": "src", "lang": ["rust"] }),
         );
         assert!(lang_result.is_error);
@@ -1002,7 +1002,7 @@ mod tests {
 
         let changed_result = call_tool(
             &server,
-            "code_search_tree",
+            "codetrail_tree",
             json!({ "dir": "src", "changed": true }),
         );
         assert!(changed_result.is_error);
@@ -1011,7 +1011,7 @@ mod tests {
 
         let depth_result = call_tool(
             &server,
-            "code_search_tree",
+            "codetrail_tree",
             json!({ "dir": "src", "depth": 256 }),
         );
         assert!(depth_result.is_error);
@@ -1021,7 +1021,7 @@ mod tests {
         for invalid_depth in [json!(-1), json!(1.5)] {
             let invalid_result = call_tool(
                 &server,
-                "code_search_tree",
+                "codetrail_tree",
                 json!({ "dir": "src", "depth": invalid_depth }),
             );
             assert!(invalid_result.is_error);
@@ -1037,7 +1037,7 @@ mod tests {
         fs::write(dir.path().join("sample.txt"), "hello\n").unwrap();
         let server = Server::new(dir.path()).unwrap();
 
-        let result = call_tool(&server, "code_search_grep", json!({ "pattern": "[" }));
+        let result = call_tool(&server, "codetrail_grep", json!({ "pattern": "[" }));
         assert!(result.is_error);
         let parsed: Value = serde_json::from_str(&result.content[0].text).unwrap();
         assert!(!has_caveat(&parsed, "no_match"));
@@ -1053,7 +1053,7 @@ mod tests {
         for invalid_context in [json!(65536), json!(-1), json!(1.5)] {
             let result = call_tool(
                 &server,
-                "code_search_find",
+                "codetrail_find",
                 json!({ "text": "needle", "context": invalid_context }),
             );
             assert!(result.is_error);
@@ -1075,7 +1075,7 @@ mod tests {
 
         let found = call_tool_json(
             &server,
-            "code_search_find",
+            "codetrail_find",
             json!({ "text": "needle", "context": 1 }),
         );
         assert!(found.get("ok").is_none());
@@ -1087,7 +1087,7 @@ mod tests {
             .unwrap();
         let target = format!("{path}:{line}");
 
-        let read = call_tool_json(&server, "code_search_read", json!({ "target": target }));
+        let read = call_tool_json(&server, "codetrail_read", json!({ "target": target }));
         assert!(read.get("ok").is_none());
         assert!(read["results"][0]["content"]
             .as_str()
@@ -1107,7 +1107,7 @@ mod tests {
         }
         let server = Server::new(dir.path()).unwrap();
 
-        let found = call_tool_json(&server, "code_search_find", json!({ "text": "public" }));
+        let found = call_tool_json(&server, "codetrail_find", json!({ "text": "public" }));
         assert!(found["results"].as_array().unwrap().len() <= 5);
         assert!(has_caveat(&found, "broad_query_guard"));
         assert_eq!(found["caveats"].as_array().unwrap().len(), 1);

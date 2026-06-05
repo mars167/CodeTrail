@@ -1,12 +1,12 @@
 # 命令契约
 
-> 命令参数以 `code-search --help` 和 `src/cli.rs` 为准。本文描述调用方可以依赖的稳定命令和 JSON 契约。
+> 命令参数以 `codetrail --help` 和 `src/cli.rs` 为准。本文描述调用方可以依赖的稳定命令和 JSON 契约。
 
 ## 命令族
 
 ```mermaid
 flowchart TB
-  CS["code-search"] --> L0["source facts"]
+  CS["codetrail"] --> L0["source facts"]
   CS --> L1["navigation facts"]
   CS --> L2["relationship candidates"]
   CS --> Ops["index / query / watch / serve / mcp"]
@@ -105,11 +105,11 @@ flowchart LR
 
 规则：
 
-- `--save-query <name>` 写入 `.code-search/queries/<name>.json`；name 只允许 ASCII 字母、数字、`.`、`_` 和 `-`。
+- `--save-query <name>` 写入 `.codetrail/queries/<name>.json`；name 只允许 ASCII 字母、数字、`.`、`_` 和 `-`。
 - saved query 保存 command、canonicalCommand、query、scope、snapshotId、requestCursor 和 nextCursor；不会保存结果正文，也不会改变公开输出形态。
 - `query replay <name>` 默认使用当前 workspace。snapshot 不匹配时会丢弃 saved cursor，按当前 scope 重跑并返回 `saved_query_snapshot_mismatch` caveat。
 - `query replay <name> --snapshot saved` 要求当前 snapshot 与保存时一致；不一致时返回错误。
-- `query show/list/delete` 是对本地 `.code-search/queries/` 的文件系统操作，结果仍放在 `results`。
+- `query show/list/delete` 是对本地 `.codetrail/queries/` 的文件系统操作，结果仍放在 `results`。
 
 ## Text 输出
 

@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_TEST_REPO="$ROOT/../RuoYi"
 TEST_REPO="${TEST_REPO:-$DEFAULT_TEST_REPO}"
-CS_BIN="${CS_BIN:-$ROOT/target/release/code-search}"
+CS_BIN="${CS_BIN:-$ROOT/target/release/codetrail}"
 
 PASS=0
 FAIL=0
@@ -27,7 +27,7 @@ Environment:
   TEST_REPO  Fixture repository path for CLI smoke and benchmarks.
   REQUIRE_TEST_REPO
              When set to 1, missing TEST_REPO fails smoke/bench gates.
-  CS_BIN     code-search binary path. Defaults to target/release/code-search.
+  CS_BIN     codetrail binary path. Defaults to target/release/codetrail.
 USAGE
 }
 
@@ -70,17 +70,17 @@ require_tool() {
   fi
 }
 
-run_code_search_json() {
+run_codetrail_json() {
   "$CS_BIN" --path "$TEST_REPO" "$@"
 }
 
-assert_code_search() {
+assert_codetrail() {
   local label="$1"
   local filter="$2"
   shift 2
 
   local output
-  if ! output="$(run_code_search_json "$@")"; then
+  if ! output="$(run_codetrail_json "$@")"; then
     fail "$label"
     return 1
   fi
@@ -115,32 +115,32 @@ run_ruoyi_smoke() {
 
   require_tool jq
 
-  assert_code_search \
+  assert_codetrail \
     "find RuoYiApplication returns results" \
     '.ok == true and (.results | length >= 1)' \
     find RuoYiApplication
 
-  assert_code_search \
+  assert_codetrail \
     "grep selectUserBy regex returns results" \
     '.ok == true and (.results | length >= 3)' \
     grep 'selectUserBy\w+'
 
-  assert_code_search \
+  assert_codetrail \
     "glob controller files returns results" \
     '.ok == true and (.results | length >= 10)' \
     glob '**/*Controller.java'
 
-  assert_code_search \
+  assert_codetrail \
     "read exact range returns verified source fact" \
     '.ok == true and .results[0].exact == true' \
     read ruoyi-admin/src/main/java/com/ruoyi/RuoYiApplication.java:12-16
 
-  assert_code_search \
+  assert_codetrail \
     "refs ShiroUtils returns source references" \
     '.ok == true and (.results | length >= 5)' \
     refs ShiroUtils
 
-  assert_code_search \
+  assert_codetrail \
     "status preserves source_fact reliability" \
     '.ok == true and .reliability.level == "source_fact"' \
     status
@@ -150,7 +150,7 @@ run_main() {
   note "main quality gate"
   cd "$ROOT"
   run_pr
-  run_step "cargo build --release --locked" cargo build --release --locked --bin code-search
+  run_step "cargo build --release --locked" cargo build --release --locked --bin codetrail
   run_ruoyi_smoke
 }
 
@@ -162,7 +162,7 @@ run_bench() {
   require_tool bc
   # Reuse release binary if already built (e.g. from 'full' gate)
   if [[ ! -x "$CS_BIN" ]]; then
-    run_step "cargo build --release --locked" cargo build --release --locked --bin code-search
+    run_step "cargo build --release --locked" cargo build --release --locked --bin codetrail
   fi
   if [[ ! -d "$TEST_REPO" ]]; then
     if [[ "${REQUIRE_TEST_REPO:-0}" == "1" ]]; then

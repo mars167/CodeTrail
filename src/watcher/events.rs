@@ -44,7 +44,7 @@ impl ChangeSet {
     }
 }
 
-/// Filter out events on paths we should skip (.git, .code-search, target, node_modules, etc.)
+/// Filter out events on paths we should skip (.git, .codetrail, target, node_modules, etc.)
 pub fn should_skip_event(event: &Event) -> bool {
     event.paths.iter().any(|p| should_skip_path(p))
 }
@@ -54,7 +54,7 @@ pub fn should_skip_path(path: &Path) -> bool {
         let value = component.as_os_str().to_string_lossy();
         matches!(
             value.as_ref(),
-            ".git" | ".code-search" | "target" | "node_modules" | "dist" | ".next" | ".DS_Store"
+            ".git" | ".codetrail" | "target" | "node_modules" | "dist" | ".next" | ".DS_Store"
         )
     })
 }
@@ -196,7 +196,7 @@ mod tests {
     fn should_skip_dot_git_paths() {
         assert!(should_skip_path(Path::new(".git/config")));
         assert!(should_skip_path(Path::new("src/.git/HEAD")));
-        assert!(should_skip_path(Path::new(".code-search/snapshots/x")));
+        assert!(should_skip_path(Path::new(".codetrail/snapshots/x")));
         assert!(should_skip_path(Path::new("target/debug/main")));
         assert!(should_skip_path(Path::new("node_modules/pkg/index.js")));
         assert!(!should_skip_path(Path::new("src/main.rs")));

@@ -14,7 +14,7 @@ use crate::{
     workspace::Workspace,
 };
 
-const SAVED_QUERY_KIND: &str = "code_search_saved_query";
+const SAVED_QUERY_KIND: &str = "codetrail_saved_query";
 
 pub fn save_from_response(workspace: &Workspace, name: &str, response: &Value) -> Result<Value> {
     let path = query_path(workspace, name)?;
@@ -248,7 +248,7 @@ fn read_saved_file(path: &Path) -> Result<Value> {
     let saved: Value = serde_json::from_slice(&data)
         .with_context(|| format!("failed to parse {}", path.display()))?;
     if saved.get("kind").and_then(Value::as_str) != Some(SAVED_QUERY_KIND) {
-        return Err(anyhow!("not a code-search saved query: {}", path.display()));
+        return Err(anyhow!("not a codetrail saved query: {}", path.display()));
     }
     Ok(saved)
 }
@@ -290,7 +290,7 @@ fn query_path(workspace: &Workspace, name: &str) -> Result<PathBuf> {
 }
 
 fn queries_dir(workspace: &Workspace) -> PathBuf {
-    workspace.root.join(".code-search").join("queries")
+    workspace.root.join(".codetrail").join("queries")
 }
 
 fn validate_name(name: &str) -> Result<()> {

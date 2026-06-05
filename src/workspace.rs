@@ -394,7 +394,7 @@ fn should_skip_dir(path: &Path, no_ignore: bool) -> bool {
 fn should_skip_path(path: &Path, no_ignore: bool) -> bool {
     path.components().any(|component| {
         let value = component.as_os_str().to_string_lossy();
-        matches!(value.as_ref(), ".git" | ".code-search")
+        matches!(value.as_ref(), ".git" | ".codetrail")
             || (!no_ignore
                 && matches!(value.as_ref(), "target" | "node_modules" | "dist" | ".next"))
     })

@@ -59,7 +59,7 @@ pub struct ScipOccurrence {
 }
 
 pub fn lancedb_root(workspace_root: &Path) -> PathBuf {
-    workspace_root.join(".code-search").join("index.lance")
+    workspace_root.join(".codetrail").join("index.lance")
 }
 
 static RUNTIME: LazyLock<tokio::runtime::Runtime> =
@@ -1018,7 +1018,7 @@ mod tests {
         let root = tmp.path();
 
         let _store = LanceDbStore::open_or_create(root).unwrap();
-        let expected = root.join(".code-search").join("index.lance");
+        let expected = root.join(".codetrail").join("index.lance");
         assert!(expected.exists());
         assert!(expected.is_dir());
     }
@@ -1028,7 +1028,7 @@ mod tests {
         let p = Path::new("/foo/bar");
         assert_eq!(
             lancedb_root(p),
-            PathBuf::from("/foo/bar/.code-search/index.lance")
+            PathBuf::from("/foo/bar/.codetrail/index.lance")
         );
     }
 

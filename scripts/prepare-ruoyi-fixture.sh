@@ -3,7 +3,7 @@ set -euo pipefail
 
 RUOYI_REPO_URL="${RUOYI_REPO_URL:-https://git.home.arpa/mars/RuoYi.git}"
 RUOYI_BRANCH="${RUOYI_BRANCH:-master}"
-RUOYI_CACHE_DIR="${RUOYI_CACHE_DIR:-/cache/code-search/fixtures/RuoYi}"
+RUOYI_CACHE_DIR="${RUOYI_CACHE_DIR:-/cache/codetrail/fixtures/RuoYi}"
 RUOYI_REFRESH="${RUOYI_REFRESH:-0}"
 
 cache_parent="$(dirname "$RUOYI_CACHE_DIR")"

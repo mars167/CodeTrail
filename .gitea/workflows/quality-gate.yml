@@ -21,14 +21,14 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  CARGO_HOME: /cache/code-search/cargo
-  SCCACHE_DIR: /cache/code-search/sccache
+  CARGO_HOME: /cache/codetrail/cargo
+  SCCACHE_DIR: /cache/codetrail/sccache
   SCCACHE_CACHE_SIZE: 8G
   RUSTC_WRAPPER: sccache
   CARGO_INCREMENTAL: "0"
   RUOYI_REPO_URL: https://git.home.arpa/mars/RuoYi.git
   RUOYI_BRANCH: master
-  RUOYI_CACHE_DIR: /cache/code-search/fixtures/RuoYi
+  RUOYI_CACHE_DIR: /cache/codetrail/fixtures/RuoYi
 
 jobs:
   pr-gate:
@@ -37,7 +37,7 @@ jobs:
     if: ${{ github.event_name == 'pull_request' }}
     container:
       image: rust:1.95-bookworm
-      options: --volume code-search-cache:/cache/code-search
+      options: --volume codetrail-cache:/cache/codetrail
     steps:
       - name: Prepare CI tools
         run: |
@@ -63,7 +63,7 @@ jobs:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     container:
       image: rust:1.95-bookworm
-      options: --volume code-search-cache:/cache/code-search
+      options: --volume codetrail-cache:/cache/codetrail
     steps:
       - name: Prepare CI tools
         run: |
@@ -94,7 +94,7 @@ jobs:
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     container:
       image: rust:1.95-bookworm
-      options: --volume code-search-cache:/cache/code-search
+      options: --volume codetrail-cache:/cache/codetrail
     steps:
       - name: Prepare cross tools
         run: |
@@ -120,7 +120,7 @@ jobs:
     if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_bench == 'true') }}
     container:
       image: rust:1.95-bookworm
-      options: --volume code-search-cache:/cache/code-search
+      options: --volume codetrail-cache:/cache/codetrail
     steps:
       - name: Prepare benchmark tools
         run: |

@@ -8,7 +8,7 @@ flowchart LR
   S --> C["02 命令契约"]
   S --> Q["03 质量"]
   A --> SRC["src/ 是实现细节权威"]
-  C --> HELP["code-search --help 是参数权威"]
+  C --> HELP["codetrail --help 是参数权威"]
   Q --> SCRIPTS["scripts/ 是门禁权威"]
 ```
 
@@ -21,7 +21,7 @@ flowchart LR
 
 ## 产品定位
 
-`code-search` 是本地优先、Git 优先的代码搜索与跳转工具，目标是让开发者和自动化工具像使用 IDE 一样获取窄而可靠的代码证据。
+CodeTrail 是本地优先、Git 优先的代码搜索与跳转工具，目标是让开发者和自动化工具像使用 IDE 一样获取窄而可靠的代码证据。
 
 它提供：
 
@@ -80,7 +80,7 @@ flowchart TB
 
 ## 贡献者参考
 
-- 命令行参数以 `code-search --help` 和 `src/cli.rs` 为准。
+- 命令行参数以 `codetrail --help` 和 `src/cli.rs` 为准。
 - 行为细节以 `src/`、`tests/` 和 `scripts/` 为准。
 - 设计文档描述稳定边界和外部契约，避免重复每个函数的实现细节。
 - 新增命令、索引或输出字段时，同时更新对应的测试和契约说明。

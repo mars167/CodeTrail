@@ -30,12 +30,11 @@ pub struct DirtyFile {
 /// Run reconcile: compare the current workspace file state against
 /// the most recent working snapshot. Returns dirty/added/deleted file lists.
 pub fn reconcile(workspace_root: &Path) -> Result<ReconcileResult> {
-    let code_search_dir = workspace_root.join(".code-search");
-    let working_dir = code_search_dir.join("working");
+    let codetrail_dir = workspace_root.join(".codetrail");
+    let working_dir = codetrail_dir.join("working");
 
     // Follow manifest chain to find the actual snapshot
-    let snapshot_records: Vec<FileRecord> =
-        resolve_snapshot_records(&code_search_dir, &working_dir);
+    let snapshot_records: Vec<FileRecord> = resolve_snapshot_records(&codetrail_dir, &working_dir);
 
     let snapshot_map: HashMap<String, &FileRecord> = snapshot_records
         .iter()
@@ -96,7 +95,7 @@ pub fn reconcile(workspace_root: &Path) -> Result<ReconcileResult> {
 }
 
 /// Walk workspace files, computing blake3 hashes for each file.
-/// Skips .git, .code-search, target, node_modules, etc.
+/// Skips .git, .codetrail, target, node_modules, etc.
 pub fn walk_workspace_for_hashes(root: &Path, hashes: &mut HashMap<String, String>) -> Result<()> {
     use ignore::WalkBuilder;
 
@@ -164,7 +163,7 @@ fn now_epoch_ms() -> u64 {
 /// 1. Read working/manifest.json to get snapshotKey
 /// 2. Read snapshots/<snapshotKey>/files.parquet
 /// 3. Fall back to working/files.parquet if available
-fn resolve_snapshot_records(code_search_dir: &Path, working_dir: &Path) -> Vec<FileRecord> {
+fn resolve_snapshot_records(codetrail_dir: &Path, working_dir: &Path) -> Vec<FileRecord> {
     let manifest_path = working_dir.join("manifest.json");
 
     // Read snapshot key and id from manifest (compat bridge)
@@ -186,7 +185,7 @@ fn resolve_snapshot_records(code_search_dir: &Path, working_dir: &Path) -> Vec<F
         })
         .unwrap_or((None, None));
 
-    let root = code_search_dir.parent().unwrap_or(code_search_dir);
+    let root = codetrail_dir.parent().unwrap_or(codetrail_dir);
 
     // Try LanceDB (use snapshot_id from manifest)
     let lance_snapshot_id = snapshot_id;
@@ -205,7 +204,7 @@ fn resolve_snapshot_records(code_search_dir: &Path, working_dir: &Path) -> Vec<F
 
     // Fallback: try parquet from snapshots/<key>/files.parquet
     if let Some(ref key) = snapshot_key {
-        let parquet_path = code_search_dir
+        let parquet_path = codetrail_dir
             .join("snapshots")
             .join(key)
             .join("files.parquet");

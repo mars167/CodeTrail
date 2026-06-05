@@ -1,25 +1,25 @@
 #!/bin/sh
 set -eu
 
-repo="${CODE_SEARCH_REPO:-mars167/code-search-cli}"
-version="${CODE_SEARCH_VERSION:-latest}"
-install_dir="${CODE_SEARCH_INSTALL_DIR:-$HOME/.local/bin}"
-dry_run="${CODE_SEARCH_DRY_RUN:-0}"
+repo="${CODETRAIL_REPO:-mars167/CodeTrail}"
+version="${CODETRAIL_VERSION:-latest}"
+install_dir="${CODETRAIL_INSTALL_DIR:-$HOME/.local/bin}"
+dry_run="${CODETRAIL_DRY_RUN:-0}"
 
 usage() {
   cat <<'USAGE'
-Install code-search from GitHub release assets.
+Install codetrail from GitHub release assets.
 
 Usage:
   install.sh [--version <tag>] [--repo <owner/repo>] [--install-dir <dir>] [--dry-run]
 
 Environment:
-  CODE_SEARCH_VERSION       Release tag to install, defaults to latest.
-  CODE_SEARCH_REPO          GitHub repository, defaults to mars167/code-search-cli.
-  CODE_SEARCH_INSTALL_DIR   Destination directory, defaults to $HOME/.local/bin.
-  CODE_SEARCH_OS            Override detected OS for tests.
-  CODE_SEARCH_ARCH          Override detected architecture for tests.
-  CODE_SEARCH_DRY_RUN       Set to 1 to print selected asset without downloading.
+  CODETRAIL_VERSION       Release tag to install, defaults to latest.
+  CODETRAIL_REPO          GitHub repository, defaults to mars167/CodeTrail.
+  CODETRAIL_INSTALL_DIR   Destination directory, defaults to $HOME/.local/bin.
+  CODETRAIL_OS            Override detected OS for tests.
+  CODETRAIL_ARCH          Override detected architecture for tests.
+  CODETRAIL_DRY_RUN       Set to 1 to print selected asset without downloading.
 USAGE
 }
 
@@ -88,8 +88,8 @@ checksum() {
   fi
 }
 
-os_name="${CODE_SEARCH_OS:-$(uname -s)}"
-arch_name="${CODE_SEARCH_ARCH:-$(uname -m)}"
+os_name="${CODETRAIL_OS:-$(uname -s)}"
+arch_name="${CODETRAIL_ARCH:-$(uname -m)}"
 
 case "$os_name" in
   Darwin) os="darwin" ;;
@@ -111,7 +111,7 @@ esac
 
 case "${os}-${arch}" in
   darwin-amd64|darwin-arm64|linux-amd64)
-    asset="code-search-${os}-${arch}.tar.gz"
+    asset="codetrail-${os}-${arch}.tar.gz"
     ;;
   linux-arm64)
     echo "No Linux ARM64 release asset is currently published." >&2
@@ -167,21 +167,21 @@ extract_dir="$tmp_dir/extract"
 mkdir -p "$extract_dir"
 tar -xzf "$asset_path" -C "$extract_dir"
 
-if [ ! -f "$extract_dir/code-search" ]; then
-  echo "Release archive did not contain code-search." >&2
+if [ ! -f "$extract_dir/codetrail" ]; then
+  echo "Release archive did not contain codetrail." >&2
   exit 1
 fi
 
 mkdir -p "$install_dir"
-cp "$extract_dir/code-search" "$install_dir/code-search"
-chmod +x "$install_dir/code-search"
+cp "$extract_dir/codetrail" "$install_dir/codetrail"
+chmod +x "$install_dir/codetrail"
 
-echo "Installed code-search to ${install_dir}/code-search"
-if ! command -v code-search >/dev/null 2>&1; then
+echo "Installed codetrail to ${install_dir}/codetrail"
+if ! command -v codetrail >/dev/null 2>&1; then
   case ":$PATH:" in
     *":$install_dir:"*) ;;
     *)
-      echo "Add this directory to PATH if code-search is not found by your shell:"
+      echo "Add this directory to PATH if codetrail is not found by your shell:"
       echo "  export PATH=\"${install_dir}:\$PATH\""
       ;;
   esac
