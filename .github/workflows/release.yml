@@ -101,6 +101,7 @@ jobs:
       GITEA_REPOSITORY: ${{ vars.GITEA_REPOSITORY }}
       GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
       GITEA_URL: ${{ vars.GITEA_URL }}
+      GITEA_INSECURE_TLS: ${{ vars.GITEA_INSECURE_TLS }}
 
     steps:
       - uses: actions/checkout@v4

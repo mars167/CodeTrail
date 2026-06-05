@@ -71,7 +71,7 @@ require_tool() {
 }
 
 run_codetrail_json() {
-  "$CS_BIN" --path "$TEST_REPO" "$@"
+  "$CS_BIN" --output json --path "$TEST_REPO" "$@"
 }
 
 assert_codetrail() {
@@ -117,32 +117,32 @@ run_ruoyi_smoke() {
 
   assert_codetrail \
     "find RuoYiApplication returns results" \
-    '.ok == true and (.results | length >= 1)' \
+    '(.results | length >= 1)' \
     find RuoYiApplication
 
   assert_codetrail \
     "grep selectUserBy regex returns results" \
-    '.ok == true and (.results | length >= 3)' \
+    '(.results | length >= 3)' \
     grep 'selectUserBy\w+'
 
   assert_codetrail \
     "glob controller files returns results" \
-    '.ok == true and (.results | length >= 10)' \
+    '(.results | length >= 10)' \
     glob '**/*Controller.java'
 
   assert_codetrail \
     "read exact range returns verified source fact" \
-    '.ok == true and .results[0].exact == true' \
+    '.results[0].path == "ruoyi-admin/src/main/java/com/ruoyi/RuoYiApplication.java" and .results[0].range.start.line == 12 and .results[0].range.end.line == 16' \
     read ruoyi-admin/src/main/java/com/ruoyi/RuoYiApplication.java:12-16
 
   assert_codetrail \
     "refs ShiroUtils returns source references" \
-    '.ok == true and (.results | length >= 5)' \
+    '(.results | length >= 5)' \
     refs ShiroUtils
 
   assert_codetrail \
-    "status preserves source_fact reliability" \
-    '.ok == true and .reliability.level == "source_fact"' \
+    "status returns workspace snapshot" \
+    '(.results | length == 1) and (.results[0].snapshot_id | type == "string") and (.results[0].dirty | type == "boolean")' \
     status
 }
 

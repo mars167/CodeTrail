@@ -24,10 +24,14 @@ GITEA_URL="${GITEA_URL%/}"
 api_base="${GITEA_URL}/api/v1"
 auth_header="Authorization: token ${GITEA_TOKEN}"
 target_sha="${TARGET_SHA:-}"
+curl_gitea_args=()
+if [ "${GITEA_INSECURE_TLS:-0}" = "1" ]; then
+  curl_gitea_args+=(--insecure)
+fi
 
 release_json="$(mktemp)"
 status="$(
-  curl -sS -o "$release_json" -w '%{http_code}' \
+  curl "${curl_gitea_args[@]}" -sS -o "$release_json" -w '%{http_code}' \
     -H "$auth_header" \
     "${api_base}/repos/${GITEA_REPOSITORY}/releases/tags/${RELEASE_TAG}"
 )"
@@ -46,7 +50,7 @@ if [ "$status" = "404" ]; then
     } + (if $target == "" then {} else {target_commitish: $target} end)' \
     > "$payload"
   status="$(
-    curl -sS -o "$release_json" -w '%{http_code}' \
+    curl "${curl_gitea_args[@]}" -sS -o "$release_json" -w '%{http_code}' \
       -X POST \
       -H "$auth_header" \
       -H "Content-Type: application/json" \
@@ -72,7 +76,7 @@ if [ -n "$target_sha" ]; then
     payload="$(mktemp)"
     jq -n --arg target "$target_sha" '{target_commitish: $target}' > "$payload"
     status="$(
-      curl -sS -o "$release_json" -w '%{http_code}' \
+      curl "${curl_gitea_args[@]}" -sS -o "$release_json" -w '%{http_code}' \
         -X PATCH \
         -H "$auth_header" \
         -H "Content-Type: application/json" \
@@ -87,7 +91,7 @@ if [ -n "$target_sha" ]; then
 fi
 
 assets_json="$(mktemp)"
-curl -fsS \
+curl "${curl_gitea_args[@]}" -fsS \
   -H "$auth_header" \
   "${api_base}/repos/${GITEA_REPOSITORY}/releases/${release_id}/assets" \
   > "$assets_json"
@@ -99,7 +103,7 @@ for file in "$assets_dir"/codetrail-* "$assets_dir"/SHA256SUMS; do
 
   while IFS= read -r asset_id; do
     [ -z "$asset_id" ] && continue
-    curl -fsS \
+    curl "${curl_gitea_args[@]}" -fsS \
       -X DELETE \
       -H "$auth_header" \
       "${api_base}/repos/${GITEA_REPOSITORY}/releases/${release_id}/assets/${asset_id}" \
@@ -107,7 +111,7 @@ for file in "$assets_dir"/codetrail-* "$assets_dir"/SHA256SUMS; do
   done < <(jq -r --arg name "$name" '.[] | select(.name == $name) | .id' "$assets_json")
 
   encoded_name="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$name")"
-  curl -fsS \
+  curl "${curl_gitea_args[@]}" -fsS \
     -X POST \
     -H "$auth_header" \
     -F "attachment=@${file}" \
