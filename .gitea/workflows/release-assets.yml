@@ -32,6 +32,7 @@ jobs:
       GITEA_REPOSITORY: ${{ github.repository }}
       GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
       GITEA_URL: ${{ github.server_url }}
+      GITEA_INSECURE_TLS: "1"
 
     steps:
       - name: Prepare tools
@@ -80,6 +81,19 @@ jobs:
 
           api_headers=(-H "Accept: application/vnd.github+json")
           download_headers=()
+          curl_common=(
+            --http1.1
+            --retry 5
+            --retry-all-errors
+            --retry-delay 5
+            --connect-timeout 20
+          )
+          curl_download=(
+            -fL
+            "${curl_common[@]}"
+            --speed-time 60
+            --speed-limit 1024
+          )
           if [ -n "${GH_READ_TOKEN:-}" ]; then
             api_headers+=(-H "Authorization: Bearer ${GH_READ_TOKEN}")
             download_headers+=(-H "Authorization: Bearer ${GH_READ_TOKEN}")
@@ -88,7 +102,7 @@ jobs:
           release_json="$(mktemp)"
           ready=0
           for attempt in $(seq 1 90); do
-            if status="$(curl -sS -o "$release_json" -w '%{http_code}' "${api_headers[@]}" "https://api.github.com/repos/${GITHUB_RELEASE_REPO}/releases/tags/${RELEASE_TAG}")"; then
+            if status="$(curl -sS "${curl_common[@]}" -o "$release_json" -w '%{http_code}' "${api_headers[@]}" "https://api.github.com/repos/${GITHUB_RELEASE_REPO}/releases/tags/${RELEASE_TAG}")"; then
               if [ "$status" = "200" ]; then
                 ready=1
                 for asset in "${expected[@]}"; do
@@ -118,7 +132,10 @@ jobs:
 
           for asset in "${expected[@]}"; do
             url="$(jq -r --arg name "$asset" '.assets[] | select(.name == $name) | .browser_download_url' "$release_json")"
-            curl -fL --retry 3 "${download_headers[@]}" -o "dist/${asset}" "$url"
+            tmp_asset="dist/${asset}.tmp"
+            rm -f "$tmp_asset"
+            curl "${curl_download[@]}" "${download_headers[@]}" -o "$tmp_asset" "$url"
+            mv "$tmp_asset" "dist/${asset}"
           done
 
           (cd dist && sha256sum -c SHA256SUMS)
