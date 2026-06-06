@@ -36,6 +36,7 @@ type Document struct {
 	RelativePath string       `json:"relativePath"`
 	Language     string       `json:"language"`
 	Occurrences  []Occurrence `json:"occurrences"`
+	Symbols      []SymbolInfo `json:"symbols"`
 }
 
 type Occurrence struct {
@@ -82,8 +83,10 @@ func main() {
 	}
 
 	symbolID := 0
-	symbolMap := make(map[string]string) // qualifiedName -> symbolId
+	symbolMap := make(map[string]string)
 	docMap := make(map[string]*Document)
+	// Track per-document symbols: qualifiedName -> SymbolInfo
+	docSymbolMap := make(map[string]map[string]SymbolInfo)
 
 	for _, pkg := range pkgs {
 		if pkg.TypesInfo == nil {
@@ -114,11 +117,15 @@ func main() {
 			})
 
 			kind := objectKind(obj)
-			output.Symbols = append(output.Symbols, SymbolInfo{
-				Symbol:      symID,
-				DisplayName: ident.Name,
-				Kind:        kind,
-			})
+		// Collect per-document symbols for this file
+		if docSymbolMap[relPath] == nil {
+			docSymbolMap[relPath] = make(map[string]SymbolInfo)
+		}
+		docSymbolMap[relPath][qname] = SymbolInfo{
+			Symbol:      symID,
+			DisplayName: ident.Name,
+			Kind:        kind,
+		}
 		}
 
 		// Collect references
@@ -146,8 +153,13 @@ func main() {
 		}
 	}
 
-	// Collect documents
-	for _, doc := range docMap {
+	// Collect documents with per-document symbols
+	for path, doc := range docMap {
+		if syms, ok := docSymbolMap[path]; ok {
+			for _, sym := range syms {
+				doc.Symbols = append(doc.Symbols, sym)
+			}
+		}
 		output.Documents = append(output.Documents, *doc)
 	}
 
