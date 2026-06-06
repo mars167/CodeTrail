@@ -1,4 +1,5 @@
 pub mod batch_query;
+pub mod benchmark_gate;
 pub mod caveat_contract;
 pub mod cli;
 pub mod commands;
