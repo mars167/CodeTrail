@@ -273,3 +273,62 @@ fn malformed_structured_config_yields_parse_failure_and_source_fact_fallback() {
         .iter()
         .any(|fact| fact.key_path.as_deref() == Some("database.url")));
 }
+
+#[test]
+fn malformed_yaml_yields_parse_failure_source_fact_fallback_without_secret_leak() {
+    let dir = tempdir().unwrap();
+    write(
+        &dir.path().join("package.json"),
+        "{\"scripts\":{\"test\":\"node test.js\"}}\n",
+    );
+    write(&dir.path().join("src/app.ts"), "export const app = 1;\n");
+    let path = "config/bad.yaml";
+    let source =
+        "database:\n  url: postgres://localhost/app\n    api_key: not-a-real-test-secret\n";
+    write(&dir.path().join(path), source);
+
+    let graph = discover_project_graph(dir.path()).unwrap();
+    let facts =
+        extract_config_facts_for_file(path, source, &graph, ConfigFactExtractOptions::test());
+
+    assert_eq!(facts.len(), 1);
+    let fallback = &facts[0];
+    assert_eq!(fallback.fact_kind, ConfigFactKind::SourceFactFallback);
+    assert_eq!(fallback.reliability, FactReliability::SourceFact);
+    assert!(fallback
+        .caveats
+        .iter()
+        .any(|caveat| caveat.code == ConfigFactCaveatCode::ParseFailure));
+    assert!(!serde_json::to_string(fallback)
+        .unwrap()
+        .contains("not-a-real-test-secret"));
+}
+
+#[test]
+fn malformed_toml_yields_parse_failure_source_fact_fallback_without_secret_leak() {
+    let dir = tempdir().unwrap();
+    write(
+        &dir.path().join("package.json"),
+        "{\"scripts\":{\"test\":\"node test.js\"}}\n",
+    );
+    write(&dir.path().join("src/app.ts"), "export const app = 1;\n");
+    let path = "config/bad.toml";
+    let source = "[server\napi_key = \"not-a-real-test-secret\"\n";
+    write(&dir.path().join(path), source);
+
+    let graph = discover_project_graph(dir.path()).unwrap();
+    let facts =
+        extract_config_facts_for_file(path, source, &graph, ConfigFactExtractOptions::test());
+
+    assert_eq!(facts.len(), 1);
+    let fallback = &facts[0];
+    assert_eq!(fallback.fact_kind, ConfigFactKind::SourceFactFallback);
+    assert_eq!(fallback.reliability, FactReliability::SourceFact);
+    assert!(fallback
+        .caveats
+        .iter()
+        .any(|caveat| caveat.code == ConfigFactCaveatCode::ParseFailure));
+    assert!(!serde_json::to_string(fallback)
+        .unwrap()
+        .contains("not-a-real-test-secret"));
+}
