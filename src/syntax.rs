@@ -579,18 +579,33 @@ struct CandidateWalkContext<'a, 'b> {
 }
 
 fn walk_candidates(node: Node, context: &mut CandidateWalkContext) {
+    if *context.truncated {
+        return;
+    }
     if let Some(candidate) = symbol_candidate(node, context) {
         push_candidate(candidate, context);
+        if *context.truncated {
+            return;
+        }
     }
     if let Some(candidate) = import_candidate(node, context) {
         push_candidate(candidate, context);
+        if *context.truncated {
+            return;
+        }
     }
     if let Some(candidate) = call_candidate(node, context) {
         push_candidate(candidate, context);
+        if *context.truncated {
+            return;
+        }
     }
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
+        if *context.truncated {
+            break;
+        }
         walk_candidates(child, context);
     }
 }
@@ -715,7 +730,7 @@ struct EnclosingSymbolDetails {
 fn enclosing_symbol_details(node: Node, source: &[u8]) -> Option<EnclosingSymbolDetails> {
     let mut current = node.parent();
     while let Some(parent) = current {
-        if symbol_kind(parent.kind()).is_some() {
+        if is_enclosing_symbol_node(parent.kind()) {
             let name_node = candidate_name_node(parent)?;
             let body_node = parent.child_by_field_name("body").unwrap_or(parent);
             return Some(EnclosingSymbolDetails {
@@ -845,7 +860,6 @@ fn symbol_kind(kind: &str) -> Option<&'static str> {
         "struct_item" | "type_declaration" => Some("struct"),
         "enum_item" | "enum_declaration" => Some("enum"),
         "trait_item" => Some("trait"),
-        "impl_item" => Some("impl"),
         "mod_item" => Some("module"),
         "constructor_declaration" | "compact_constructor_declaration" => Some("constructor"),
         "interface_declaration" => Some("interface"),
@@ -855,6 +869,20 @@ fn symbol_kind(kind: &str) -> Option<&'static str> {
         "lexical_declaration" | "var_declaration" | "const_declaration" => Some("variable"),
         _ => None,
     }
+}
+
+fn is_enclosing_symbol_node(kind: &str) -> bool {
+    matches!(
+        kind,
+        "function_item"
+            | "function_definition"
+            | "function_declaration"
+            | "method_definition"
+            | "method_declaration"
+            | "method_elem"
+            | "constructor_declaration"
+            | "compact_constructor_declaration"
+    )
 }
 
 fn candidate_kind_for_symbol(node: Node, language: &str) -> &'static str {
@@ -903,17 +931,14 @@ fn first_named_child(node: Node) -> Option<Node> {
 
 fn candidate_name_node(node: Node) -> Option<Node> {
     node.child_by_field_name("name")
-        .or_else(|| named_descendant_with_field(node, "name"))
+        .or_else(|| child_name_node(node))
         .or_else(|| first_named_child(node))
 }
 
-fn named_descendant_with_field<'a>(node: Node<'a>, field_name: &str) -> Option<Node<'a>> {
+fn child_name_node(node: Node) -> Option<Node> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if let Some(found) = child.child_by_field_name(field_name) {
-            return Some(found);
-        }
-        if let Some(found) = named_descendant_with_field(child, field_name) {
+        if let Some(found) = child.child_by_field_name("name") {
             return Some(found);
         }
     }
@@ -1225,6 +1250,47 @@ mod tests {
                 && candidate.enclosing_symbol.as_deref() == Some("Alpha")
                 && candidate.body_hash.is_some()
         }));
+    }
+
+    #[test]
+    fn rust_impl_blocks_do_not_emit_fake_defs_or_sibling_enclosing_symbols() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            "struct Widget;\n\nimpl Widget {\n    fn run(&self) {\n        self.helper();\n    }\n\n    fn helper(&self) {}\n}\n",
+        )
+        .unwrap();
+        let workspace = Workspace::discover(dir.path()).unwrap();
+        let mut warnings = Vec::new();
+
+        let candidates = collect_candidates(&workspace, &scan_all(), &mut warnings).unwrap();
+
+        assert!(warnings.is_empty());
+        assert!(!candidates.iter().any(|candidate| {
+            candidate.kind == "definition"
+                && candidate.symbol_kind.as_deref() == Some("impl")
+                && candidate.name.as_deref() == Some("run")
+        }));
+
+        let (defs_json, defs_warnings) = defs(&workspace, &scan_all(), "run").unwrap();
+        assert!(defs_warnings.is_empty());
+        let defs = defs_json.as_array().unwrap();
+        assert_eq!(defs.len(), 1, "{defs_json}");
+        assert_eq!(defs[0]["name"], "run");
+        assert_eq!(defs[0]["kind"], "function");
+        assert_eq!(defs[0]["candidateKind"], "method");
+
+        let (callers_json, callers_warnings) = callers(&workspace, &scan_all(), "helper").unwrap();
+        assert!(callers_warnings.is_empty());
+        let helper_calls = callers_json.as_array().unwrap();
+        assert_eq!(helper_calls.len(), 1, "{callers_json}");
+        assert_eq!(helper_calls[0]["enclosingSymbol"], "run");
     }
 
     #[test]

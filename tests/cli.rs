@@ -2727,6 +2727,35 @@ fn parser_fallback_outputs_candidate_layer_without_precise_facts() {
 }
 
 #[test]
+fn parser_candidate_budget_is_public_page_truncation() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    let mut source = String::new();
+    for idx in 0..1005 {
+        source.push_str(&format!("fn needle_{idx}() {{}}\n"));
+    }
+    fs::write(dir.path().join("src/lib.rs"), source).unwrap();
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "json", "--limit", "0", "symbols", "needle_"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["results"].as_array().unwrap().len(), 1000);
+    let caveat = caveat_with_code(&json, "tree_sitter_candidate_budget_exceeded");
+    assert_eq!(caveat["severity"], "warning");
+    assert_eq!(caveat["category"], "risk");
+    assert_eq!(json["page"]["truncated"], true);
+    assert!(json["page"]["nextCursor"].is_null());
+}
+
+#[test]
 fn index_verify_detects_stale_files() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "one\n").unwrap();
