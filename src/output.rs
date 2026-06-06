@@ -642,6 +642,9 @@ fn results_contain_truncation(value: &Value) -> bool {
 }
 
 fn public_page_truncated(value: &Value) -> bool {
+    if parser_candidate_budget_exceeded(value) {
+        return true;
+    }
     if public_output_truncated(value) {
         return true;
     }
@@ -664,6 +667,18 @@ fn public_output_truncated(value: &Value) -> bool {
     value.get("truncated").and_then(Value::as_bool) == Some(true)
         && !has_next_cursor
         && !guard_triggered
+}
+
+fn parser_candidate_budget_exceeded(value: &Value) -> bool {
+    value
+        .get("warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|warning| {
+            warning.get("code").and_then(Value::as_str)
+                == Some("tree_sitter_candidate_budget_exceeded")
+        })
 }
 
 fn broad_guard_public_message(value: &Value) -> String {
