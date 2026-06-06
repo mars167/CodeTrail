@@ -168,6 +168,103 @@ pub struct AliasEdge {
     pub proof: ProviderProof,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum SemanticFact {
+    Occurrence(SemanticOccurrence),
+    Call(SemanticCallEdge),
+    Alias(AliasEdge),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayeredFactTables {
+    pub precise_provider_facts: Vec<SemanticFact>,
+    pub parser_facts: Vec<SemanticFact>,
+    pub config_facts: Vec<SemanticFact>,
+    pub source_facts: Vec<SemanticFact>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayeredFactStore {
+    tables: LayeredFactTables,
+}
+
+impl SemanticFact {
+    pub fn proof(&self) -> &ProviderProof {
+        match self {
+            SemanticFact::Occurrence(fact) => &fact.proof,
+            SemanticFact::Call(fact) => &fact.proof,
+            SemanticFact::Alias(fact) => &fact.proof,
+        }
+    }
+
+    pub fn layer(&self) -> FactLayer {
+        self.proof().reliability.layer()
+    }
+}
+
+impl LayeredFactTables {
+    pub fn table(&self, layer: FactLayer) -> &[SemanticFact] {
+        match layer {
+            FactLayer::PreciseProvider => &self.precise_provider_facts,
+            FactLayer::Parser => &self.parser_facts,
+            FactLayer::Config => &self.config_facts,
+            FactLayer::Source => &self.source_facts,
+        }
+    }
+
+    pub fn precise_occurrences(&self) -> Vec<SemanticOccurrence> {
+        self.precise_provider_facts
+            .iter()
+            .filter_map(|fact| match fact {
+                SemanticFact::Occurrence(occurrence) => Some(occurrence.clone()),
+                SemanticFact::Call(_) | SemanticFact::Alias(_) => None,
+            })
+            .collect()
+    }
+}
+
+impl LayeredFactStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn from_facts(facts: impl IntoIterator<Item = SemanticFact>) -> Self {
+        let mut store = Self::new();
+        store.extend(facts);
+        store
+    }
+
+    pub fn insert(&mut self, fact: SemanticFact) {
+        match fact.layer() {
+            FactLayer::PreciseProvider => self.tables.precise_provider_facts.push(fact),
+            FactLayer::Parser => self.tables.parser_facts.push(fact),
+            FactLayer::Config => self.tables.config_facts.push(fact),
+            FactLayer::Source => self.tables.source_facts.push(fact),
+        }
+    }
+
+    pub fn extend(&mut self, facts: impl IntoIterator<Item = SemanticFact>) {
+        for fact in facts {
+            self.insert(fact);
+        }
+    }
+
+    pub fn tables(&self) -> &LayeredFactTables {
+        &self.tables
+    }
+
+    pub fn into_tables(self) -> LayeredFactTables {
+        self.tables
+    }
+}
+
+pub fn split_facts_by_layer(facts: impl IntoIterator<Item = SemanticFact>) -> LayeredFactTables {
+    LayeredFactStore::from_facts(facts).into_tables()
+}
+
 impl FactReliability {
     pub fn is_provider_confirmed(&self) -> bool {
         matches!(self, FactReliability::ProviderConfirmed)

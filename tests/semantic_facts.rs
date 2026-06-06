@@ -3,9 +3,10 @@ use codetrail::{
     scip,
     scip_proto::proto,
     semantic_facts::{
-        write_scip_index, AliasEdge, FactReliability, InternalRange, OccurrenceRole, ProviderProof,
-        ProviderRange, RangeEncoding, SemanticCallEdge, SemanticOccurrence, SemanticSymbol,
-        SymbolIdentity, SymbolKind, SymbolPackage,
+        write_scip_index, AliasEdge, FactLayer, FactReliability, InternalRange, LayeredFactStore,
+        LayeredFactTables, OccurrenceRole, ProviderProof, ProviderRange, RangeEncoding,
+        SemanticCallEdge, SemanticFact, SemanticOccurrence, SemanticSymbol, SymbolIdentity,
+        SymbolKind, SymbolPackage,
     },
     semantic_provider::SemanticProviderVersion,
 };
@@ -265,4 +266,89 @@ fn alias_and_call_edges_carry_provider_proof_without_becoming_scip_occurrences()
     assert!(call.proof.reliability.is_provider_confirmed());
     assert!(alias_edge.proof.reliability.is_provider_confirmed());
     assert_eq!(alias_edge.import_path.as_deref(), Some("crate::parse"));
+}
+
+#[test]
+fn layered_fact_store_keeps_precise_parser_config_and_source_buckets_separate() {
+    let precise = SemanticOccurrence {
+        file_path: "src/lib.rs".to_string(),
+        range: InternalRange {
+            start_line: 0,
+            start_column: 3,
+            end_line: 0,
+            end_column: 8,
+        },
+        role: OccurrenceRole::Definition,
+        symbol: symbol(SymbolKind::Function, &["parse"]),
+        proof: proof(FactReliability::ProviderConfirmed),
+    };
+    let parser = SemanticOccurrence {
+        file_path: "src/lib.rs".to_string(),
+        range: InternalRange {
+            start_line: 2,
+            start_column: 4,
+            end_line: 2,
+            end_column: 12,
+        },
+        role: OccurrenceRole::Reference,
+        symbol: symbol(SymbolKind::Function, &["fallback_parse"]),
+        proof: proof(FactReliability::ParserFallback),
+    };
+    let config = AliasEdge {
+        alias: symbol(SymbolKind::ImportAlias, &["parse_alias"]),
+        target: symbol(SymbolKind::Function, &["parse"]),
+        import_path: Some("config:aliases.parse_alias".to_string()),
+        proof: proof(FactReliability::ConfigFact),
+    };
+    let source = SemanticCallEdge {
+        caller: symbol(SymbolKind::Function, &["main"]),
+        callee: symbol(SymbolKind::Function, &["parse"]),
+        call_site: InternalRange {
+            start_line: 9,
+            start_column: 8,
+            end_line: 9,
+            end_column: 13,
+        },
+        proof: proof(FactReliability::SourceFact),
+    };
+
+    let store = LayeredFactStore::from_facts([
+        SemanticFact::Occurrence(precise.clone()),
+        SemanticFact::Occurrence(parser.clone()),
+        SemanticFact::Alias(config.clone()),
+        SemanticFact::Call(source.clone()),
+    ]);
+    let tables = store.tables();
+
+    assert_eq!(tables.precise_provider_facts.len(), 1);
+    assert_eq!(tables.parser_facts.len(), 1);
+    assert_eq!(tables.config_facts.len(), 1);
+    assert_eq!(tables.source_facts.len(), 1);
+    assert_eq!(
+        tables.table(FactLayer::PreciseProvider),
+        &[SemanticFact::Occurrence(precise.clone())]
+    );
+    assert_eq!(
+        tables.table(FactLayer::Parser),
+        &[SemanticFact::Occurrence(parser.clone())]
+    );
+    assert_eq!(
+        tables.table(FactLayer::Config),
+        &[SemanticFact::Alias(config)]
+    );
+    assert_eq!(
+        tables.table(FactLayer::Source),
+        &[SemanticFact::Call(source)]
+    );
+
+    let encoded = serde_json::to_string(tables).unwrap();
+    let decoded: LayeredFactTables = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(decoded.table(FactLayer::Parser).len(), 1);
+    assert_eq!(decoded.table(FactLayer::Config).len(), 1);
+    assert_eq!(decoded.table(FactLayer::Source).len(), 1);
+
+    let precise_occurrences = tables.precise_occurrences();
+    let index = write_scip_index(&precise_occurrences, "file:///workspace").unwrap();
+    assert_eq!(index.documents[0].occurrences.len(), 1);
+    assert_eq!(index.documents[0].symbols[0].display_name, "parse");
 }
