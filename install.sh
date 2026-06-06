@@ -177,12 +177,47 @@ cp "$extract_dir/codetrail" "$install_dir/codetrail"
 chmod +x "$install_dir/codetrail"
 
 echo "Installed codetrail to ${install_dir}/codetrail"
-if ! command -v codetrail >/dev/null 2>&1; then
-  case ":$PATH:" in
-    *":$install_dir:"*) ;;
-    *)
-      echo "Add this directory to PATH if codetrail is not found by your shell:"
-      echo "  export PATH=\"${install_dir}:\$PATH\""
-      ;;
-  esac
+
+# Refresh shell command hash so a newly installed binary is visible immediately.
+hash -r 2>/dev/null || true
+
+if command -v codetrail >/dev/null 2>&1; then
+  echo "codetrail is ready to use."
+  exit 0
 fi
+
+install_dir_in_path=false
+case ":$PATH:" in
+  *":$install_dir:"*) install_dir_in_path=true ;;
+esac
+
+if $install_dir_in_path; then
+  echo "Run 'hash -r' or open a new terminal for codetrail to be available."
+  exit 0
+fi
+
+shell_name="$(basename "${SHELL:-/bin/sh}")"
+rc_file=""
+case "$shell_name" in
+  zsh)  rc_file="${ZDOTDIR:-$HOME}/.zshrc" ;;
+  bash)
+    if [ -f "$HOME/.bash_profile" ]; then
+      rc_file="$HOME/.bash_profile"
+    elif [ -f "$HOME/.bashrc" ]; then
+      rc_file="$HOME/.bashrc"
+    else
+      rc_file="$HOME/.bashrc"
+    fi
+    ;;
+  *)    rc_file="$HOME/.profile" ;;
+esac
+
+if grep -qF "export PATH=\"$install_dir" "$rc_file" 2>/dev/null; then
+  echo "PATH entry already exists in $rc_file."
+else
+  printf '\n# Added by codetrail installer\n' >> "$rc_file"
+  printf 'export PATH="%s:$PATH"\n' "$install_dir" >> "$rc_file"
+  echo "Added $install_dir to PATH in $rc_file"
+fi
+
+echo "Run 'source $rc_file' or open a new terminal to use codetrail."
