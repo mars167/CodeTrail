@@ -5,8 +5,8 @@ use codetrail::{
     semantic_facts::{
         write_scip_index, AliasEdge, FactLayer, FactReliability, InternalRange, LayeredFactStore,
         LayeredFactTables, OccurrenceRole, ProviderProof, ProviderRange, RangeEncoding,
-        SemanticCallEdge, SemanticFact, SemanticOccurrence, SemanticSymbol, SymbolIdentity,
-        SymbolKind, SymbolPackage,
+        SemanticCallEdge, SemanticFact, SemanticOccurrence, SemanticSymbol, SymbolDescriptor,
+        SymbolDescriptorKind, SymbolIdentity, SymbolKind, SymbolPackage,
     },
     semantic_provider::SemanticProviderVersion,
 };
@@ -39,12 +39,32 @@ fn package() -> SymbolPackage {
 }
 
 fn symbol(kind: SymbolKind, qualified_name: &[&str]) -> SemanticSymbol {
+    let mut descriptors = Vec::new();
+    for (index, name) in qualified_name.iter().enumerate() {
+        let is_leaf = index + 1 == qualified_name.len();
+        descriptors.push(SymbolDescriptor {
+            name: name.to_string(),
+            kind: if is_leaf {
+                SymbolDescriptorKind::from_symbol_kind(&kind)
+            } else {
+                SymbolDescriptorKind::Namespace
+            },
+        });
+    }
+    symbol_with_descriptors(kind, descriptors)
+}
+
+fn symbol_with_descriptors(kind: SymbolKind, descriptors: Vec<SymbolDescriptor>) -> SemanticSymbol {
+    let display_name = descriptors
+        .last()
+        .map(|descriptor| descriptor.name.clone())
+        .unwrap_or_default();
     SemanticSymbol {
         identity: SymbolIdentity {
             language: ProjectLanguage::Rust,
             project_id: "rust:core".to_string(),
             package: package(),
-            qualified_name: qualified_name.iter().map(|part| part.to_string()).collect(),
+            descriptors,
             signature: None,
             disambiguator: None,
             provider_version: provider(),
@@ -52,8 +72,26 @@ fn symbol(kind: SymbolKind, qualified_name: &[&str]) -> SemanticSymbol {
             local_id: None,
         },
         kind,
-        display_name: qualified_name.last().unwrap_or(&"").to_string(),
+        display_name,
         documentation: Vec::new(),
+    }
+}
+
+fn occurrence_for(path: &str, language: ProjectLanguage, display_name: &str) -> SemanticOccurrence {
+    let mut symbol = symbol(SymbolKind::Function, &[display_name]);
+    symbol.identity.language = language;
+    symbol.display_name = display_name.to_string();
+    SemanticOccurrence {
+        file_path: path.to_string(),
+        range: InternalRange {
+            start_line: 0,
+            start_column: 0,
+            end_line: 0,
+            end_column: display_name.len() as u32,
+        },
+        role: OccurrenceRole::Definition,
+        symbol,
+        proof: proof(FactReliability::ProviderConfirmed),
     }
 }
 
@@ -128,6 +166,59 @@ fn ambiguous_local_symbol_cannot_be_used_as_precise_occurrence() {
     let ambiguous = symbol(SymbolKind::LocalVariable, &["parse", "value"]);
 
     assert!(ambiguous.scip_symbol().is_err());
+}
+
+#[test]
+fn symbol_identity_preserves_container_descriptor_kind_and_rejects_empty_components() {
+    let module_parent = symbol_with_descriptors(
+        SymbolKind::Function,
+        vec![
+            SymbolDescriptor {
+                name: "Foo".to_string(),
+                kind: SymbolDescriptorKind::Namespace,
+            },
+            SymbolDescriptor {
+                name: "bar".to_string(),
+                kind: SymbolDescriptorKind::Method,
+            },
+        ],
+    );
+    let type_parent = symbol_with_descriptors(
+        SymbolKind::Function,
+        vec![
+            SymbolDescriptor {
+                name: "Foo".to_string(),
+                kind: SymbolDescriptorKind::Type,
+            },
+            SymbolDescriptor {
+                name: "bar".to_string(),
+                kind: SymbolDescriptorKind::Method,
+            },
+        ],
+    );
+
+    let module_symbol = module_parent.scip_symbol().unwrap();
+    let type_symbol = type_parent.scip_symbol().unwrap();
+    assert_ne!(module_symbol, type_symbol);
+    assert!(module_symbol.contains("Foo/bar"));
+    assert!(type_symbol.contains("Foo#bar"));
+
+    let empty_descriptor = symbol_with_descriptors(
+        SymbolKind::Function,
+        vec![SymbolDescriptor {
+            name: "".to_string(),
+            kind: SymbolDescriptorKind::Method,
+        }],
+    );
+    assert!(empty_descriptor.scip_symbol().is_err());
+
+    let mut empty_local = symbol(SymbolKind::LocalVariable, &["value"]);
+    empty_local.identity.local_id = Some("".to_string());
+    assert!(empty_local.scip_symbol().is_err());
+
+    let mut empty_disambiguator = symbol(SymbolKind::Function, &["parse"]);
+    empty_disambiguator.identity.disambiguator = Some("".to_string());
+    assert!(empty_disambiguator.scip_symbol().is_err());
 }
 
 #[test]
@@ -240,6 +331,45 @@ fn scip_writer_round_trips_only_provider_confirmed_precise_occurrences() {
 }
 
 #[test]
+fn scip_writer_rejects_invalid_relative_paths_and_mixed_language_documents() {
+    for path in [
+        "",
+        "/abs.rs",
+        "src/../lib.rs",
+        "src\\lib.rs",
+        "src//lib.rs",
+        "./src/lib.rs",
+        "src/./lib.rs",
+    ] {
+        let err = write_scip_index(
+            &[occurrence_for(path, ProjectLanguage::Rust, "parse")],
+            "file:///workspace",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("relative_path"),
+            "unexpected error for {path:?}: {err}"
+        );
+    }
+
+    let mixed_language = vec![
+        occurrence_for("src/lib.rs", ProjectLanguage::Rust, "parse"),
+        occurrence_for("src/lib.rs", ProjectLanguage::TypeScript, "parseTs"),
+    ];
+    let err = write_scip_index(&mixed_language, "file:///workspace").unwrap_err();
+    assert!(err.to_string().contains("mixed languages"));
+
+    let same_language = vec![
+        occurrence_for("src/lib.rs", ProjectLanguage::Rust, "parse"),
+        occurrence_for("src/lib.rs", ProjectLanguage::Rust, "format"),
+    ];
+    let index = write_scip_index(&same_language, "file:///workspace").unwrap();
+    assert_eq!(index.documents.len(), 1);
+    assert_eq!(index.documents[0].relative_path, "src/lib.rs");
+    assert_eq!(index.documents[0].occurrences.len(), 2);
+}
+
+#[test]
 fn alias_and_call_edges_carry_provider_proof_without_becoming_scip_occurrences() {
     let caller = symbol(SymbolKind::Function, &["main"]);
     let callee = symbol(SymbolKind::Function, &["parse"]);
@@ -346,6 +476,12 @@ fn layered_fact_store_keeps_precise_parser_config_and_source_buckets_separate() 
     assert_eq!(decoded.table(FactLayer::Parser).len(), 1);
     assert_eq!(decoded.table(FactLayer::Config).len(), 1);
     assert_eq!(decoded.table(FactLayer::Source).len(), 1);
+
+    let mut polluted = LayeredFactTables::default();
+    polluted
+        .precise_provider_facts
+        .push(SemanticFact::Occurrence(parser));
+    assert!(polluted.precise_occurrences().is_empty());
 
     let precise_occurrences = tables.precise_occurrences();
     let index = write_scip_index(&precise_occurrences, "file:///workspace").unwrap();

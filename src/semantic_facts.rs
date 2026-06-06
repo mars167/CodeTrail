@@ -5,7 +5,7 @@
 //! represented as facts, but `write_scip_index` only serializes provider
 //! confirmed occurrences.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 
 use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
@@ -54,12 +54,58 @@ pub enum SymbolKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SymbolDescriptorKind {
+    Namespace,
+    Type,
+    Term,
+    Method,
+    TypeParameter,
+    Parameter,
+    Meta,
+    Macro,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SymbolDescriptor {
+    pub name: String,
+    pub kind: SymbolDescriptorKind,
+}
+
+impl SymbolDescriptorKind {
+    pub fn from_symbol_kind(kind: &SymbolKind) -> Self {
+        match kind {
+            SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor => {
+                SymbolDescriptorKind::Method
+            }
+            SymbolKind::Class
+            | SymbolKind::Struct
+            | SymbolKind::Interface
+            | SymbolKind::Enum
+            | SymbolKind::Trait
+            | SymbolKind::TypeAlias => SymbolDescriptorKind::Type,
+            SymbolKind::Module | SymbolKind::Namespace => SymbolDescriptorKind::Namespace,
+            SymbolKind::Parameter => SymbolDescriptorKind::Parameter,
+            SymbolKind::TypeParameter => SymbolDescriptorKind::TypeParameter,
+            SymbolKind::ImportAlias => SymbolDescriptorKind::Meta,
+            SymbolKind::Field
+            | SymbolKind::Variable
+            | SymbolKind::LocalVariable
+            | SymbolKind::Constant
+            | SymbolKind::Property
+            | SymbolKind::Unknown => SymbolDescriptorKind::Term,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SymbolIdentity {
     pub language: ProjectLanguage,
     pub project_id: String,
     pub package: SymbolPackage,
-    pub qualified_name: Vec<String>,
+    pub descriptors: Vec<SymbolDescriptor>,
     pub signature: Option<String>,
     pub disambiguator: Option<String>,
     pub provider_version: SemanticProviderVersion,
@@ -219,8 +265,13 @@ impl LayeredFactTables {
         self.precise_provider_facts
             .iter()
             .filter_map(|fact| match fact {
-                SemanticFact::Occurrence(occurrence) => Some(occurrence.clone()),
+                SemanticFact::Occurrence(occurrence)
+                    if occurrence.proof.reliability.is_provider_confirmed() =>
+                {
+                    Some(occurrence.clone())
+                }
                 SemanticFact::Call(_) | SemanticFact::Alias(_) => None,
+                SemanticFact::Occurrence(_) => None,
             })
             .collect()
     }
@@ -301,9 +352,8 @@ impl SemanticSymbol {
             "{}/",
             scip_identifier(&format!("project:{}", identity.project_id))
         ));
-        for (index, part) in identity.qualified_name.iter().enumerate() {
-            let is_leaf = index + 1 == identity.qualified_name.len();
-            descriptors.push(self.descriptor(part, is_leaf));
+        for descriptor in &identity.descriptors {
+            descriptors.push(descriptor.scip_descriptor(&self.identity));
         }
         if let Some(local_id) = &identity.local_id {
             descriptors.push(format!(
@@ -344,8 +394,20 @@ impl SemanticSymbol {
         if identity.project_id.trim().is_empty() {
             bail!("semantic symbol is missing project identity");
         }
-        if identity.qualified_name.is_empty() {
+        if identity.descriptors.is_empty() {
             bail!("semantic symbol is missing qualified name");
+        }
+        for descriptor in &identity.descriptors {
+            if descriptor.name.trim().is_empty() {
+                bail!("semantic symbol contains an empty descriptor name");
+            }
+        }
+        if matches!(identity.local_id.as_deref(), Some(local_id) if local_id.trim().is_empty()) {
+            bail!("semantic symbol contains an empty local_id");
+        }
+        if matches!(identity.disambiguator.as_deref(), Some(disambiguator) if disambiguator.trim().is_empty())
+        {
+            bail!("semantic symbol contains an empty disambiguator");
         }
         if identity.provider_version.name.trim().is_empty()
             || identity.provider_version.version.trim().is_empty()
@@ -360,34 +422,20 @@ impl SemanticSymbol {
         }
         Ok(())
     }
+}
 
-    fn descriptor(&self, name: &str, is_leaf: bool) -> String {
-        let escaped_name = scip_identifier(name);
-        if is_leaf {
-            match self.kind {
-                SymbolKind::Function => method_descriptor(&escaped_name, &self.identity),
-                SymbolKind::Method | SymbolKind::Constructor => {
-                    method_descriptor(&escaped_name, &self.identity)
-                }
-                SymbolKind::Class
-                | SymbolKind::Struct
-                | SymbolKind::Interface
-                | SymbolKind::Enum
-                | SymbolKind::Trait
-                | SymbolKind::TypeAlias => format!("{}#", escaped_name),
-                SymbolKind::Module | SymbolKind::Namespace => format!("{}/", escaped_name),
-                SymbolKind::Parameter => format!("({})", escaped_name),
-                SymbolKind::TypeParameter => format!("[{}]", escaped_name),
-                SymbolKind::ImportAlias => format!("{}:", escaped_name),
-                SymbolKind::Field
-                | SymbolKind::Variable
-                | SymbolKind::LocalVariable
-                | SymbolKind::Constant
-                | SymbolKind::Property
-                | SymbolKind::Unknown => format!("{}.", escaped_name),
-            }
-        } else {
-            format!("{}/", escaped_name)
+impl SymbolDescriptor {
+    fn scip_descriptor(&self, identity: &SymbolIdentity) -> String {
+        let escaped_name = scip_identifier(&self.name);
+        match self.kind {
+            SymbolDescriptorKind::Namespace => format!("{}/", escaped_name),
+            SymbolDescriptorKind::Type => format!("{}#", escaped_name),
+            SymbolDescriptorKind::Term => format!("{}.", escaped_name),
+            SymbolDescriptorKind::Method => method_descriptor(&escaped_name, identity),
+            SymbolDescriptorKind::TypeParameter => format!("[{}]", escaped_name),
+            SymbolDescriptorKind::Parameter => format!("({})", escaped_name),
+            SymbolDescriptorKind::Meta => format!("{}:", escaped_name),
+            SymbolDescriptorKind::Macro => format!("{}!", escaped_name),
         }
     }
 }
@@ -445,22 +493,37 @@ pub fn write_scip_index(
     occurrences: &[SemanticOccurrence],
     project_root: &str,
 ) -> Result<proto::Index> {
-    let mut documents: BTreeMap<(String, String), Vec<&SemanticOccurrence>> = BTreeMap::new();
+    let mut documents: BTreeMap<String, (String, Vec<&SemanticOccurrence>)> = BTreeMap::new();
     for occurrence in occurrences {
         if !occurrence.proof.reliability.is_provider_confirmed() {
             continue;
         }
         occurrence.range.validate()?;
+        let path = validate_scip_relative_path(&occurrence.file_path)?;
         let language = occurrence.symbol.identity.language.to_string();
-        documents
-            .entry((occurrence.file_path.clone(), language))
-            .or_default()
-            .push(occurrence);
+        match documents.entry(path) {
+            Entry::Vacant(entry) => {
+                entry.insert((language, vec![occurrence]));
+            }
+            Entry::Occupied(mut entry) => {
+                let relative_path = entry.key().clone();
+                let (existing_language, facts) = entry.get_mut();
+                if existing_language != &language {
+                    bail!(
+                        "SCIP document relative_path {} has mixed languages: {} and {}",
+                        relative_path,
+                        existing_language,
+                        language
+                    );
+                }
+                facts.push(occurrence);
+            }
+        }
     }
 
     let documents = documents
         .into_iter()
-        .map(|((relative_path, language), mut facts)| {
+        .map(|(relative_path, (language, mut facts))| {
             facts.sort_by_key(|fact| {
                 (
                     fact.range.start_line,
@@ -549,6 +612,30 @@ fn symbol_roles(fact: &SemanticOccurrence) -> i32 {
         roles |= ROLE_GENERATED;
     }
     roles
+}
+
+fn validate_scip_relative_path(path: &str) -> Result<String> {
+    if path.is_empty() {
+        bail!("SCIP Document.relative_path must be non-empty");
+    }
+    if path.starts_with('/') || path.as_bytes().get(1) == Some(&b':') {
+        bail!("SCIP Document.relative_path must be relative: {}", path);
+    }
+    if path.contains('\\') {
+        bail!(
+            "SCIP Document.relative_path must use '/' separators: {}",
+            path
+        );
+    }
+    for component in path.split('/') {
+        if component.is_empty() || component == "." || component == ".." {
+            bail!(
+                "SCIP Document.relative_path must be canonical without empty, '.', or '..' components: {}",
+                path
+            );
+        }
+    }
+    Ok(path.to_string())
 }
 
 fn symbol_kind_to_scip(kind: &SymbolKind) -> proto::symbol_information::Kind {
