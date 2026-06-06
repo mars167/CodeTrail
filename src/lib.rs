@@ -5,6 +5,7 @@ pub mod completions;
 pub mod config_facts;
 pub mod generation_manifest;
 pub mod index;
+pub mod java_provider;
 pub mod lancedb_store;
 pub mod output;
 pub mod project_graph;
