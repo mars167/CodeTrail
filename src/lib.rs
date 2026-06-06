@@ -1,3 +1,4 @@
+pub mod caveat_contract;
 pub mod cli;
 pub mod commands;
 pub mod completions;
