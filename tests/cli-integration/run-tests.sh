@@ -129,7 +129,7 @@ for repo in go-gin rust-ripgrep java-junit4 ts-express; do
 
     # Search
     run_test "${repo}" "find"       "${lang}" ""             find "${srch}"
-    run_test "${repo}" "find_json"  "${lang}" ""             find --output json "${srch}"
+    run_test "${repo}" "find_json"  "${lang}" ""             find "${srch}"
     run_test "${repo}" "grep"       "${lang}" ""             grep "${grep_pat}"
     run_test "${repo}" "files"      "${lang}" ""             files "${file:0:4}"
     run_test "${repo}" "glob"       "${lang}" ""             glob "${glob}"
