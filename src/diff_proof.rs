@@ -7,7 +7,6 @@
 //! Diff evidence must align with query freshness proof: a diff returned for
 //! snapshot `S1` must not be interpreted against query evidence from `S2`.
 
-
 use serde::{Deserialize, Serialize};
 
 use crate::generation_manifest::FreshnessGate;

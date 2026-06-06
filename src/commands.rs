@@ -622,7 +622,10 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 json!([index::clean(&workspace)?]),
                 Vec::new(),
             ),
-            IndexCommand::GenerateScip { lang, output: out_path } => {
+            IndexCommand::GenerateScip {
+                lang,
+                output: out_path,
+            } => {
                 if lang != "go" {
                     anyhow::bail!("SCIP generation is currently only supported for Go (--lang go)");
                 }

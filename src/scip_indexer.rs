@@ -24,17 +24,19 @@ pub fn generate_go_scip(project_root: &Path, output_path: &Path) -> Result<()> {
         ])
         .current_dir(&indexer_dir)
         .output()
-        .with_context(|| format!("failed to run Go SCIP indexer for {}", project_root.display()))?;
+        .with_context(|| {
+            format!(
+                "failed to run Go SCIP indexer for {}",
+                project_root.display()
+            )
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!("Go SCIP indexer failed: {stderr}");
     }
 
-    eprintln!(
-        "{}",
-        String::from_utf8_lossy(&output.stdout).trim()
-    );
+    eprintln!("{}", String::from_utf8_lossy(&output.stdout).trim());
     Ok(())
 }
 
@@ -44,13 +46,11 @@ pub fn generate_and_import(project_root: &Path) -> Result<()> {
     generate_go_scip(project_root, &tmp)?;
 
     // Import using the existing command
-    let status = Command::new(
-        std::env::current_exe().unwrap_or_else(|_| "codetrail".into()),
-    )
-    .args(["index", "import-scip", tmp.to_str().unwrap()])
-    .current_dir(project_root)
-    .status()
-    .with_context(|| "failed to import generated SCIP index")?;
+    let status = Command::new(std::env::current_exe().unwrap_or_else(|_| "codetrail".into()))
+        .args(["index", "import-scip", tmp.to_str().unwrap()])
+        .current_dir(project_root)
+        .status()
+        .with_context(|| "failed to import generated SCIP index")?;
 
     if !status.success() {
         anyhow::bail!("SCIP import failed");
