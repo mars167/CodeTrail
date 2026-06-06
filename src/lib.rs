@@ -1,3 +1,4 @@
+pub mod batch_query;
 pub mod caveat_contract;
 pub mod cli;
 pub mod commands;
