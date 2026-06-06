@@ -2672,6 +2672,61 @@ fn parser_commands_expose_symbols_and_call_candidates() {
 }
 
 #[test]
+fn parser_fallback_outputs_candidate_layer_without_precise_facts() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "fn alpha() {\n    beta();\n}\n\nfn beta() {}\n",
+    )
+    .unwrap();
+
+    let defs = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "beta"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let defs_json: Value = serde_json::from_slice(&defs).unwrap();
+    assert_eq!(defs_json["reliability"]["level"], "parser_fact");
+    assert_ne!(defs_json["reliability"]["level"], "precise_fact");
+    assert_eq!(defs_json["results"][0]["layer"], "parser_fact");
+    assert_eq!(defs_json["results"][0]["rootId"], "rust:.");
+    assert!(defs_json["results"][0]["bodyHash"]
+        .as_str()
+        .unwrap()
+        .starts_with("blake3:"));
+    assert!(defs_json["results"][0].get("symbol").is_none());
+
+    let callers = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["callers", "beta"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let callers_json: Value = serde_json::from_slice(&callers).unwrap();
+    assert_eq!(callers_json["reliability"]["level"], "inferred_candidate");
+    assert_ne!(callers_json["reliability"]["level"], "precise_fact");
+    assert_eq!(callers_json["results"][0]["layer"], "inferred_candidate");
+    assert_eq!(callers_json["results"][0]["enclosingSymbol"], "alpha");
+    assert!(callers_json["results"][0]["bodyHash"]
+        .as_str()
+        .unwrap()
+        .starts_with("blake3:"));
+}
+
+#[test]
 fn index_verify_detects_stale_files() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "one\n").unwrap();

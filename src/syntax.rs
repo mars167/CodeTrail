@@ -1,40 +1,245 @@
-use std::{fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+};
 
 use anyhow::Result;
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 use tree_sitter::{Language, Node, Parser};
 
 use crate::{
     index,
+    project_graph::discover_project_graph,
     search::{line_range_for_node, symbol_range, SymbolRange},
     workspace::{language_for_path, FileRecord, ScanOptions, Workspace},
 };
+
+pub(crate) const MAX_CANDIDATES_PER_FILE: usize = 2_000;
+pub(crate) const MAX_CANDIDATES_PER_ROOT: usize = 50_000;
+pub(crate) const MAX_CANDIDATES_PER_QUERY: usize = 1_000;
+
+const PARSER_PRODUCER: &str = "tree_sitter_parser";
+const CALL_PRODUCER: &str = "tree_sitter_call_heuristic";
+const PARSER_FACT: &str = "parser_fact";
+const INFERRED_CANDIDATE: &str = "inferred_candidate";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CandidateBudget {
+    pub max_per_file: usize,
+    pub max_per_root: usize,
+    pub max_per_query: usize,
+}
+
+impl Default for CandidateBudget {
+    fn default() -> Self {
+        Self {
+            max_per_file: MAX_CANDIDATES_PER_FILE,
+            max_per_root: MAX_CANDIDATES_PER_ROOT,
+            max_per_query: MAX_CANDIDATES_PER_QUERY,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LanguageCandidateMatrix {
+    pub language: &'static str,
+    pub extracted_kinds: &'static [&'static str],
+    pub known_blind_spots: &'static [&'static str],
+}
+
+pub(crate) fn candidate_language_matrix() -> &'static [LanguageCandidateMatrix] {
+    &LANGUAGE_CANDIDATE_MATRIX
+}
+
+static LANGUAGE_CANDIDATE_MATRIX: [LanguageCandidateMatrix; 6] = [
+    LanguageCandidateMatrix {
+        language: "go",
+        extracted_kinds: &["definition", "method", "type", "call", "import"],
+        known_blind_spots: &[
+            "interface dispatch",
+            "embedded method promotion",
+            "build tags and generated files",
+            "reflection and cgo",
+        ],
+    },
+    LanguageCandidateMatrix {
+        language: "rust",
+        extracted_kinds: &["definition", "method", "type", "call", "import"],
+        known_blind_spots: &[
+            "macro generated definitions and calls",
+            "trait method dispatch",
+            "cfg-gated code",
+            "re-export and glob import binding",
+        ],
+    },
+    LanguageCandidateMatrix {
+        language: "java",
+        extracted_kinds: &["definition", "method", "class", "type", "call", "import"],
+        known_blind_spots: &[
+            "overload resolution",
+            "interface dispatch and inheritance",
+            "reflection and framework injection",
+            "annotation generated code",
+        ],
+    },
+    LanguageCandidateMatrix {
+        language: "typescript",
+        extracted_kinds: &["definition", "method", "class", "type", "call", "import"],
+        known_blind_spots: &[
+            "dynamic property calls",
+            "type-only imports and path aliases",
+            "decorator and framework injection",
+            "JSX generated calls",
+        ],
+    },
+    LanguageCandidateMatrix {
+        language: "javascript",
+        extracted_kinds: &["definition", "method", "class", "call", "import"],
+        known_blind_spots: &[
+            "dynamic property calls",
+            "CommonJS aliasing",
+            "prototype mutation",
+            "framework injection",
+        ],
+    },
+    LanguageCandidateMatrix {
+        language: "python",
+        extracted_kinds: &["definition", "method", "class", "call", "import"],
+        known_blind_spots: &[
+            "dynamic attribute calls",
+            "decorator generated bindings",
+            "import alias rebinding",
+            "metaclass generated members",
+        ],
+    },
+];
 
 #[derive(Clone, Debug)]
 struct Symbol {
     path: String,
     language: String,
+    root_id: String,
     name: String,
     kind: String,
+    candidate_kind: String,
     range: Value,
     name_range: Value,
     body_range: Value,
+    enclosing_symbol: Option<String>,
+    body_hash: String,
+    file_hash: String,
     producer: String,
+    layer: String,
+    known_blind_spots: Vec<&'static str>,
     warning: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CallCandidate {
     pub path: String,
     pub language: String,
+    pub root_id: String,
     pub target: String,
     pub enclosing_symbol: Option<String>,
     pub range: Value,
+    pub body_hash: Option<String>,
     pub file_hash: String,
     pub producer: String,
+    pub layer: String,
+    pub known_blind_spots: Vec<&'static str>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TreeSitterCandidate {
+    pub path: String,
+    pub language: String,
+    pub root_id: String,
+    pub name: Option<String>,
+    pub target: Option<String>,
+    pub kind: String,
+    pub symbol_kind: Option<String>,
+    pub range: Value,
+    pub name_range: Option<Value>,
+    pub body_range: Option<Value>,
+    pub call_range: Option<Value>,
+    pub enclosing_symbol: Option<String>,
+    pub body_hash: Option<String>,
+    pub file_hash: String,
+    pub producer: String,
+    pub reliability: String,
+    pub layer: String,
+    pub known_blind_spots: Vec<&'static str>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CandidateReuseState {
+    pub path: String,
+    pub file_hash: String,
+    pub body_hashes: BTreeSet<String>,
+    pub call_body_hashes: BTreeSet<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CandidateReuseDecision {
+    pub file_unchanged: bool,
+    pub reuse_all_candidates: bool,
+    pub reusable_body_hashes: BTreeSet<String>,
+}
+
+#[allow(dead_code)]
+impl CandidateReuseState {
+    pub(crate) fn from_candidates(path: &str, candidates: &[TreeSitterCandidate]) -> Option<Self> {
+        let mut file_hash = None;
+        let mut body_hashes = BTreeSet::new();
+        let mut call_body_hashes = BTreeSet::new();
+        for candidate in candidates
+            .iter()
+            .filter(|candidate| candidate.path.as_str() == path)
+        {
+            file_hash.get_or_insert_with(|| candidate.file_hash.clone());
+            if let Some(body_hash) = &candidate.body_hash {
+                if candidate.kind == "call" {
+                    call_body_hashes.insert(body_hash.clone());
+                } else {
+                    body_hashes.insert(body_hash.clone());
+                }
+            }
+        }
+        Some(Self {
+            path: path.to_string(),
+            file_hash: file_hash?,
+            body_hashes,
+            call_body_hashes,
+        })
+    }
+
+    pub(crate) fn reuse_decision(&self, newer: &Self) -> CandidateReuseDecision {
+        let file_unchanged = self.file_hash == newer.file_hash;
+        let reusable_body_hashes = self
+            .body_hashes
+            .intersection(&newer.body_hashes)
+            .cloned()
+            .collect();
+        CandidateReuseDecision {
+            file_unchanged,
+            reuse_all_candidates: file_unchanged,
+            reusable_body_hashes,
+        }
+    }
+}
+
+#[allow(dead_code)]
+impl CandidateReuseDecision {
+    pub(crate) fn can_reuse_calls_for_body(&self, body_hash: &str) -> bool {
+        self.reuse_all_candidates || self.reusable_body_hashes.contains(body_hash)
+    }
 }
 
 pub fn symbols(
@@ -44,12 +249,17 @@ pub fn symbols(
 ) -> Result<(Value, Vec<String>)> {
     let mut results = Vec::new();
     let mut warnings = Vec::new();
+    let budget = CandidateBudget::default();
+    let (query_limit, budget_limited) = query_result_limit(opts, budget);
     for symbol in collect_symbols_prefiltered(workspace, opts, &mut warnings, Some(query))? {
         if symbol.name.contains(query) {
+            if results.len() >= query_limit {
+                if budget_limited {
+                    push_query_budget_warning(&mut warnings, "symbols", budget.max_per_query);
+                }
+                break;
+            }
             results.push(symbol_to_json(symbol));
-        }
-        if opts.limit > 0 && results.len() >= opts.limit {
-            break;
         }
     }
     Ok((Value::Array(results), warnings))
@@ -62,12 +272,17 @@ pub fn defs(
 ) -> Result<(Value, Vec<String>)> {
     let mut results = Vec::new();
     let mut warnings = Vec::new();
+    let budget = CandidateBudget::default();
+    let (query_limit, budget_limited) = query_result_limit(opts, budget);
     for symbol in collect_symbols_prefiltered(workspace, opts, &mut warnings, Some(identifier))? {
         if symbol.name == identifier {
+            if results.len() >= query_limit {
+                if budget_limited {
+                    push_query_budget_warning(&mut warnings, "defs", budget.max_per_query);
+                }
+                break;
+            }
             results.push(symbol_to_json(symbol));
-        }
-        if opts.limit > 0 && results.len() >= opts.limit {
-            break;
         }
     }
     Ok((Value::Array(results), warnings))
@@ -97,12 +312,17 @@ pub fn calls(
 ) -> Result<(Value, Vec<String>)> {
     let mut warnings = Vec::new();
     let mut results = Vec::new();
+    let budget = CandidateBudget::default();
+    let (query_limit, budget_limited) = query_result_limit(opts, budget);
     for call in collect_calls_prefiltered(workspace, opts, &mut warnings, Some(identifier))? {
         if call.enclosing_symbol.as_deref() == Some(identifier) {
+            if results.len() >= query_limit {
+                if budget_limited {
+                    push_query_budget_warning(&mut warnings, "calls", budget.max_per_query);
+                }
+                break;
+            }
             results.push(call_to_json(call));
-        }
-        if opts.limit > 0 && results.len() >= opts.limit {
-            break;
         }
     }
     Ok((Value::Array(results), warnings))
@@ -115,15 +335,37 @@ pub fn callers(
 ) -> Result<(Value, Vec<String>)> {
     let mut warnings = Vec::new();
     let mut results = Vec::new();
+    let budget = CandidateBudget::default();
+    let (query_limit, budget_limited) = query_result_limit(opts, budget);
     for call in collect_calls_prefiltered(workspace, opts, &mut warnings, Some(identifier))? {
         if last_identifier(&call.target) == identifier {
+            if results.len() >= query_limit {
+                if budget_limited {
+                    push_query_budget_warning(&mut warnings, "callers", budget.max_per_query);
+                }
+                break;
+            }
             results.push(call_to_json(call));
-        }
-        if opts.limit > 0 && results.len() >= opts.limit {
-            break;
         }
     }
     Ok((Value::Array(results), warnings))
+}
+
+fn query_result_limit(opts: &ScanOptions, budget: CandidateBudget) -> (usize, bool) {
+    if opts.limit > 0 && opts.limit <= budget.max_per_query {
+        (opts.limit, false)
+    } else {
+        (budget.max_per_query, true)
+    }
+}
+
+fn push_query_budget_warning(warnings: &mut Vec<String>, query: &str, max: usize) {
+    let message = format!(
+        "tree_sitter_candidate_budget_exceeded: query {query} exceeded max returned candidates ({max})"
+    );
+    if !warnings.iter().any(|warning| warning == &message) {
+        warnings.push(message);
+    }
 }
 
 fn collect_symbols_prefiltered(
@@ -132,24 +374,12 @@ fn collect_symbols_prefiltered(
     warnings: &mut Vec<String>,
     needle: Option<&str>,
 ) -> Result<Vec<Symbol>> {
-    let files = parser_candidate_files(workspace, opts, needle)?;
-    parse_symbol_files(workspace, &files, warnings)
-}
-
-fn parse_symbol_files(
-    workspace: &Workspace,
-    files: &[FileRecord],
-    warnings: &mut Vec<String>,
-) -> Result<Vec<Symbol>> {
-    let parsed = files
-        .par_iter()
-        .map(|file| parse_symbols_in_file(workspace, file))
-        .collect::<Result<Vec<_>>>()?;
-    let mut symbols = Vec::new();
-    for (mut file_symbols, mut file_warnings) in parsed {
-        symbols.append(&mut file_symbols);
-        warnings.append(&mut file_warnings);
-    }
+    let candidates = collect_candidates_prefiltered(workspace, opts, warnings, needle)?;
+    let mut symbols = candidates
+        .into_iter()
+        .filter(|candidate| is_symbol_candidate(&candidate))
+        .filter_map(symbol_from_candidate)
+        .collect::<Vec<_>>();
     symbols.sort_by(|a, b| a.path.cmp(&b.path).then(a.name.cmp(&b.name)));
     Ok(symbols)
 }
@@ -168,24 +398,12 @@ fn collect_calls_prefiltered(
     warnings: &mut Vec<String>,
     needle: Option<&str>,
 ) -> Result<Vec<CallCandidate>> {
-    let files = parser_candidate_files(workspace, opts, needle)?;
-    parse_call_files(workspace, &files, warnings)
-}
-
-fn parse_call_files(
-    workspace: &Workspace,
-    files: &[FileRecord],
-    warnings: &mut Vec<String>,
-) -> Result<Vec<CallCandidate>> {
-    let parsed = files
-        .par_iter()
-        .map(|file| parse_calls_in_file(workspace, file))
-        .collect::<Result<Vec<_>>>()?;
-    let mut calls = Vec::new();
-    for (mut file_calls, mut file_warnings) in parsed {
-        calls.append(&mut file_calls);
-        warnings.append(&mut file_warnings);
-    }
+    let candidates = collect_candidates_prefiltered(workspace, opts, warnings, needle)?;
+    let mut calls = candidates
+        .into_iter()
+        .filter(|candidate| candidate.kind == "call")
+        .filter_map(call_from_candidate)
+        .collect::<Vec<_>>();
     calls.sort_by(|a, b| {
         a.path
             .cmp(&b.path)
@@ -193,6 +411,78 @@ fn parse_call_files(
             .then(a.enclosing_symbol.cmp(&b.enclosing_symbol))
     });
     Ok(calls)
+}
+
+#[allow(dead_code)]
+pub(crate) fn collect_candidates(
+    workspace: &Workspace,
+    opts: &ScanOptions,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<TreeSitterCandidate>> {
+    collect_candidates_with_budget(workspace, opts, warnings, CandidateBudget::default())
+}
+
+#[allow(dead_code)]
+pub(crate) fn collect_candidates_with_budget(
+    workspace: &Workspace,
+    opts: &ScanOptions,
+    warnings: &mut Vec<String>,
+    budget: CandidateBudget,
+) -> Result<Vec<TreeSitterCandidate>> {
+    collect_candidates_prefiltered_with_budget(workspace, opts, warnings, None, budget)
+}
+
+fn collect_candidates_prefiltered(
+    workspace: &Workspace,
+    opts: &ScanOptions,
+    warnings: &mut Vec<String>,
+    needle: Option<&str>,
+) -> Result<Vec<TreeSitterCandidate>> {
+    collect_candidates_prefiltered_with_budget(
+        workspace,
+        opts,
+        warnings,
+        needle,
+        CandidateBudget::default(),
+    )
+}
+
+fn collect_candidates_prefiltered_with_budget(
+    workspace: &Workspace,
+    opts: &ScanOptions,
+    warnings: &mut Vec<String>,
+    needle: Option<&str>,
+    budget: CandidateBudget,
+) -> Result<Vec<TreeSitterCandidate>> {
+    let files = parser_candidate_files(workspace, opts, needle)?;
+    parse_candidate_files(workspace, &files, warnings, budget)
+}
+
+fn parse_candidate_files(
+    workspace: &Workspace,
+    files: &[FileRecord],
+    warnings: &mut Vec<String>,
+    budget: CandidateBudget,
+) -> Result<Vec<TreeSitterCandidate>> {
+    let root_ids = root_ids_by_path(workspace);
+    let parsed = files
+        .par_iter()
+        .map(|file| parse_candidates_in_file(workspace, file, budget, &root_ids))
+        .collect::<Result<Vec<_>>>()?;
+    let mut candidates = Vec::new();
+    for (mut file_candidates, mut file_warnings) in parsed {
+        candidates.append(&mut file_candidates);
+        warnings.append(&mut file_warnings);
+    }
+    candidates.sort_by(|a, b| {
+        a.root_id
+            .cmp(&b.root_id)
+            .then(a.path.cmp(&b.path))
+            .then(a.kind.cmp(&b.kind))
+            .then(a.name.cmp(&b.name))
+            .then(a.target.cmp(&b.target))
+    });
+    Ok(enforce_root_budget(candidates, warnings, budget))
 }
 
 fn parser_candidate_files(
@@ -212,43 +502,30 @@ fn parser_candidate_files(
     workspace.scan_files(&scan_opts)
 }
 
+#[cfg(test)]
 fn parse_symbols_in_file(
     workspace: &Workspace,
     file: &FileRecord,
 ) -> Result<(Vec<Symbol>, Vec<String>)> {
-    let path = workspace.abs_path(&file.path);
-    let Some(language) = parser_language(&path) else {
-        return Ok((Vec::new(), Vec::new()));
-    };
-    let language_name = language_for_path(&path);
-    let content = match fs::read_to_string(&path) {
-        Ok(content) => content,
-        Err(_) => return Ok((Vec::new(), Vec::new())),
-    };
-    let mut parser = Parser::new();
-    parser.set_language(&language)?;
-    let Some(tree) = parser.parse(&content, None) else {
-        return Ok((Vec::new(), vec![format!("parser failed for {}", file.path)]));
-    };
-    let mut warnings = Vec::new();
-    if tree.root_node().has_error() {
-        warnings.push(format!("partial parse with syntax errors: {}", file.path));
-    }
-    let mut symbols = Vec::new();
-    walk_symbols(
-        tree.root_node(),
-        &file.path,
-        language_name,
-        content.as_bytes(),
-        &mut symbols,
-    );
-    Ok((symbols, warnings))
+    let root_ids = root_ids_by_path(workspace);
+    let (candidates, warnings) =
+        parse_candidates_in_file(workspace, file, CandidateBudget::default(), &root_ids)?;
+    Ok((
+        candidates
+            .into_iter()
+            .filter(|candidate| is_symbol_candidate(candidate))
+            .filter_map(symbol_from_candidate)
+            .collect(),
+        warnings,
+    ))
 }
 
-fn parse_calls_in_file(
+fn parse_candidates_in_file(
     workspace: &Workspace,
     file: &FileRecord,
-) -> Result<(Vec<CallCandidate>, Vec<String>)> {
+    budget: CandidateBudget,
+    root_ids: &BTreeMap<String, String>,
+) -> Result<(Vec<TreeSitterCandidate>, Vec<String>)> {
     let path = workspace.abs_path(&file.path);
     let Some(language) = parser_language(&path) else {
         return Ok((Vec::new(), Vec::new()));
@@ -267,83 +544,290 @@ fn parse_calls_in_file(
     if tree.root_node().has_error() {
         warnings.push(format!("partial parse with syntax errors: {}", file.path));
     }
-    let mut calls = Vec::new();
-    walk_calls(
-        tree.root_node(),
-        &file.path,
-        language_name,
-        &file.hash,
-        content.as_bytes(),
-        &mut calls,
-    );
-    Ok((calls, warnings))
+    let mut candidates = Vec::new();
+    let root_id = root_id_for_file(&file.path, language_name, root_ids);
+    let mut truncated = false;
+    let mut context = CandidateWalkContext {
+        path: &file.path,
+        language: language_name,
+        root_id: &root_id,
+        file_hash: &file.hash,
+        source: content.as_bytes(),
+        max_per_file: budget.max_per_file,
+        truncated: &mut truncated,
+        candidates: &mut candidates,
+    };
+    walk_candidates(tree.root_node(), &mut context);
+    if truncated {
+        warnings.push(format!(
+            "tree_sitter_candidate_budget_exceeded: file {} exceeded max candidates per file ({})",
+            file.path, budget.max_per_file
+        ));
+    }
+    Ok((candidates, warnings))
 }
 
-fn walk_symbols(node: Node, path: &str, language: &str, source: &[u8], symbols: &mut Vec<Symbol>) {
-    if let Some(kind) = symbol_kind(node.kind()) {
-        if let Some(name_node) = node
-            .child_by_field_name("name")
-            .or_else(|| first_named_child(node))
-        {
-            if let Ok(name) = name_node.utf8_text(source) {
-                let body_node = node.child_by_field_name("body").unwrap_or(node);
-                symbols.push(Symbol {
-                    path: path.to_string(),
-                    language: language.to_string(),
-                    name: name.to_string(),
-                    kind: kind.to_string(),
-                    range: point_range(node),
-                    name_range: point_range(name_node),
-                    body_range: point_range(body_node),
-                    producer: "tree_sitter_parser".to_string(),
-                    warning: None,
-                });
-            }
-        }
+struct CandidateWalkContext<'a, 'b> {
+    path: &'a str,
+    language: &'a str,
+    root_id: &'a str,
+    file_hash: &'a str,
+    source: &'a [u8],
+    max_per_file: usize,
+    truncated: &'b mut bool,
+    candidates: &'b mut Vec<TreeSitterCandidate>,
+}
+
+fn walk_candidates(node: Node, context: &mut CandidateWalkContext) {
+    if let Some(candidate) = symbol_candidate(node, context) {
+        push_candidate(candidate, context);
+    }
+    if let Some(candidate) = import_candidate(node, context) {
+        push_candidate(candidate, context);
+    }
+    if let Some(candidate) = call_candidate(node, context) {
+        push_candidate(candidate, context);
     }
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_symbols(child, path, language, source, symbols);
+        walk_candidates(child, context);
     }
 }
 
-fn walk_calls(
-    node: Node,
-    path: &str,
-    language: &str,
-    file_hash: &str,
-    source: &[u8],
-    calls: &mut Vec<CallCandidate>,
-) {
-    if is_call_node(node.kind()) {
-        if let Some(target_node) = node
-            .child_by_field_name("function")
-            .or_else(|| node.child_by_field_name("name"))
-            .or_else(|| first_named_child(node))
-        {
-            if let Ok(target) = target_node.utf8_text(source) {
-                calls.push(CallCandidate {
-                    path: path.to_string(),
-                    language: language.to_string(),
-                    target: target.trim().to_string(),
-                    enclosing_symbol: enclosing_symbol(node, source),
-                    range: point_range(node),
-                    file_hash: file_hash.to_string(),
-                    producer: "tree_sitter_call_heuristic".to_string(),
-                });
-            }
+fn push_candidate(candidate: TreeSitterCandidate, context: &mut CandidateWalkContext) {
+    if context.candidates.len() < context.max_per_file {
+        context.candidates.push(candidate);
+    } else {
+        *context.truncated = true;
+    }
+}
+
+fn symbol_candidate(node: Node, context: &CandidateWalkContext) -> Option<TreeSitterCandidate> {
+    let symbol_kind = symbol_kind(node.kind())?;
+    let name_node = candidate_name_node(node)?;
+    let name = name_node.utf8_text(context.source).ok()?.trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    let body_node = node.child_by_field_name("body").unwrap_or(node);
+    let candidate_kind = candidate_kind_for_symbol(node, context.language);
+    let reliability = PARSER_FACT.to_string();
+    Some(TreeSitterCandidate {
+        path: context.path.to_string(),
+        language: context.language.to_string(),
+        root_id: context.root_id.to_string(),
+        name: Some(name),
+        target: None,
+        kind: candidate_kind.to_string(),
+        symbol_kind: Some(symbol_kind.to_string()),
+        range: point_range(node),
+        name_range: Some(point_range(name_node)),
+        body_range: Some(point_range(body_node)),
+        call_range: None,
+        enclosing_symbol: enclosing_symbol_name(node, context.source),
+        body_hash: Some(hash_node(body_node, context.source)),
+        file_hash: context.file_hash.to_string(),
+        producer: PARSER_PRODUCER.to_string(),
+        reliability: reliability.clone(),
+        layer: reliability,
+        known_blind_spots: known_blind_spots(context.language).to_vec(),
+    })
+}
+
+fn import_candidate(node: Node, context: &CandidateWalkContext) -> Option<TreeSitterCandidate> {
+    if !is_import_node(node.kind()) {
+        return None;
+    }
+    let name = import_name(node, context.language, context.source)?;
+    if name.is_empty() {
+        return None;
+    }
+    let reliability = PARSER_FACT.to_string();
+    Some(TreeSitterCandidate {
+        path: context.path.to_string(),
+        language: context.language.to_string(),
+        root_id: context.root_id.to_string(),
+        name: Some(name),
+        target: None,
+        kind: "import".to_string(),
+        symbol_kind: Some("import".to_string()),
+        range: point_range(node),
+        name_range: None,
+        body_range: None,
+        call_range: None,
+        enclosing_symbol: enclosing_symbol_name(node, context.source),
+        body_hash: None,
+        file_hash: context.file_hash.to_string(),
+        producer: PARSER_PRODUCER.to_string(),
+        reliability: reliability.clone(),
+        layer: reliability,
+        known_blind_spots: known_blind_spots(context.language).to_vec(),
+    })
+}
+
+fn call_candidate(node: Node, context: &CandidateWalkContext) -> Option<TreeSitterCandidate> {
+    if !is_call_node(node.kind()) {
+        return None;
+    }
+    let target_node = node
+        .child_by_field_name("function")
+        .or_else(|| node.child_by_field_name("name"))
+        .or_else(|| first_named_child(node))?;
+    let target = target_node
+        .utf8_text(context.source)
+        .ok()?
+        .trim()
+        .to_string();
+    if target.is_empty() {
+        return None;
+    }
+    let enclosing = enclosing_symbol_details(node, context.source);
+    let reliability = INFERRED_CANDIDATE.to_string();
+    Some(TreeSitterCandidate {
+        path: context.path.to_string(),
+        language: context.language.to_string(),
+        root_id: context.root_id.to_string(),
+        name: None,
+        target: Some(target),
+        kind: "call".to_string(),
+        symbol_kind: None,
+        range: point_range(node),
+        name_range: None,
+        body_range: None,
+        call_range: Some(point_range(node)),
+        enclosing_symbol: enclosing.as_ref().map(|details| details.name.clone()),
+        body_hash: enclosing.map(|details| details.body_hash),
+        file_hash: context.file_hash.to_string(),
+        producer: CALL_PRODUCER.to_string(),
+        reliability: reliability.clone(),
+        layer: reliability,
+        known_blind_spots: known_blind_spots(context.language).to_vec(),
+    })
+}
+
+#[derive(Clone, Debug)]
+struct EnclosingSymbolDetails {
+    name: String,
+    body_hash: String,
+}
+
+fn enclosing_symbol_details(node: Node, source: &[u8]) -> Option<EnclosingSymbolDetails> {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if symbol_kind(parent.kind()).is_some() {
+            let name_node = candidate_name_node(parent)?;
+            let body_node = parent.child_by_field_name("body").unwrap_or(parent);
+            return Some(EnclosingSymbolDetails {
+                name: name_node.utf8_text(source).ok()?.to_string(),
+                body_hash: hash_node(body_node, source),
+            });
+        }
+        current = parent.parent();
+    }
+    None
+}
+
+fn enclosing_symbol_name(node: Node, source: &[u8]) -> Option<String> {
+    enclosing_symbol_details(node, source).map(|details| details.name)
+}
+
+fn is_symbol_candidate(candidate: &TreeSitterCandidate) -> bool {
+    candidate.reliability == PARSER_FACT && candidate.kind != "import"
+}
+
+fn symbol_from_candidate(candidate: TreeSitterCandidate) -> Option<Symbol> {
+    Some(Symbol {
+        path: candidate.path,
+        language: candidate.language,
+        root_id: candidate.root_id,
+        name: candidate.name?,
+        kind: candidate.symbol_kind?,
+        candidate_kind: candidate.kind,
+        range: candidate.range,
+        name_range: candidate.name_range?,
+        body_range: candidate.body_range?,
+        enclosing_symbol: candidate.enclosing_symbol,
+        body_hash: candidate.body_hash?,
+        file_hash: candidate.file_hash,
+        producer: candidate.producer,
+        layer: candidate.layer,
+        known_blind_spots: candidate.known_blind_spots,
+        warning: None,
+    })
+}
+
+fn call_from_candidate(candidate: TreeSitterCandidate) -> Option<CallCandidate> {
+    Some(CallCandidate {
+        path: candidate.path,
+        language: candidate.language,
+        root_id: candidate.root_id,
+        target: candidate.target?,
+        enclosing_symbol: candidate.enclosing_symbol,
+        range: candidate.call_range.unwrap_or(candidate.range),
+        body_hash: candidate.body_hash,
+        file_hash: candidate.file_hash,
+        producer: candidate.producer,
+        layer: candidate.layer,
+        known_blind_spots: candidate.known_blind_spots,
+    })
+}
+
+fn enforce_root_budget(
+    candidates: Vec<TreeSitterCandidate>,
+    warnings: &mut Vec<String>,
+    budget: CandidateBudget,
+) -> Vec<TreeSitterCandidate> {
+    let mut counts = BTreeMap::<String, usize>::new();
+    let mut warned_roots = BTreeSet::<String>::new();
+    let mut retained = Vec::new();
+    for candidate in candidates {
+        let count = counts.entry(candidate.root_id.clone()).or_default();
+        if *count < budget.max_per_root {
+            *count += 1;
+            retained.push(candidate);
+        } else if warned_roots.insert(candidate.root_id.clone()) {
+            warnings.push(format!(
+                "tree_sitter_candidate_budget_exceeded: root {} exceeded max candidates per root ({})",
+                candidate.root_id, budget.max_per_root
+            ));
         }
     }
+    retained
+}
 
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        walk_calls(child, path, language, file_hash, source, calls);
+fn root_ids_by_path(workspace: &Workspace) -> BTreeMap<String, String> {
+    let Ok(graph) = discover_project_graph(&workspace.root) else {
+        return BTreeMap::new();
+    };
+    let mut root_ids = BTreeMap::new();
+    for owner in graph.source_owners {
+        root_ids.insert(owner.path, owner.root_id);
     }
+    for generated in graph.generated_sources {
+        root_ids.insert(generated.path, generated.owner_root_id);
+    }
+    root_ids
+}
+
+fn root_id_for_file(path: &str, language: &str, root_ids: &BTreeMap<String, String>) -> String {
+    root_ids
+        .get(path)
+        .cloned()
+        .unwrap_or_else(|| fallback_root_id(language))
+}
+
+fn fallback_root_id(language: &str) -> String {
+    let root_language = match language {
+        "javascript" => "typescript",
+        other => other,
+    };
+    format!("{root_language}:.")
 }
 
 fn parser_language(path: &Path) -> Option<Language> {
     match language_for_path(path) {
+        "go" => Some(tree_sitter_go::LANGUAGE.into()),
         "rust" => Some(tree_sitter_rust::LANGUAGE.into()),
         "python" => Some(tree_sitter_python::LANGUAGE.into()),
         "java" => Some(tree_sitter_java::LANGUAGE.into()),
@@ -355,47 +839,151 @@ fn parser_language(path: &Path) -> Option<Language> {
 
 fn symbol_kind(kind: &str) -> Option<&'static str> {
     match kind {
-        "function_item" | "function_definition" | "function_declaration" | "method_definition" => {
-            Some("function")
-        }
-        "struct_item" => Some("struct"),
+        "function_item" | "function_definition" | "function_declaration" => Some("function"),
+        "method_definition" | "method_declaration" => Some("function"),
+        "method_elem" => Some("function"),
+        "struct_item" | "type_declaration" => Some("struct"),
         "enum_item" | "enum_declaration" => Some("enum"),
         "trait_item" => Some("trait"),
         "impl_item" => Some("impl"),
         "mod_item" => Some("module"),
-        "method_declaration" => Some("function"),
         "constructor_declaration" | "compact_constructor_declaration" => Some("constructor"),
         "interface_declaration" => Some("interface"),
         "record_declaration" => Some("record"),
         "annotation_type_declaration" => Some("annotation"),
         "class_definition" | "class_declaration" => Some("class"),
-        "lexical_declaration" => Some("variable"),
+        "lexical_declaration" | "var_declaration" | "const_declaration" => Some("variable"),
         _ => None,
     }
 }
 
+fn candidate_kind_for_symbol(node: Node, language: &str) -> &'static str {
+    match node.kind() {
+        "method_definition"
+        | "method_declaration"
+        | "constructor_declaration"
+        | "compact_constructor_declaration"
+        | "method_elem" => "method",
+        "class_definition" | "class_declaration" => "class",
+        "struct_item"
+        | "enum_item"
+        | "enum_declaration"
+        | "trait_item"
+        | "interface_declaration"
+        | "record_declaration"
+        | "annotation_type_declaration"
+        | "type_declaration" => "type",
+        "function_item" if language == "rust" && has_parent_kind(node, "impl_item") => "method",
+        "function_definition" if has_parent_kind(node, "class_definition") => "method",
+        _ => "definition",
+    }
+}
+
 fn is_call_node(kind: &str) -> bool {
-    matches!(kind, "call_expression" | "call" | "method_invocation")
+    matches!(
+        kind,
+        "call_expression" | "call" | "method_invocation" | "function_call_expression"
+    )
+}
+
+fn is_import_node(kind: &str) -> bool {
+    matches!(
+        kind,
+        "use_declaration"
+            | "import_statement"
+            | "import_declaration"
+            | "import_from_statement"
+            | "import_require_clause"
+    )
 }
 
 fn first_named_child(node: Node) -> Option<Node> {
     (0..node.named_child_count()).find_map(|idx| node.named_child(idx))
 }
 
-fn enclosing_symbol(node: Node, source: &[u8]) -> Option<String> {
+fn candidate_name_node(node: Node) -> Option<Node> {
+    node.child_by_field_name("name")
+        .or_else(|| named_descendant_with_field(node, "name"))
+        .or_else(|| first_named_child(node))
+}
+
+fn named_descendant_with_field<'a>(node: Node<'a>, field_name: &str) -> Option<Node<'a>> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(found) = child.child_by_field_name(field_name) {
+            return Some(found);
+        }
+        if let Some(found) = named_descendant_with_field(child, field_name) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn has_parent_kind(node: Node, kind: &str) -> bool {
     let mut current = node.parent();
     while let Some(node) = current {
-        if symbol_kind(node.kind()).is_some() {
-            if let Some(name_node) = node
-                .child_by_field_name("name")
-                .or_else(|| first_named_child(node))
-            {
-                return name_node.utf8_text(source).ok().map(ToString::to_string);
-            }
+        if node.kind() == kind {
+            return true;
         }
         current = node.parent();
     }
-    None
+    false
+}
+
+fn import_name(node: Node, language: &str, source: &[u8]) -> Option<String> {
+    let raw = node.utf8_text(source).ok()?.trim();
+    let value = match language {
+        "rust" => raw
+            .strip_prefix("use ")
+            .unwrap_or(raw)
+            .trim_end_matches(';')
+            .trim()
+            .to_string(),
+        "java" => raw
+            .strip_prefix("import ")
+            .unwrap_or(raw)
+            .trim_start_matches("static ")
+            .trim_end_matches(';')
+            .trim()
+            .to_string(),
+        "go" => raw
+            .strip_prefix("import ")
+            .unwrap_or(raw)
+            .trim_end_matches(';')
+            .trim()
+            .to_string(),
+        "typescript" | "javascript" => raw
+            .strip_prefix("import ")
+            .unwrap_or(raw)
+            .trim_end_matches(';')
+            .trim()
+            .to_string(),
+        "python" => raw
+            .strip_prefix("from ")
+            .or_else(|| raw.strip_prefix("import "))
+            .unwrap_or(raw)
+            .trim()
+            .to_string(),
+        _ => raw.to_string(),
+    };
+    Some(value)
+}
+
+fn known_blind_spots(language: &str) -> &'static [&'static str] {
+    candidate_language_matrix()
+        .iter()
+        .find(|entry| entry.language == language)
+        .map(|entry| entry.known_blind_spots)
+        .unwrap_or(&["cross-file binding", "type inference", "dynamic dispatch"])
+}
+
+fn hash_node(node: Node, source: &[u8]) -> String {
+    hash_bytes(&source[node.start_byte()..node.end_byte()])
+}
+
+fn hash_bytes(bytes: &[u8]) -> String {
+    format!("blake3:{}", blake3::hash(bytes).to_hex())
 }
 
 fn point_range(node: Node) -> Value {
@@ -410,15 +998,22 @@ fn symbol_to_json(symbol: Symbol) -> Value {
         "name": symbol.name,
         "symbolName": symbol.name,
         "kind": symbol.kind,
+        "candidateKind": symbol.candidate_kind,
         "language": symbol.language,
+        "rootId": symbol.root_id,
         "container": Value::Null,
+        "enclosingSymbol": symbol.enclosing_symbol,
         "role": "definition",
         "range": symbol.range,
         "bodyRange": symbol.body_range,
+        "bodyHash": symbol.body_hash,
+        "fileHash": symbol.file_hash,
         "producer": symbol.producer,
-        "reliability": "parser_fact",
+        "reliability": PARSER_FACT,
+        "layer": symbol.layer,
         "exact": false,
         "fallbackReason": "precise_scip_index_unavailable",
+        "knownBlindSpots": symbol.known_blind_spots,
         "warning": symbol.warning
     })
 }
@@ -427,21 +1022,18 @@ fn call_to_json(call: CallCandidate) -> Value {
     json!({
         "path": call.path,
         "target": call.target,
+        "kind": "call",
         "enclosingSymbol": call.enclosing_symbol,
         "language": call.language,
+        "rootId": call.root_id,
         "range": call.range,
+        "bodyHash": call.body_hash,
         "fileHash": call.file_hash,
         "producer": call.producer,
-        "reliability": "inferred_candidate",
+        "reliability": INFERRED_CANDIDATE,
+        "layer": call.layer,
         "exact": false,
-        "knownBlindSpots": [
-            "dynamic dispatch",
-            "trait/interface implementations",
-            "reflection",
-            "macro generated code",
-            "framework injection",
-            "alias-heavy imports"
-        ]
+        "knownBlindSpots": call.known_blind_spots
     })
 }
 
@@ -485,5 +1077,259 @@ mod tests {
         assert!(symbols
             .iter()
             .any(|symbol| symbol.name == "Sample" && symbol.language == "java"));
+    }
+
+    fn scan_all() -> ScanOptions {
+        ScanOptions {
+            include: vec![],
+            exclude: vec![],
+            hidden: false,
+            no_ignore: false,
+            lang: vec![],
+            changed: false,
+            cursor: None,
+            allow_broad: true,
+            limit: 0,
+        }
+    }
+
+    #[test]
+    fn candidate_language_matrix_lists_supported_targets_and_blind_spots() {
+        let matrix = candidate_language_matrix();
+        let rust = matrix
+            .iter()
+            .find(|entry| entry.language == "rust")
+            .expect("rust matrix entry");
+        assert!(rust.extracted_kinds.contains(&"definition"));
+        assert!(rust.extracted_kinds.contains(&"method"));
+        assert!(rust.extracted_kinds.contains(&"call"));
+        assert!(rust.extracted_kinds.contains(&"import"));
+        assert!(rust
+            .known_blind_spots
+            .contains(&"macro generated definitions and calls"));
+
+        let go = matrix
+            .iter()
+            .find(|entry| entry.language == "go")
+            .expect("go matrix entry");
+        assert!(go.extracted_kinds.contains(&"type"));
+        assert!(go.extracted_kinds.contains(&"import"));
+
+        let javascript = matrix
+            .iter()
+            .find(|entry| entry.language == "javascript")
+            .expect("javascript matrix entry");
+        assert!(javascript.extracted_kinds.contains(&"class"));
+        assert!(javascript
+            .known_blind_spots
+            .contains(&"dynamic property calls"));
+    }
+
+    #[test]
+    fn candidates_cover_schema_for_definitions_calls_and_imports() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            "use crate::beta;\n\nstruct Widget;\n\nfn alpha() {\n    beta();\n}\n\nfn beta() {}\n",
+        )
+        .unwrap();
+        let workspace = Workspace::discover(dir.path()).unwrap();
+        let mut warnings = Vec::new();
+
+        let candidates = collect_candidates(&workspace, &scan_all(), &mut warnings).unwrap();
+
+        assert!(warnings.is_empty());
+        let alpha = candidates
+            .iter()
+            .find(|candidate| candidate.name.as_deref() == Some("alpha"))
+            .expect("alpha definition candidate");
+        assert_eq!(alpha.path, "src/lib.rs");
+        assert_eq!(alpha.language, "rust");
+        assert_eq!(alpha.root_id, "rust:.");
+        assert_eq!(alpha.kind, "definition");
+        assert_eq!(alpha.reliability, "parser_fact");
+        assert_eq!(alpha.layer, "parser_fact");
+        assert_eq!(alpha.producer, "tree_sitter_parser");
+        assert!(alpha.file_hash.starts_with("blake3:"));
+        assert!(alpha.body_hash.as_deref().unwrap().starts_with("blake3:"));
+        assert!(alpha.body_range.is_some());
+        assert!(alpha
+            .known_blind_spots
+            .contains(&"macro generated definitions and calls"));
+
+        let import = candidates
+            .iter()
+            .find(|candidate| candidate.kind == "import")
+            .expect("import candidate");
+        assert_eq!(import.name.as_deref(), Some("crate::beta"));
+        assert_eq!(import.reliability, "parser_fact");
+        assert_eq!(import.layer, "parser_fact");
+        assert!(import.body_hash.is_none());
+
+        let call = candidates
+            .iter()
+            .find(|candidate| candidate.target.as_deref() == Some("beta"))
+            .expect("beta call candidate");
+        assert_eq!(call.kind, "call");
+        assert_eq!(call.enclosing_symbol.as_deref(), Some("alpha"));
+        assert_eq!(call.reliability, "inferred_candidate");
+        assert_eq!(call.layer, "inferred_candidate");
+        assert_eq!(call.body_hash, alpha.body_hash);
+        assert!(call.body_range.is_none());
+        assert!(call
+            .known_blind_spots
+            .contains(&"macro generated definitions and calls"));
+    }
+
+    #[test]
+    fn go_candidates_extract_type_method_import_and_call() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("go.mod"), "module example.com/sample\n").unwrap();
+        fs::write(
+            dir.path().join("main.go"),
+            "package main\n\nimport \"fmt\"\n\ntype Widget struct{}\n\nfunc Alpha() {\n    fmt.Println(\"x\")\n    Beta()\n}\n\nfunc (Widget) Run() {\n    Beta()\n}\n\nfunc Beta() {}\n",
+        )
+        .unwrap();
+        let workspace = Workspace::discover(dir.path()).unwrap();
+        let mut warnings = Vec::new();
+
+        let candidates = collect_candidates(&workspace, &scan_all(), &mut warnings).unwrap();
+
+        assert!(warnings.is_empty());
+        assert!(candidates.iter().any(|candidate| {
+            candidate.language == "go"
+                && candidate.root_id == "go:."
+                && candidate.kind == "type"
+                && candidate.name.as_deref() == Some("Widget")
+        }));
+        assert!(candidates.iter().any(|candidate| {
+            candidate.language == "go"
+                && candidate.kind == "method"
+                && candidate.name.as_deref() == Some("Run")
+        }));
+        assert!(candidates.iter().any(|candidate| {
+            candidate.language == "go"
+                && candidate.kind == "import"
+                && candidate.name.as_deref() == Some("\"fmt\"")
+        }));
+        assert!(candidates.iter().any(|candidate| {
+            candidate.language == "go"
+                && candidate.kind == "call"
+                && candidate.target.as_deref() == Some("Beta")
+                && candidate.enclosing_symbol.as_deref() == Some("Alpha")
+                && candidate.body_hash.is_some()
+        }));
+    }
+
+    #[test]
+    fn candidate_budget_caps_per_file_and_root_with_caveats() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            "fn one() {}\nfn two() {}\nfn three() {}\nfn four() {}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("src/extra.rs"),
+            "fn five() {}\nfn six() {}\nfn seven() {}\n",
+        )
+        .unwrap();
+        let workspace = Workspace::discover(dir.path()).unwrap();
+        let budget = CandidateBudget {
+            max_per_file: 2,
+            max_per_root: 3,
+            max_per_query: 100,
+        };
+        let mut warnings = Vec::new();
+
+        let candidates =
+            collect_candidates_with_budget(&workspace, &scan_all(), &mut warnings, budget).unwrap();
+
+        assert_eq!(candidates.len(), 3);
+        assert!(warnings.iter().any(|warning| {
+            warning.starts_with("tree_sitter_candidate_budget_exceeded: file src/lib.rs")
+        }));
+        assert!(warnings.iter().any(|warning| {
+            warning.starts_with("tree_sitter_candidate_budget_exceeded: root rust:.")
+        }));
+    }
+
+    #[test]
+    fn query_budget_caps_parser_symbols_with_caveat() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        let mut source = String::new();
+        for idx in 0..(MAX_CANDIDATES_PER_QUERY + 5) {
+            source.push_str(&format!("fn needle_{idx}() {{}}\n"));
+        }
+        fs::write(dir.path().join("src/lib.rs"), source).unwrap();
+        let workspace = Workspace::discover(dir.path()).unwrap();
+        let mut opts = scan_all();
+        opts.limit = 0;
+
+        let (results, warnings) = symbols(&workspace, &opts, "needle_").unwrap();
+
+        assert_eq!(results.as_array().unwrap().len(), MAX_CANDIDATES_PER_QUERY);
+        assert!(warnings.iter().any(|warning| {
+            warning.starts_with("tree_sitter_candidate_budget_exceeded: query symbols")
+        }));
+    }
+
+    #[test]
+    fn body_hash_reuse_survives_file_hash_changes_outside_body() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            "fn alpha() {\n    beta();\n}\n\nfn beta() {}\n",
+        )
+        .unwrap();
+        let workspace = Workspace::discover(dir.path()).unwrap();
+        let mut first_warnings = Vec::new();
+        let first = collect_candidates(&workspace, &scan_all(), &mut first_warnings).unwrap();
+        let first_state = CandidateReuseState::from_candidates("src/lib.rs", &first).unwrap();
+        let first_alpha_hash = first
+            .iter()
+            .find(|candidate| candidate.name.as_deref() == Some("alpha"))
+            .and_then(|candidate| candidate.body_hash.clone())
+            .unwrap();
+
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            "// changed header\nfn alpha() {\n    beta();\n}\n\nfn beta() {}\n",
+        )
+        .unwrap();
+        let workspace = Workspace::discover(dir.path()).unwrap();
+        let mut second_warnings = Vec::new();
+        let second = collect_candidates(&workspace, &scan_all(), &mut second_warnings).unwrap();
+        let second_state = CandidateReuseState::from_candidates("src/lib.rs", &second).unwrap();
+        let decision = first_state.reuse_decision(&second_state);
+
+        assert!(!decision.file_unchanged);
+        assert!(decision.reusable_body_hashes.contains(&first_alpha_hash));
+        assert!(decision.can_reuse_calls_for_body(&first_alpha_hash));
+        let second_alpha_hash = second
+            .iter()
+            .find(|candidate| candidate.name.as_deref() == Some("alpha"))
+            .and_then(|candidate| candidate.body_hash.clone())
+            .unwrap();
+        assert_eq!(first_alpha_hash, second_alpha_hash);
     }
 }

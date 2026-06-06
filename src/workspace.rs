@@ -372,6 +372,7 @@ pub fn staged_tree(root: &Path) -> Option<String> {
 
 pub fn language_for_path(path: &Path) -> &'static str {
     match path.extension().and_then(|ext| ext.to_str()).unwrap_or("") {
+        "go" => "go",
         "rs" => "rust",
         "py" => "python",
         "java" => "java",
