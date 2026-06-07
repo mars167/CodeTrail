@@ -165,6 +165,10 @@ task-aware query sequencing and evidence compression; CodeTrail itself remains
 the search/navigation tool layer. Do not add task-specific CLI commands such as
 `brief`, `context`, or `analyze-*`.
 
+For benchmark-backed guidance on when to use the CLI directly and when to
+delegate to the subagent, see
+[`docs/04-agent-benchmark.md`](docs/04-agent-benchmark.md).
+
 ## Documentation
 
 Design references:
@@ -175,6 +179,7 @@ Design references:
 | [`docs/01-architecture.md`](docs/01-architecture.md) | Snapshot, index, query, watcher, and remote architecture |
 | [`docs/02-command-contract.md`](docs/02-command-contract.md) | Command families, JSON responses, and reliability contracts |
 | [`docs/03-quality.md`](docs/03-quality.md) | Local quality gate, CI mapping, performance and reliability safeguards |
+| [`docs/04-agent-benchmark.md`](docs/04-agent-benchmark.md) | Docker/OpenCode benchmark results and Agent usage guidance |
 
 Implementation details should be treated as the source of truth in `src/`, `tests/`, and `scripts/`.
 
