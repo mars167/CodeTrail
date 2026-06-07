@@ -7,6 +7,7 @@ flowchart LR
   S["00 设计总览"] --> A["01 架构"]
   S --> C["02 命令契约"]
   S --> Q["03 质量"]
+  S --> B["04 Agent 评测"]
   A --> SRC["src/ 是实现细节权威"]
   C --> HELP["codetrail --help 是参数权威"]
   Q --> SCRIPTS["scripts/ 是门禁权威"]
@@ -18,6 +19,7 @@ flowchart LR
 | `01-architecture.md` | snapshot/index/query/freshness 边界 |
 | `02-command-contract.md` | 命令族、JSON 响应和 reliability 契约 |
 | `03-quality.md` | 验证入口、门禁分层和 CI 映射 |
+| `04-agent-benchmark.md` | Docker/OpenCode 评测结果和 Agent 使用建议 |
 
 ## 产品定位
 

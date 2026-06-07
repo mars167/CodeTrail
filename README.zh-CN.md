@@ -164,6 +164,9 @@ skills/codetrail/agents/opencode/codetrail-evidence.md
 任务相关的查询顺序和证据压缩；CodeTrail 本身仍然只作为搜索/导航工具层。
 不要把 `brief`、`context` 或 `analyze-*` 这类任务级命令加到 CLI。
 
+基于 Docker/OpenCode 评测的直接 CLI 与 subagent 使用建议见
+[`docs/04-agent-benchmark.md`](docs/04-agent-benchmark.md)。
+
 ## 文档
 
 更多设计说明：
@@ -174,6 +177,7 @@ skills/codetrail/agents/opencode/codetrail-evidence.md
 | [`docs/01-architecture.md`](docs/01-architecture.md) | snapshot、索引、查询、watcher、remote 架构 |
 | [`docs/02-command-contract.md`](docs/02-command-contract.md) | 命令族、JSON 响应、可靠性契约 |
 | [`docs/03-quality.md`](docs/03-quality.md) | 本地质量门禁、CI 映射、性能看护边界 |
+| [`docs/04-agent-benchmark.md`](docs/04-agent-benchmark.md) | Docker/OpenCode 评测结果和 Agent 使用建议 |
 
 实现细节以 `src/`、`tests/` 和 `scripts/` 为准。
 
