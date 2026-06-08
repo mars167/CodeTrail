@@ -11,6 +11,7 @@ pub mod index;
 pub mod java_provider;
 pub mod lancedb_store;
 pub mod output;
+mod path_compat;
 pub mod project_graph;
 pub mod remote;
 pub mod rust_provider;

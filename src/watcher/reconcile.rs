@@ -123,11 +123,7 @@ pub fn walk_workspace_for_hashes(root: &Path, hashes: &mut HashMap<String, Strin
             continue;
         }
 
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let rel = crate::path_compat::relative_path(root, path);
 
         let content = match fs::read(path) {
             Ok(c) => c,

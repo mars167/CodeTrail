@@ -571,10 +571,7 @@ fn path_matches_output_filters(workspace: &Workspace, path: &Path, opts: &ScanOp
 }
 
 fn rel_path(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
+    crate::path_compat::relative_path(root, path)
 }
 
 fn paged_query_output(

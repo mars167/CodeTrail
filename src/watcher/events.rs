@@ -182,10 +182,7 @@ pub fn normalize_events(events: &[Event], workspace_root: &Path) -> ChangeSet {
 }
 
 fn relative_path(path: &Path, root: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
+    crate::path_compat::relative_path(root, path)
 }
 
 #[cfg(test)]

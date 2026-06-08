@@ -113,10 +113,7 @@ impl Workspace {
     }
 
     pub fn rel_path(&self, path: &Path) -> String {
-        path.strip_prefix(&self.root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/")
+        crate::path_compat::relative_path(&self.root, path)
     }
 
     pub fn abs_path(&self, rel: &str) -> PathBuf {
@@ -306,41 +303,48 @@ pub fn git_status(root: &Path) -> Result<Vec<ChangedFile>> {
     let output = String::from_utf8_lossy(&output.stdout);
     let mut changed = Vec::new();
     for line in output.lines() {
-        if line.len() < 3 {
-            continue;
+        if let Some(file) = parse_git_status_line(line) {
+            changed.push(file);
         }
-        let index_status = line[0..1].to_string();
-        let worktree_status = line[1..2].to_string();
-        let untracked = index_status == "?";
-        let staged = index_status != " " && index_status != "?";
-        let unstaged = !untracked && worktree_status != " ";
-        let change_kind = if untracked {
-            "untracked"
-        } else if staged && unstaged {
-            "staged_and_unstaged"
-        } else if staged {
-            "staged"
-        } else {
-            "unstaged"
-        }
-        .to_string();
-        let path = line[3..]
-            .rsplit_once(" -> ")
-            .map(|(_, new_path)| new_path)
-            .unwrap_or(&line[3..])
-            .trim()
-            .to_string();
-        changed.push(ChangedFile {
-            path,
-            index_status,
-            worktree_status,
-            change_kind,
-            staged,
-            unstaged,
-            untracked,
-        });
     }
     Ok(changed)
+}
+
+fn parse_git_status_line(line: &str) -> Option<ChangedFile> {
+    if line.len() < 3 {
+        return None;
+    }
+    let index_status = line[0..1].to_string();
+    let worktree_status = line[1..2].to_string();
+    let untracked = index_status == "?";
+    let staged = index_status != " " && index_status != "?";
+    let unstaged = !untracked && worktree_status != " ";
+    let change_kind = if untracked {
+        "untracked"
+    } else if staged && unstaged {
+        "staged_and_unstaged"
+    } else if staged {
+        "staged"
+    } else {
+        "unstaged"
+    }
+    .to_string();
+    let path = line[3..]
+        .rsplit_once(" -> ")
+        .map(|(_, new_path)| new_path)
+        .unwrap_or(&line[3..])
+        .trim()
+        .to_string();
+    let path = crate::path_compat::normalize_separators(&path);
+    Some(ChangedFile {
+        path,
+        index_status,
+        worktree_status,
+        change_kind,
+        staged,
+        unstaged,
+        untracked,
+    })
 }
 
 pub fn read_staged_blob(root: &Path, path: &str) -> Result<Vec<u8>> {
@@ -457,4 +461,25 @@ pub(crate) fn file_mode(_metadata: &fs::Metadata) -> u32 {
 
 fn short_hash(value: &str) -> String {
     value.chars().take(12).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_git_status_line_normalizes_windows_separators() {
+        let changed = parse_git_status_line(r" M src\main.rs").unwrap();
+
+        assert_eq!(changed.path, "src/main.rs");
+        assert_eq!(changed.change_kind, "unstaged");
+    }
+
+    #[test]
+    fn parse_git_status_line_uses_renamed_destination_with_normalized_separators() {
+        let changed = parse_git_status_line(r"R  old\main.rs -> new\main.rs").unwrap();
+
+        assert_eq!(changed.path, "new/main.rs");
+        assert_eq!(changed.change_kind, "staged");
+    }
 }
