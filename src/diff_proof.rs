@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn diff_freshness_alignment_detects_blocked_roots() {
-        use crate::generation_manifest::{GenerationManifest, ProofHashes};
+        use crate::generation_manifest::ProofHashes;
         use crate::project_graph::{ProjectLanguage, ProjectRoot, ProjectRootKind};
 
         let root = ProjectRoot {

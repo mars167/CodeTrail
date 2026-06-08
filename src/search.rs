@@ -985,7 +985,7 @@ fn pagination_scope_value(opts: &ScanOptions) -> Value {
 }
 
 fn sort_results(results: &mut [Value]) {
-    results.sort_by(|left, right| result_sort_key(left).cmp(&result_sort_key(right)));
+    results.sort_by_key(result_sort_key);
 }
 
 fn result_sort_key(value: &Value) -> (String, u64, u64, String) {
@@ -1494,7 +1494,7 @@ fn scan_file_facts(path: &Path, display_path: &str) -> Result<FileFacts> {
         if read == 0 {
             break;
         }
-        if buffer[..read].iter().any(|byte| *byte == 0) {
+        if buffer[..read].contains(&0) {
             binary = true;
         }
         hasher.update(&buffer[..read]);

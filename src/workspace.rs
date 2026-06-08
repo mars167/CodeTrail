@@ -427,13 +427,10 @@ fn is_probably_binary(path: &Path) -> bool {
 }
 
 fn probably_binary_result(path: &Path) -> Result<bool> {
-    let mut file = match fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) => return Err(error.into()),
-    };
+    let mut file = fs::File::open(path)?;
     let mut bytes = Vec::with_capacity(8192);
     match file.by_ref().take(8192).read_to_end(&mut bytes) {
-        Ok(_) => Ok(bytes.iter().any(|byte| *byte == 0)),
+        Ok(_) => Ok(bytes.contains(&0)),
         Err(error) => Err(error.into()),
     }
 }

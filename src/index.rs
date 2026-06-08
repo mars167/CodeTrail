@@ -902,7 +902,7 @@ fn attach_added_files(freshness: &mut Value, added_paths: &BTreeSet<String>) {
 fn prefilter_unavailable_reason(pattern: &str, mode: &str) -> &'static str {
     if mode != "literal" {
         "regex_prefilter_not_supported"
-    } else if pattern.as_bytes().len() < 3 {
+    } else if pattern.len() < 3 {
         "literal_shorter_than_trigram"
     } else {
         "trigram_prefilter_unavailable"
@@ -1549,19 +1549,19 @@ fn write_to_lancedb(
 
     verbose.log("index build: writing LanceDB snapshot");
     lancedb
-        .write_snapshot(
-            &manifest.snapshot_id,
-            &manifest.snapshot_key,
-            manifest.schema_version,
-            &manifest.tool_version,
-            &manifest.repo_root,
-            manifest.head.as_deref(),
-            manifest.dirty,
-            &manifest.source,
-            &scan_options_json,
-            manifest.file_count as u32,
-            manifest.created_at_epoch_ms as u64,
-        )
+        .write_snapshot(lancedb_store::SnapshotWrite {
+            snapshot_id: &manifest.snapshot_id,
+            snapshot_key: &manifest.snapshot_key,
+            schema_version: manifest.schema_version,
+            tool_version: &manifest.tool_version,
+            repo_root: &manifest.repo_root,
+            head: manifest.head.as_deref(),
+            dirty: manifest.dirty,
+            source: &manifest.source,
+            scan_options_json: &scan_options_json,
+            file_count: manifest.file_count as u32,
+            created_at_epoch_ms: manifest.created_at_epoch_ms as u64,
+        })
         .with_context(|| "failed to write snapshot to LanceDB")?;
 
     verbose.log(format!(

@@ -238,25 +238,13 @@ impl CaveatCode {
 // ── Security contract ───────────────────────────────────────────────────────
 
 /// Security boundaries that every code path must respect.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct SecurityContract {
     pub allow_shell_execution: bool,
     pub allow_outside_workspace: bool,
     pub allow_secret_in_preview: bool,
     pub allow_provider_stdout_leak: bool,
     pub allow_unrestricted_provider_env: bool,
-}
-
-impl Default for SecurityContract {
-    fn default() -> Self {
-        Self {
-            allow_shell_execution: false,
-            allow_outside_workspace: false,
-            allow_secret_in_preview: false,
-            allow_provider_stdout_leak: false,
-            allow_unrestricted_provider_env: false,
-        }
-    }
 }
 
 impl SecurityContract {

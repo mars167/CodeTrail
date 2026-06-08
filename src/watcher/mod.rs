@@ -115,19 +115,15 @@ impl Watcher {
     /// Return the current watcher state as a JSON value.
     pub fn status(&self) -> Value {
         let overlay_status = self.overlay.status();
-        let dirty_is_empty = overlay_status["dirtyFiles"]
-            .as_array()
-            .map(|a| a.is_empty())
-            .unwrap_or(true);
-        let stale = !dirty_is_empty;
+        let stale = overlay_status["stale"].as_bool().unwrap_or(false);
 
         json!({
             "running": self.running,
             "root": self.workspace_root,
             "queueLength": self.queue_len,
             "stale": stale,
-            "lastEventAt": self.last_event_at.and_then(|_| Some(now_ms())),
-            "lastReconcileAt": self.last_reconcile_at.and_then(|_| Some(now_ms())),
+            "lastEventAt": self.last_event_at.map(|_| now_ms()),
+            "lastReconcileAt": self.last_reconcile_at.map(|_| now_ms()),
             "mode": "reconcile_on_demand",
             "overlay": overlay_status,
         })
@@ -140,4 +136,33 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_marks_stale_when_overlay_only_has_added_and_deleted_files() {
+        // Given: a reconcile result where only added/deleted files make the overlay stale.
+        let mut watcher = Watcher::start(Path::new("/tmp/codetrail-watch-status")).unwrap();
+        let result = ReconcileResult {
+            dirty_files: Vec::new(),
+            added_files: vec!["src/new.rs".to_string()],
+            deleted_files: vec!["src/old.rs".to_string()],
+            stale: true,
+            total_files_scanned: 1,
+            reconciled_at: 0,
+        };
+        watcher.overlay.update_from_reconcile(&result);
+
+        // When: top-level watcher status is rendered.
+        let status = watcher.status();
+
+        // Then: top-level stale follows the overlay stale state, not only dirty files.
+        assert_eq!(status["stale"], true);
+        assert_eq!(status["overlay"]["stale"], true);
+        assert_eq!(status["overlay"]["addedCount"], 1);
+        assert_eq!(status["overlay"]["deletedCount"], 1);
+    }
 }

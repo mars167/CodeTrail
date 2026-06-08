@@ -18,6 +18,20 @@ pub struct LanceDbStore {
     root: PathBuf,
 }
 
+pub struct SnapshotWrite<'a> {
+    pub snapshot_id: &'a str,
+    pub snapshot_key: &'a str,
+    pub schema_version: u32,
+    pub tool_version: &'a str,
+    pub repo_root: &'a str,
+    pub head: Option<&'a str>,
+    pub dirty: bool,
+    pub source: &'a str,
+    pub scan_options_json: &'a str,
+    pub file_count: u32,
+    pub created_at_epoch_ms: u64,
+}
+
 const READ_LIMIT: usize = 10_000_000;
 
 use anyhow::anyhow;
@@ -183,23 +197,23 @@ impl LanceDbStore {
 
     // ── Write helpers ──
 
-    pub fn write_snapshot(
-        &self,
-        snapshot_id: &str,
-        snapshot_key: &str,
-        schema_version: u32,
-        tool_version: &str,
-        repo_root: &str,
-        head: Option<&str>,
-        dirty: bool,
-        source: &str,
-        scan_options_json: &str,
-        file_count: u32,
-        created_at_epoch_ms: u64,
-    ) -> Result<()> {
+    pub fn write_snapshot(&self, snapshot: SnapshotWrite<'_>) -> Result<()> {
         use arrow::array::{BooleanArray, StringArray, UInt32Array, UInt64Array};
         use arrow::record_batch::{RecordBatch, RecordBatchIterator};
 
+        let SnapshotWrite {
+            snapshot_id,
+            snapshot_key,
+            schema_version,
+            tool_version,
+            repo_root,
+            head,
+            dirty,
+            source,
+            scan_options_json,
+            file_count,
+            created_at_epoch_ms,
+        } = snapshot;
         let schema = snapshots_schema();
         let batch = RecordBatch::try_new(
             schema.clone(),
@@ -806,8 +820,8 @@ impl LanceDbStore {
             .map(|p| (p.file_path.clone(), p))
             .collect();
         Ok(catalog
-            .into_iter()
-            .map(|(_path, row)| {
+            .into_values()
+            .map(|row| {
                 let proof = proofs.get(&row.file_path);
                 crate::workspace::FileRecord {
                     path: row.file_path,

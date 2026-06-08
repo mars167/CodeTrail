@@ -25,6 +25,7 @@ pub struct OccurrenceResult {
 /// A symbol result from the store.
 #[derive(Clone, Debug)]
 pub struct SymbolResult {
+    pub symbol: String,
     pub name: String,
     pub kind: String,
     pub language: String,
@@ -108,7 +109,7 @@ pub fn build_occurrences_db(
             let (display_name, kind) = symbols
                 .get(occurrence.symbol.as_str())
                 .copied()
-                .unwrap_or_else(|| (default_name.as_str(), "symbol"));
+                .unwrap_or((default_name.as_str(), "symbol"));
 
             let display_name = if display_name.is_empty() {
                 display_name_from_symbol(&occurrence.symbol)
@@ -118,12 +119,12 @@ pub fn build_occurrences_db(
 
             // Upsert symbol
             let symbol_id: i64 = tx
-                .prepare("SELECT id FROM symbols WHERE name = ?1 AND kind = ?2 AND language = ?3")?
-                .query_row(params![display_name, kind, language], |row| row.get(0))
+                .prepare("SELECT id FROM symbols WHERE symbol = ?1")?
+                .query_row(params![occurrence.symbol], |row| row.get(0))
                 .unwrap_or_else(|_| {
                     tx.execute(
-                        "INSERT INTO symbols (name, kind, language) VALUES (?1, ?2, ?3)",
-                        params![display_name, kind, language],
+                        "INSERT INTO symbols (symbol, name, kind, language) VALUES (?1, ?2, ?3, ?4)",
+                        params![occurrence.symbol, display_name, kind, language],
                     )
                     .unwrap();
                     tx.last_insert_rowid()
@@ -187,7 +188,7 @@ pub fn build_occurrences_db(
 }
 
 /// Check if the occurrence DB is fresh for the given snapshot hash.
-/// Also spot-checks a sample of file hashes against current disk contents.
+/// Verifies every stored file hash against current disk contents.
 pub fn occurrence_db_fresh(db_path: &Path, snapshot: &str, root: &Path) -> bool {
     if !db_path.exists() {
         return false;
@@ -195,8 +196,7 @@ pub fn occurrence_db_fresh(db_path: &Path, snapshot: &str, root: &Path) -> bool 
     if !check_snapshot_hash(db_path, snapshot).unwrap_or(false) {
         return false;
     }
-    // Spot-check file hashes: pick a random sample of entries and verify
-    spot_check_file_hashes(db_path, root).unwrap_or(true)
+    all_file_hashes_match(db_path, root).unwrap_or(false)
 }
 
 /// Delete the occurrence DB (force rebuild).
@@ -219,7 +219,7 @@ pub fn query_defs(db_path: &Path, identifier: &str) -> Result<Vec<OccurrenceResu
                 o.start_line, o.start_column, o.end_line, o.end_column, o.file_hash \
          FROM occurrences o \
          JOIN symbols s ON o.symbol_id = s.id \
-         WHERE o.role = 'definition' AND s.name = ?1 \
+         WHERE o.role = 'definition' AND (s.name = ?1 OR s.symbol = ?1) \
          ORDER BY o.file_path, o.start_line",
     )?;
 
@@ -242,7 +242,7 @@ pub fn query_refs(db_path: &Path, identifier: &str) -> Result<Vec<OccurrenceResu
                 o.start_line, o.start_column, o.end_line, o.end_column, o.file_hash \
          FROM occurrences o \
          JOIN symbols s ON o.symbol_id = s.id \
-         WHERE o.role = 'reference' AND s.name = ?1 \
+         WHERE o.role = 'reference' AND (s.name = ?1 OR s.symbol = ?1) \
          ORDER BY o.file_path, o.start_line",
     )?;
 
@@ -261,27 +261,28 @@ pub fn query_symbols(db_path: &Path, query: &str) -> Result<Vec<SymbolResult>> {
     let conn = Connection::open(db_path)?;
 
     let mut stmt = conn.prepare(
-        "SELECT DISTINCT s.name, s.kind, s.language, \
+        "SELECT DISTINCT s.symbol, s.name, s.kind, s.language, \
                 o.file_path, o.role, o.start_line, o.start_column, o.end_line, o.end_column \
          FROM symbols s \
          JOIN occurrences o ON o.symbol_id = s.id \
-         WHERE o.role = 'definition' AND s.name LIKE ?1 \
-         ORDER BY s.kind, s.name, o.file_path",
+         WHERE o.role = 'definition' AND (s.name LIKE ?1 OR s.symbol LIKE ?1) \
+         ORDER BY s.kind, s.name, s.symbol, o.file_path",
     )?;
 
     let like_pattern = format!("%{}%", query);
     let results = stmt
         .query_map(params![like_pattern], |row| {
             Ok(SymbolResult {
-                name: row.get(0)?,
-                kind: row.get(1)?,
-                language: row.get(2)?,
-                path: row.get(3)?,
-                role: row.get(4)?,
-                start_line: row.get(5)?,
-                start_column: row.get(6)?,
-                end_line: row.get(7)?,
-                end_column: row.get(8)?,
+                symbol: row.get(0)?,
+                name: row.get(1)?,
+                kind: row.get(2)?,
+                language: row.get(3)?,
+                path: row.get(4)?,
+                role: row.get(5)?,
+                start_line: row.get(6)?,
+                start_column: row.get(7)?,
+                end_line: row.get(8)?,
+                end_column: row.get(9)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -295,8 +296,8 @@ pub fn occurrence_to_json(result: &OccurrenceResult) -> Value {
         "path": result.path,
         "name": result.name,
         "symbolName": result.name,
-        "kind": result.kind,
         "symbol": result.symbol,
+        "kind": result.kind,
         "role": result.role,
         "language": result.language,
         "container": Value::Null,
@@ -316,6 +317,7 @@ pub fn symbol_to_json(result: &SymbolResult) -> Value {
     json!({
         "name": result.name,
         "symbolName": result.name,
+        "symbol": result.symbol,
         "kind": result.kind,
         "language": result.language,
         "path": result.path,
@@ -339,6 +341,7 @@ fn create_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS symbols (
             id INTEGER PRIMARY KEY,
+            symbol TEXT NOT NULL UNIQUE,
             name TEXT NOT NULL,
             kind TEXT NOT NULL DEFAULT '',
             language TEXT NOT NULL DEFAULT ''
@@ -361,6 +364,7 @@ fn create_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_occurrences_symbol_id ON occurrences(symbol_id);
         CREATE INDEX IF NOT EXISTS idx_occurrences_role ON occurrences(role);
         CREATE INDEX IF NOT EXISTS idx_occurrences_symbol ON occurrences(symbol);
+        CREATE INDEX IF NOT EXISTS idx_symbols_symbol ON symbols(symbol);
         CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 
         CREATE TABLE IF NOT EXISTS meta (
@@ -386,18 +390,16 @@ fn check_snapshot_hash(db_path: &Path, snapshot: &str) -> Result<bool> {
     Ok(stored == snapshot)
 }
 
-fn spot_check_file_hashes(db_path: &Path, root: &Path) -> Result<bool> {
+fn all_file_hashes_match(db_path: &Path, root: &Path) -> Result<bool> {
     let conn = Connection::open(db_path)?;
-    let mut stmt =
-        conn.prepare("SELECT file_path, hash FROM file_hashes ORDER BY RANDOM() LIMIT 5")?;
+    let mut stmt = conn.prepare("SELECT file_path, hash FROM file_hashes ORDER BY file_path")?;
     let entries: Vec<(String, String)> = stmt
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     if entries.is_empty() {
-        // No file hashes stored — trust snapshot_id alone
-        return Ok(true);
+        return Ok(false);
     }
     for (file_path, stored_hash) in &entries {
         let abs_path = root.join(file_path);
@@ -476,8 +478,7 @@ fn kind_name(sym: &proto::SymbolInformation) -> &str {
 fn display_name_from_symbol(symbol: &str) -> String {
     symbol
         .split(|ch: char| ch == '/' || ch == '#' || ch == '.' || ch.is_whitespace())
-        .filter(|part| !part.is_empty())
-        .next_back()
+        .rfind(|part| !part.is_empty())
         .unwrap_or(symbol)
         .trim_end_matches("().")
         .to_string()
@@ -546,20 +547,24 @@ mod tests {
         let defs = query_defs(&db_path, "needle").unwrap();
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].name, "needle");
+        assert_eq!(defs[0].symbol, "local 1");
         assert_eq!(defs[0].role, "definition");
         assert_eq!(defs[0].path, "src/lib.rs");
         assert_eq!(defs[0].start_line, 1);
         assert_eq!(defs[0].start_column, 4);
+        assert_eq!(query_defs(&db_path, "local 1").unwrap().len(), 1);
 
         // refs
         let refs = query_refs(&db_path, "needle").unwrap();
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].role, "reference");
         assert_eq!(refs[0].start_line, 2);
+        assert_eq!(query_refs(&db_path, "local 1").unwrap().len(), 1);
 
         // symbols
         let symbols = query_symbols(&db_path, "needle").unwrap();
         assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].symbol, "local 1");
         assert_eq!(symbols[0].name, "needle");
 
         // unknown identifier
@@ -590,6 +595,49 @@ mod tests {
 
         let nonexistent = dir.path().join("nonexistent.db");
         assert!(!occurrence_db_fresh(&nonexistent, "any", dir.path()));
+    }
+
+    #[test]
+    fn freshness_checks_every_stored_file_hash() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("occurrences.db");
+
+        let mut documents = Vec::new();
+        for index in 0..8 {
+            let relative_path = format!("src/file_{index}.rs");
+            let absolute_path = dir.path().join(&relative_path);
+            std::fs::create_dir_all(absolute_path.parent().unwrap()).unwrap();
+            std::fs::write(&absolute_path, format!("fn item_{index}() {{}}\n")).unwrap();
+            documents.push(proto::Document {
+                language: "rust".to_string(),
+                relative_path,
+                occurrences: vec![proto::Occurrence {
+                    range: vec![0, 3, 0, 9],
+                    symbol: format!("local {index}"),
+                    symbol_roles: 1,
+                    ..Default::default()
+                }],
+                symbols: vec![proto::SymbolInformation {
+                    symbol: format!("local {index}"),
+                    kind: proto::symbol_information::Kind::Function as i32,
+                    display_name: format!("item_{index}"),
+                    ..Default::default()
+                }],
+                position_encoding: proto::PositionEncoding::Utf8CodeUnitOffsetFromLineStart as i32,
+                ..Default::default()
+            });
+        }
+
+        let index = proto::Index {
+            documents,
+            ..Default::default()
+        };
+        build_occurrences_db(&index, &db_path, "snapshot-v1", dir.path()).unwrap();
+        assert!(occurrence_db_fresh(&db_path, "snapshot-v1", dir.path()));
+
+        std::fs::write(dir.path().join("src/file_7.rs"), "fn changed() {}\n").unwrap();
+
+        assert!(!occurrence_db_fresh(&db_path, "snapshot-v1", dir.path()));
     }
 
     #[test]

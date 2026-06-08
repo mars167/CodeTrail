@@ -1,21 +1,7 @@
 //! Static config and script fact extraction.
 //!
-//! Planned submodule split (tracked in #113):
-//!   src/config_facts/
-//!   ├── mod.rs        — public types, dispatcher, helpers
-//!   ├── json.rs       — JSON extraction
-//!   ├── yaml.rs       — YAML extraction + validation
-//!   ├── toml.rs       — TOML extraction + validation
-//!   ├── ini.rs        — INI/properties/conf extraction
-//!   ├── ci.rs         — CI workflow extraction
-//!   ├── shell.rs      — Shell script extraction
-//!   ├── makefile.rs   — Makefile extraction
-//!   ├── docker.rs     — Docker/Compose extraction
-//!   └── k8s.rs        — Kubernetes manifest extraction
-//!
-//! Current state: all extraction functions live in mod.rs with clear section
-//! boundaries. The split is deferred to avoid Rust module system friction
-//! with cross-cutting helper dependencies.
+mod detect;
+mod ranges;
 
 use std::{
     borrow::Cow,
@@ -32,6 +18,12 @@ use crate::{
     project_graph::{DependencyEdgeKind, ProjectGraph, ProjectGraphCaveatCode},
     semantic_facts::{FactReliability, InternalRange},
 };
+
+use detect::{
+    extension, file_name, is_compose, is_dockerfile, is_ini_like, is_kubernetes_path, is_makefile,
+    is_shell_script, is_workflow, looks_like_kubernetes,
+};
+use ranges::{find_line_containing, leading_spaces, line_len, line_range, whole_file_range};
 
 pub const CONFIG_FACT_PRODUCER: &str = "codetrail.config_facts/v1";
 pub const DEFAULT_MAX_FILE_BYTES: usize = 256 * 1024;
@@ -1188,117 +1180,4 @@ fn normalize_key_path(parts: &[String]) -> String {
         .cloned()
         .collect::<Vec<_>>()
         .join(".")
-}
-
-fn find_line_containing(source: &str, needle: &str) -> Option<usize> {
-    source
-        .lines()
-        .enumerate()
-        .find_map(|(index, line)| line.contains(needle).then_some(index))
-}
-
-fn line_range(
-    source: &str,
-    line_index: usize,
-    start_column: usize,
-    end_column: usize,
-) -> InternalRange {
-    let line_len = line_len(source, line_index);
-    InternalRange {
-        start_line: line_index as u32,
-        start_column: start_column.min(line_len) as u32,
-        end_line: line_index as u32,
-        end_column: end_column.min(line_len) as u32,
-    }
-}
-
-fn whole_file_range(source: &str) -> InternalRange {
-    let line_count = source.lines().count();
-    if line_count == 0 {
-        return InternalRange {
-            start_line: 0,
-            start_column: 0,
-            end_line: 0,
-            end_column: 0,
-        };
-    }
-    let end_line = line_count - 1;
-    InternalRange {
-        start_line: 0,
-        start_column: 0,
-        end_line: end_line as u32,
-        end_column: line_len(source, end_line) as u32,
-    }
-}
-
-fn line_len(source: &str, line_index: usize) -> usize {
-    source.lines().nth(line_index).map(str::len).unwrap_or(0)
-}
-
-fn leading_spaces(line: &str) -> usize {
-    line.len() - line.trim_start_matches(' ').len()
-}
-
-fn is_workflow(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    lower.starts_with(".github/workflows/")
-        || lower.ends_with("/.gitlab-ci.yml")
-        || lower.ends_with("/.gitlab-ci.yaml")
-        || lower == ".gitlab-ci.yml"
-        || lower == ".gitlab-ci.yaml"
-}
-
-fn is_compose(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    lower.ends_with("docker-compose.yml")
-        || lower.ends_with("docker-compose.yaml")
-        || lower.ends_with("compose.yml")
-        || lower.ends_with("compose.yaml")
-}
-
-fn is_kubernetes_path(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    lower.starts_with("k8s/")
-        || lower.starts_with("kubernetes/")
-        || lower.contains("/k8s/")
-        || lower.contains("/kubernetes/")
-}
-
-fn looks_like_kubernetes(source: &str) -> bool {
-    source.contains("apiVersion:") && source.contains("kind:") && source.contains("metadata:")
-}
-
-fn is_dockerfile(path: &str) -> bool {
-    let name = file_name(path);
-    name == "Dockerfile" || name.starts_with("Dockerfile.")
-}
-
-fn is_makefile(path: &str) -> bool {
-    let name = file_name(path);
-    name == "Makefile" || name == "makefile" || name.ends_with(".mk")
-}
-
-fn is_shell_script(path: &str, source: &str) -> bool {
-    matches!(extension(path).as_deref(), Some("sh" | "bash" | "zsh"))
-        || source.starts_with("#!/bin/sh")
-        || source.starts_with("#!/usr/bin/env sh")
-        || source.starts_with("#!/usr/bin/env bash")
-        || source.starts_with("#!/bin/bash")
-}
-
-fn is_ini_like(path: &str) -> bool {
-    matches!(
-        extension(path).as_deref(),
-        Some("ini" | "properties" | "conf" | "config" | "env")
-    ) || file_name(path).starts_with(".env")
-}
-
-fn extension(path: &str) -> Option<String> {
-    file_name(path)
-        .rsplit_once('.')
-        .map(|(_, extension)| extension.to_ascii_lowercase())
-}
-
-fn file_name(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
 }

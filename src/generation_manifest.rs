@@ -144,9 +144,9 @@ impl FreshnessGate {
         self.manifests
             .values()
             .filter(|m| {
-                root_id.map_or(true, |rid| m.root_id == rid)
-                    && language.map_or(true, |lang| &m.language == lang)
-                    && provider_name.map_or(true, |pn| m.provider_name == pn)
+                root_id.is_none_or(|rid| m.root_id == rid)
+                    && language.is_none_or(|lang| &m.language == lang)
+                    && provider_name.is_none_or(|pn| m.provider_name == pn)
             })
             .collect()
     }
@@ -418,7 +418,6 @@ pub fn now_epoch_ms() -> u64 {
 mod tests {
     use super::*;
     use crate::project_graph::{ProjectLanguage, ProjectRootKind};
-    use crate::semantic_provider::{PartialReason, SemanticProviderVersion};
 
     fn test_root(id: &str, lang: ProjectLanguage) -> ProjectRoot {
         ProjectRoot {
@@ -427,26 +426,6 @@ mod tests {
             language: lang,
             kind: ProjectRootKind::GoModule,
             markers: Vec::new(),
-        }
-    }
-
-    fn test_caps(lang: ProjectLanguage) -> ProviderCapabilities {
-        ProviderCapabilities {
-            language: lang,
-            provider_version: SemanticProviderVersion {
-                name: "test-provider".to_string(),
-                version: "1.0.0".to_string(),
-                protocol_version: 1,
-            },
-            supports_batch_resolve: true,
-            supports_import_graph: true,
-            supports_workspace_symbols: true,
-            max_batch_size: 100,
-            partial_reasons: vec![
-                PartialReason::ProviderMissing,
-                PartialReason::Timeout,
-                PartialReason::ResourceLimited,
-            ],
         }
     }
 

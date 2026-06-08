@@ -120,46 +120,46 @@ pub fn java_provider_capabilities() -> ProviderCapabilities {
 
 // ── Fixture design ──────────────────────────────────────────────────────────
 
-/// Test fixtures needed for Java provider validation:
-///
-/// 1. **Basic class and method**:
-///    ```java
-///    // src/main/java/com/example/App.java
-///    package com.example;
-///    public class App {
-///        public static void main(String[] args) { }
-///    }
-///    ```
-///    Expected: one def `App`, one def `main` with descriptor `([Ljava/lang/String;)V`.
-///
-/// 2. **Method overload**:
-///    ```java
-///    public class Calculator {
-///        public int add(int a, int b) { return a + b; }
-///        public double add(double a, double b) { return a + b; }
-///    }
-///    ```
-///    Expected: two distinct symbols for `add`, differentiated by descriptor.
-///
-/// 3. **Multi-module Maven**:
-///    Parent POM + two child modules.
-///    Expected: cross-module references resolved through classpath.
-///
-/// 4. **Annotation processor / generated source**:
-///    ```java
-///    @lombok.Data
-///    public class User { private String name; }
-///    ```
-///    Expected: `Lombok` missing → partial reason, generated getter/setter not in precise index.
-///
-/// 5. **Inner class**:
-///    ```java
-///    public class Outer { public class Inner { } }
-///    ```
-///    Expected: symbol id uses `$` separator: `Outer$Inner`.
-///
-/// 6. **Project import failure**:
-///    Broken `pom.xml` → import timeout → `StartupFailed` reason, Java root marked partial.
+// Test fixtures needed for Java provider validation:
+//
+// 1. **Basic class and method**:
+//    ```java
+//    // src/main/java/com/example/App.java
+//    package com.example;
+//    public class App {
+//        public static void main(String[] args) { }
+//    }
+//    ```
+//    Expected: one def `App`, one def `main` with descriptor `([Ljava/lang/String;)V`.
+//
+// 2. **Method overload**:
+//    ```java
+//    public class Calculator {
+//        public int add(int a, int b) { return a + b; }
+//        public double add(double a, double b) { return a + b; }
+//    }
+//    ```
+//    Expected: two distinct symbols for `add`, differentiated by descriptor.
+//
+// 3. **Multi-module Maven**:
+//    Parent POM + two child modules.
+//    Expected: cross-module references resolved through classpath.
+//
+// 4. **Annotation processor / generated source**:
+//    ```java
+//    @lombok.Data
+//    public class User { private String name; }
+//    ```
+//    Expected: `Lombok` missing → partial reason, generated getter/setter not in precise index.
+//
+// 5. **Inner class**:
+//    ```java
+//    public class Outer { public class Inner { } }
+//    ```
+//    Expected: symbol id uses `$` separator: `Outer$Inner`.
+//
+// 6. **Project import failure**:
+//    Broken `pom.xml` → import timeout → `StartupFailed` reason, Java root marked partial.
 
 #[cfg(test)]
 mod tests {
