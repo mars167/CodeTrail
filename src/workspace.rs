@@ -72,8 +72,8 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn discover(path: impl AsRef<Path>) -> Result<Self> {
-        let input = path.as_ref();
-        let canonical = fs::canonicalize(input)
+        let input = crate::path_compat::native_path(path.as_ref());
+        let canonical = fs::canonicalize(&input)
             .with_context(|| format!("failed to resolve path {}", input.display()))?;
         let git_root = git_output(&canonical, &["rev-parse", "--show-toplevel"])
             .ok()
