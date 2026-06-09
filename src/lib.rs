@@ -16,6 +16,7 @@ pub mod project_graph;
 pub mod remote;
 pub mod rust_provider;
 pub mod saved_query;
+pub mod scan_diagnostics;
 pub mod scip;
 pub mod scip_index;
 pub mod scip_indexer;

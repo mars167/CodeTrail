@@ -177,6 +177,10 @@ pub enum IndexCommand {
     },
     Update,
     Status,
+    Skipped {
+        #[arg(long)]
+        staged: bool,
+    },
     Verify,
     Clean,
     ImportScip {

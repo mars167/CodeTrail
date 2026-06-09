@@ -15,7 +15,9 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    graph, lancedb_store, output, snapshot_store, text_index,
+    graph, lancedb_store, output,
+    scan_diagnostics::SkippedFile,
+    snapshot_store, text_index,
     workspace::{read_staged_blob, staged_tree, tracked_files, FileRecord, ScanOptions, Workspace},
 };
 
@@ -48,6 +50,20 @@ struct IndexScanOptions {
     lang: Vec<String>,
     #[serde(default)]
     changed: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SkippedLog {
+    schema_version: u32,
+    tool_version: String,
+    snapshot_id: String,
+    snapshot_key: String,
+    source: String,
+    scan_options: IndexScanOptions,
+    created_at_epoch_ms: u128,
+    count: usize,
+    items: Vec<SkippedFile>,
 }
 
 #[derive(Clone, Debug)]
@@ -93,10 +109,10 @@ pub fn build(
         "index build: snapshot_id={snapshot_id} staged={staged} changed_only={changed_only} force={force}"
     ));
 
-    let records = if staged {
+    let (records, skipped_files) = if staged {
         let records = staged_records(workspace, None)?;
         verbose.log(format!("index build: staged records={}", records.len()));
-        records
+        (records, Vec::new())
     } else {
         let mut scan_opts = effective_opts.clone();
         scan_opts.limit = 0;
@@ -109,14 +125,25 @@ pub fn build(
             scan_opts.lang,
             scan_opts.changed
         ));
-        let catalog = workspace.scan_catalog(&scan_opts)?;
-        verbose.log(format!("index build: catalog files={}", catalog.len()));
-        workspace.materialize_proofs(&catalog)?
+        let catalog_scan = workspace.scan_catalog_with_skips(&scan_opts)?;
+        verbose.log(format!(
+            "index build: catalog files={}",
+            catalog_scan.files.len()
+        ));
+        let materialized = workspace.materialize_proofs_with_skips(&catalog_scan.files)?;
+        let mut skipped_files = catalog_scan.skipped;
+        skipped_files.extend(materialized.skipped);
+        (materialized.records, skipped_files)
     };
     verbose.log(format!(
         "index build: materialized proofs={}",
         records.len()
     ));
+    verbose.log(format!(
+        "index build: skipped files={}",
+        skipped_files.len()
+    ));
+    let skipped_count = skipped_files.len();
 
     let manifest = Manifest {
         schema_version: INDEX_SCHEMA_VERSION,
@@ -147,6 +174,27 @@ pub fn build(
     ));
     write_manifest(&active_dir.join("manifest.json"), &manifest)
         .with_context(|| format!("failed to write index manifest in {}", active_dir.display()))?;
+    let skipped_log_path = skipped_log_path(workspace, staged);
+    write_skipped_log(
+        &skipped_log_path,
+        SkippedLog {
+            schema_version: INDEX_SCHEMA_VERSION,
+            tool_version: env!("CARGO_PKG_VERSION").to_string(),
+            snapshot_id: snapshot_id.clone(),
+            snapshot_key: snapshot_key.clone(),
+            source: manifest.source.clone(),
+            scan_options: manifest.scan_options.clone(),
+            created_at_epoch_ms: now_ms(),
+            count: skipped_files.len(),
+            items: skipped_files,
+        },
+    )
+    .with_context(|| {
+        format!(
+            "failed to write skipped file log in {}",
+            active_dir.display()
+        )
+    })?;
 
     write_to_lancedb(workspace, &manifest, &records, staged, verbose).with_context(|| {
         format!(
@@ -174,7 +222,11 @@ pub fn build(
             "changedOnly": changed_only,
             "force": force,
             "path": root,
-            "storageBackend": "lancedb"
+            "storageBackend": "lancedb",
+            "skipped": {
+                "count": skipped_count,
+                "path": skipped_log_path
+            }
         }
     }))
 }
@@ -292,6 +344,35 @@ pub fn status(workspace: &Workspace) -> Result<Value> {
         result["remote"] = remote;
     }
     Ok(result)
+}
+
+pub fn skipped(workspace: &Workspace, staged: bool) -> Result<Value> {
+    let path = skipped_log_path(workspace, staged);
+    if !path.exists() {
+        return Ok(json!({
+            "exists": false,
+            "path": path,
+            "staged": staged,
+            "count": 0,
+            "items": []
+        }));
+    }
+
+    let log = read_skipped_log(&path)?;
+    Ok(json!({
+        "exists": true,
+        "path": path,
+        "staged": staged,
+        "schemaVersion": log.schema_version,
+        "toolVersion": log.tool_version,
+        "snapshot_id": log.snapshot_id,
+        "snapshotKey": log.snapshot_key,
+        "source": log.source,
+        "scanOptions": log.scan_options,
+        "createdAtEpochMs": log.created_at_epoch_ms,
+        "count": log.items.len(),
+        "items": log.items
+    }))
 }
 
 pub fn fresh_file_records(
@@ -669,6 +750,10 @@ fn active_dir(workspace: &Workspace, staged: bool) -> PathBuf {
 
 fn active_manifest_path(workspace: &Workspace, staged: bool) -> PathBuf {
     active_dir(workspace, staged).join("manifest.json")
+}
+
+fn skipped_log_path(workspace: &Workspace, staged: bool) -> PathBuf {
+    active_dir(workspace, staged).join("skipped.json")
 }
 
 pub(crate) fn snapshot_key(snapshot_id: &str) -> String {
@@ -1617,6 +1702,22 @@ fn write_manifest(path: &Path, manifest: &Manifest) -> Result<()> {
         .with_context(|| format!("failed to serialize manifest to {}", path.display()))?;
     writeln!(file).with_context(|| format!("failed to finalize {}", path.display()))?;
     Ok(())
+}
+
+fn write_skipped_log(path: &Path, log: SkippedLog) -> Result<()> {
+    let mut file =
+        File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
+    serde_json::to_writer_pretty(&mut file, &log)
+        .with_context(|| format!("failed to serialize skipped log to {}", path.display()))?;
+    writeln!(file).with_context(|| format!("failed to finalize {}", path.display()))?;
+    Ok(())
+}
+
+fn read_skipped_log(path: &Path) -> Result<SkippedLog> {
+    let data =
+        fs::read(path).with_context(|| format!("failed to read skipped log {}", path.display()))?;
+    serde_json::from_slice(&data)
+        .with_context(|| format!("failed to parse skipped log {}", path.display()))
 }
 
 #[cfg(unix)]

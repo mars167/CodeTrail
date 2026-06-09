@@ -614,6 +614,15 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 json!([index::status(&workspace)?]),
                 Vec::new(),
             ),
+            IndexCommand::Skipped { staged } => output::response(
+                "index skipped",
+                "index skipped",
+                json!({ "staged": staged }),
+                &workspace.snapshot_id,
+                output::freshness(),
+                json!([index::skipped(&workspace, *staged)?]),
+                Vec::new(),
+            ),
             IndexCommand::Verify => {
                 let (result, code) = index::verify(&workspace)?;
                 exit_code = code;
@@ -838,6 +847,7 @@ fn command_name(command: &Command) -> &'static str {
             IndexCommand::Build { .. } => "index build",
             IndexCommand::Update => "index update",
             IndexCommand::Status => "index status",
+            IndexCommand::Skipped { .. } => "index skipped",
             IndexCommand::Verify => "index verify",
             IndexCommand::Clean => "index clean",
             IndexCommand::ImportScip { .. } => "index import-scip",

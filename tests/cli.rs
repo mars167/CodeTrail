@@ -2954,6 +2954,63 @@ fn index_build_writes_lancedb_only_storage() {
 }
 
 #[test]
+fn index_skipped_reports_files_skipped_by_last_build() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
+    fs::write(dir.path().join("blob.bin"), b"prefix\0suffix").unwrap();
+
+    codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "skipped"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let result = &json["results"][0];
+    assert_eq!(result["exists"], true);
+    assert_eq!(result["count"], 1);
+    assert_eq!(result["items"][0]["path"], "blob.bin");
+    assert_eq!(result["items"][0]["reason"], "binary");
+    assert_eq!(result["items"][0]["stage"], "catalog");
+
+    let public_output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "json", "index", "skipped"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let public_json: Value = serde_json::from_slice(&public_output).unwrap();
+    assert_eq!(public_json["results"][0]["items"][0]["path"], "blob.bin");
+
+    let text = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "skipped"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(text).unwrap();
+    assert!(text.contains("Skipped files: 1"));
+    assert!(text.contains("blob.bin"));
+    assert!(text.contains("binary"));
+}
+
+#[test]
 fn index_build_changed_limits_catalog_to_changed_files() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
