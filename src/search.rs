@@ -148,7 +148,9 @@ pub fn list(
             if !path_matches_output_filters(workspace, &entry.path, opts) {
                 continue;
             }
-            let metadata = fs::metadata(&entry.path)?;
+            let Ok(metadata) = fs::metadata(&entry.path) else {
+                continue;
+            };
             results.push(json!({
                 "path": workspace.rel_path(&entry.path),
                 "kind": if metadata.is_dir() { "directory" } else { "file" },
@@ -486,7 +488,9 @@ fn collect_tree(
         if opts.limit > 0 && results.len() >= opts.limit {
             return Ok(());
         }
-        let metadata = fs::metadata(&entry.path)?;
+        let Ok(metadata) = fs::metadata(&entry.path) else {
+            continue;
+        };
         if path_matches_output_filters(workspace, &entry.path, opts) {
             results.push(json!({
                 "path": workspace.rel_path(&entry.path),
@@ -544,7 +548,9 @@ fn browse_entries(
 
     let mut entries = Vec::new();
     for entry in builder.build() {
-        let entry = entry?;
+        let Ok(entry) = entry else {
+            continue;
+        };
         if entry.path() == base {
             continue;
         }

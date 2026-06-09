@@ -132,8 +132,9 @@ impl Workspace {
 
         let mut files = Vec::new();
         for entry in builder.build() {
-            let entry = entry
-                .with_context(|| format!("failed to scan workspace {}", self.root.display()))?;
+            let Ok(entry) = entry else {
+                continue;
+            };
             let path = entry.path();
             let Some(file_type) = entry.file_type() else {
                 continue;
@@ -181,20 +182,11 @@ impl Workspace {
     pub fn materialize_proofs(&self, catalog: &[FileCatalogRecord]) -> Result<Vec<FileRecord>> {
         let mut records = catalog
             .par_iter()
-            .map(|file| -> Result<FileRecord> {
+            .filter_map(|file| {
                 let path = self.abs_path(&file.path);
-                let content =
-                    fs::read(&path).with_context(|| format!("failed to read {}", file.path))?;
-                Ok(FileRecord {
-                    path: file.path.clone(),
-                    language: file.language.clone(),
-                    size: file.size,
-                    mtime_ms: file.mtime_ms,
-                    mode: file.mode,
-                    hash: format!("blake3:{}", blake3::hash(&content).to_hex()),
-                })
+                file_record_for_catalog(file, || fs::read(&path))
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Vec<_>>();
         records.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(records)
     }
@@ -221,7 +213,10 @@ impl Workspace {
             .parents(!opts.no_ignore);
 
         for entry in builder.build() {
-            let entry = entry?;
+            let Ok(entry) = entry else {
+                unreadable_skipped += 1;
+                continue;
+            };
             let path = entry.path();
             let Some(file_type) = entry.file_type() else {
                 continue;
@@ -436,6 +431,21 @@ fn file_metadata_for_catalog(
     }
 }
 
+fn file_record_for_catalog(
+    file: &FileCatalogRecord,
+    read_file: impl FnOnce() -> std::io::Result<Vec<u8>>,
+) -> Option<FileRecord> {
+    let content = read_file().ok()?;
+    Some(FileRecord {
+        path: file.path.clone(),
+        language: file.language.clone(),
+        size: file.size,
+        mtime_ms: file.mtime_ms,
+        mode: file.mode,
+        hash: format!("blake3:{}", blake3::hash(&content).to_hex()),
+    })
+}
+
 fn is_probably_binary(path: &Path) -> bool {
     probably_binary_result(path).unwrap_or(true)
 }
@@ -488,6 +498,21 @@ mod tests {
 
         // Then: the caller can skip the entry instead of aborting indexing.
         assert!(metadata.is_none());
+    }
+
+    #[test]
+    fn catalog_read_errors_skip_the_materialized_record() {
+        let file = FileCatalogRecord {
+            path: "nul".to_string(),
+            language: "text".to_string(),
+            size: 0,
+            mtime_ms: 0,
+            mode: 0,
+        };
+
+        let record = file_record_for_catalog(&file, || Err(io::Error::from_raw_os_error(1)));
+
+        assert!(record.is_none());
     }
 
     #[test]

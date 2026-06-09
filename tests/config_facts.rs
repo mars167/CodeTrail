@@ -99,6 +99,29 @@ fn extracts_structured_config_key_paths_and_supports_key_filtering() {
 }
 
 #[test]
+fn workspace_config_extraction_skips_unreadable_files() {
+    let dir = tempdir().unwrap();
+    write(
+        &dir.path().join("Cargo.toml"),
+        "[package]\nname = \"demo\"\n",
+    );
+    write(&dir.path().join("src/lib.rs"), "pub fn demo() {}\n");
+    write(
+        &dir.path().join("config/app.yaml"),
+        "service:\n  port: 8080\n",
+    );
+
+    let graph = discover_project_graph(dir.path()).unwrap();
+    fs::remove_file(dir.path().join("config/app.yaml")).unwrap();
+
+    let facts =
+        extract_workspace_config_facts(dir.path(), &graph, ConfigFactExtractOptions::test())
+            .unwrap();
+
+    assert!(!facts.iter().any(|fact| fact.path == "config/app.yaml"));
+}
+
+#[test]
 fn extracts_workflow_jobs_steps_and_script_blocks() {
     let dir = tempdir().unwrap();
     write(
