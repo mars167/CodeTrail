@@ -22,9 +22,6 @@ concurrency:
 
 env:
   CARGO_HOME: /cache/codetrail/cargo
-  SCCACHE_DIR: /cache/codetrail/sccache
-  SCCACHE_CACHE_SIZE: 8G
-  RUSTC_WRAPPER: sccache
   CARGO_INCREMENTAL: "0"
   CARGO_BUILD_JOBS: "2"
   RUOYI_REPO_URL: https://git.home.arpa/mars/RuoYi.git
@@ -42,10 +39,10 @@ jobs:
     steps:
       - name: Prepare CI tools
         run: |
-          mkdir -p "$CARGO_HOME" "$SCCACHE_DIR"
-          if ! command -v sccache >/dev/null 2>&1 || ! command -v protoc >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
+          mkdir -p "$CARGO_HOME"
+          if ! command -v protoc >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
             apt-get update
-            apt-get install -y --no-install-recommends git ca-certificates nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang sccache
+            apt-get install -y --no-install-recommends git ca-certificates nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang
           fi
           rustup component add rustfmt
       - name: Configure internal Gitea TLS
@@ -54,9 +51,6 @@ jobs:
         uses: actions/checkout@v4
       - name: Run PR quality gate
         run: scripts/quality-gate.sh pr
-      - name: Show compiler cache stats
-        if: ${{ always() }}
-        run: sccache --show-stats || true
 
   main-gate:
     name: Main Gate
@@ -68,10 +62,10 @@ jobs:
     steps:
       - name: Prepare CI tools
         run: |
-          mkdir -p "$CARGO_HOME" "$SCCACHE_DIR"
-          if ! command -v sccache >/dev/null 2>&1 || ! command -v protoc >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
+          mkdir -p "$CARGO_HOME"
+          if ! command -v protoc >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
             apt-get update
-            apt-get install -y --no-install-recommends git ca-certificates jq nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang sccache
+            apt-get install -y --no-install-recommends git ca-certificates jq nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang
           fi
           rustup component add rustfmt
       - name: Configure internal Gitea TLS
@@ -85,9 +79,6 @@ jobs:
         env:
           REQUIRE_TEST_REPO: "1"
           TEST_REPO: ${{ env.RUOYI_CACHE_DIR }}
-      - name: Show compiler cache stats
-        if: ${{ always() }}
-        run: sccache --show-stats || true
 
   cross-check:
     name: Cross-Platform Check
@@ -99,10 +90,10 @@ jobs:
     steps:
       - name: Prepare cross tools
         run: |
-          mkdir -p "$CARGO_HOME" "$SCCACHE_DIR"
-          if ! command -v sccache >/dev/null 2>&1 || ! command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+          mkdir -p "$CARGO_HOME"
+          if ! command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
             apt-get update
-            apt-get install -y --no-install-recommends git ca-certificates nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang sccache mingw-w64
+            apt-get install -y --no-install-recommends git ca-certificates nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang mingw-w64
           fi
           rustup target add x86_64-pc-windows-gnu
       - name: Configure internal Gitea TLS
@@ -111,9 +102,6 @@ jobs:
         uses: actions/checkout@v4
       - name: Cross-compile check (Windows)
         run: cargo check --locked --target x86_64-pc-windows-gnu
-      - name: Show compiler cache stats
-        if: ${{ always() }}
-        run: sccache --show-stats || true
 
   bench:
     name: Benchmark Gate
@@ -125,10 +113,10 @@ jobs:
     steps:
       - name: Prepare benchmark tools
         run: |
-          mkdir -p "$CARGO_HOME" "$SCCACHE_DIR"
-          if ! command -v sccache >/dev/null 2>&1 || ! command -v hyperfine >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+          mkdir -p "$CARGO_HOME"
+          if ! command -v hyperfine >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
             apt-get update
-            apt-get install -y --no-install-recommends git ca-certificates jq bc hyperfine nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang sccache
+            apt-get install -y --no-install-recommends git ca-certificates jq bc hyperfine nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang
           fi
           rustup component add rustfmt
       - name: Configure internal Gitea TLS
@@ -142,6 +130,3 @@ jobs:
         env:
           REQUIRE_TEST_REPO: "1"
           TEST_REPO: ${{ env.RUOYI_CACHE_DIR }}
-      - name: Show compiler cache stats
-        if: ${{ always() }}
-        run: sccache --show-stats || true
