@@ -16,7 +16,7 @@ flowchart TB
   L0 --> Read["list / tree / read / changed / status"]
   L1 --> Nav["defs / refs / symbols"]
   L2 --> Calls["calls / callers"]
-  Ops --> Index["index build / update / status / verify / clean / pack / unpack / import-scip"]
+  Ops --> Index["index build / update / status / skipped / verify / clean / pack / unpack / import-scip"]
   Ops --> Query["query replay / show / list / delete"]
   Ops --> Hooks["hooks install / uninstall / status"]
 ```
@@ -82,6 +82,13 @@ MCP tool result 的 `content[0].text` 使用同一 public JSON 投影。
 - 宽查询 guard 仍会返回少量样本和 caveat，避免终端与机器输出被大结果集淹没。
 - `read` 仍是编辑前验证入口；公开 JSON 不再内嵌 `readCommand`，调用方应使用结果里的 `path` 和 `range` 组合读取目标。
 
+## Index Skipped Log
+
+- `index build` 会把本次索引主动跳过的 generated、binary、metadata/read error 项写入 `.codetrail/working/skipped.json`；`index build --staged` 写入 `.codetrail/staged/skipped.json`。
+- `index skipped` 返回最近一次 working-tree build 的跳过记录；`index skipped --staged` 查看 staged build 的记录。
+- 每条 `results[0].items[]` 至少包含 `path`、`stage` 和 `reason`；读文件、metadata 或 walker 失败时还会包含 `message`。
+- include/exclude/lang/changed 等正常范围过滤不进入 skipped log，避免把查询范围决策混入异常/主动跳过诊断。
+
 ## 可靠性流转
 
 ```mermaid
@@ -123,6 +130,7 @@ flowchart LR
 - `read` 直接输出文件内容。
 - `calls`/`callers` 按 caller -> callee 关系渲染，并附带位置。
 - `index build/update/import-scip/pack/unpack` 在 TTY 上显示加载进度；非 TTY 保持无 spinner，避免污染脚本输出。
+- `index skipped` 输出跳过数量、日志路径和每条 path/reason/stage。
 - caveats 以短行展示，避免把内部审计、agent next action 或完整 schema 打到终端。
 
 ## 退出码

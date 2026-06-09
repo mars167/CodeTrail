@@ -11,6 +11,8 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::scan_diagnostics::SkippedFile;
+
 #[derive(Clone, Debug)]
 pub struct ScanOptions {
     pub include: Vec<String>,
@@ -44,6 +46,18 @@ pub struct FileCatalogRecord {
     pub size: u64,
     pub mtime_ms: u128,
     pub mode: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct CatalogScan {
+    pub files: Vec<FileCatalogRecord>,
+    pub skipped: Vec<SkippedFile>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MaterializedProofs {
+    pub records: Vec<FileRecord>,
+    pub skipped: Vec<SkippedFile>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -121,6 +135,10 @@ impl Workspace {
     }
 
     pub fn scan_catalog(&self, opts: &ScanOptions) -> Result<Vec<FileCatalogRecord>> {
+        Ok(self.scan_catalog_with_skips(opts)?.files)
+    }
+
+    pub fn scan_catalog_with_skips(&self, opts: &ScanOptions) -> Result<CatalogScan> {
         let mut builder = WalkBuilder::new(&self.root);
         builder
             .hidden(!opts.hidden)
@@ -131,17 +149,45 @@ impl Workspace {
             .parents(!opts.no_ignore);
 
         let mut files = Vec::new();
+        let mut skipped = Vec::new();
         for entry in builder.build() {
-            let entry = entry
-                .with_context(|| format!("failed to scan workspace {}", self.root.display()))?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    skipped.push(SkippedFile::with_message(
+                        "<unknown>",
+                        "walk",
+                        "walk_error",
+                        error.to_string(),
+                    ));
+                    continue;
+                }
+            };
             let path = entry.path();
             let Some(file_type) = entry.file_type() else {
                 continue;
             };
             if file_type.is_dir() && should_skip_dir(path, opts.no_ignore) {
+                if !opts.no_ignore && is_generated_path(path) {
+                    skipped.push(SkippedFile::new(
+                        self.rel_path(path),
+                        "catalog",
+                        "generated",
+                    ));
+                }
                 continue;
             }
-            if !file_type.is_file() || should_skip_path(path, opts.no_ignore) {
+            if !file_type.is_file() {
+                continue;
+            }
+            if should_skip_path(path, opts.no_ignore) {
+                if !opts.no_ignore && is_generated_path(path) {
+                    skipped.push(SkippedFile::new(
+                        self.rel_path(path),
+                        "catalog",
+                        "generated",
+                    ));
+                }
                 continue;
             }
 
@@ -156,11 +202,35 @@ impl Workspace {
             if opts.changed && !self.changed.iter().any(|changed| changed.path == rel) {
                 continue;
             }
-            if is_probably_binary(path) {
-                continue;
+            let metadata = match fs::metadata(path) {
+                Ok(metadata) if metadata.is_file() => metadata,
+                Ok(_) => continue,
+                Err(error) => {
+                    skipped.push(SkippedFile::with_message(
+                        rel,
+                        "catalog",
+                        "metadata_error",
+                        error.to_string(),
+                    ));
+                    continue;
+                }
+            };
+            match probably_binary_result(path) {
+                Ok(true) => {
+                    skipped.push(SkippedFile::new(rel, "catalog", "binary"));
+                    continue;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    skipped.push(SkippedFile::with_message(
+                        rel,
+                        "catalog",
+                        "read_error",
+                        error.to_string(),
+                    ));
+                    continue;
+                }
             }
-            let metadata =
-                fs::metadata(path).with_context(|| format!("failed to read metadata for {rel}"))?;
             files.push(FileCatalogRecord {
                 path: rel,
                 language,
@@ -174,28 +244,36 @@ impl Workspace {
         }
 
         files.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(files)
+        skipped.sort_by(|a, b| a.path.cmp(&b.path).then(a.stage.cmp(&b.stage)));
+        Ok(CatalogScan { files, skipped })
     }
 
     pub fn materialize_proofs(&self, catalog: &[FileCatalogRecord]) -> Result<Vec<FileRecord>> {
-        let mut records = catalog
+        Ok(self.materialize_proofs_with_skips(catalog)?.records)
+    }
+
+    pub fn materialize_proofs_with_skips(
+        &self,
+        catalog: &[FileCatalogRecord],
+    ) -> Result<MaterializedProofs> {
+        let outcomes = catalog
             .par_iter()
-            .map(|file| -> Result<FileRecord> {
+            .map(|file| {
                 let path = self.abs_path(&file.path);
-                let content =
-                    fs::read(&path).with_context(|| format!("failed to read {}", file.path))?;
-                Ok(FileRecord {
-                    path: file.path.clone(),
-                    language: file.language.clone(),
-                    size: file.size,
-                    mtime_ms: file.mtime_ms,
-                    mode: file.mode,
-                    hash: format!("blake3:{}", blake3::hash(&content).to_hex()),
-                })
+                file_record_for_catalog(file, || fs::read(&path))
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Vec<_>>();
+        let mut records = Vec::new();
+        let mut skipped = Vec::new();
+        for outcome in outcomes {
+            match outcome {
+                Ok(record) => records.push(record),
+                Err(skip) => skipped.push(skip),
+            }
+        }
         records.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(records)
+        skipped.sort_by(|a, b| a.path.cmp(&b.path).then(a.stage.cmp(&b.stage)));
+        Ok(MaterializedProofs { records, skipped })
     }
 
     pub fn scan_files(&self, opts: &ScanOptions) -> Result<Vec<FileRecord>> {
@@ -220,7 +298,10 @@ impl Workspace {
             .parents(!opts.no_ignore);
 
         for entry in builder.build() {
-            let entry = entry?;
+            let Ok(entry) = entry else {
+                unreadable_skipped += 1;
+                continue;
+            };
             let path = entry.path();
             let Some(file_type) = entry.file_type() else {
                 continue;
@@ -426,8 +507,36 @@ fn is_generated_path(path: &Path) -> bool {
     })
 }
 
-fn is_probably_binary(path: &Path) -> bool {
-    probably_binary_result(path).unwrap_or(true)
+#[cfg(test)]
+fn file_metadata_for_catalog(
+    read_metadata: impl FnOnce() -> std::io::Result<fs::Metadata>,
+) -> Option<fs::Metadata> {
+    match read_metadata() {
+        Ok(metadata) if metadata.is_file() => Some(metadata),
+        Ok(_) | Err(_) => None,
+    }
+}
+
+fn file_record_for_catalog(
+    file: &FileCatalogRecord,
+    read_file: impl FnOnce() -> std::io::Result<Vec<u8>>,
+) -> std::result::Result<FileRecord, SkippedFile> {
+    let content = read_file().map_err(|error| {
+        SkippedFile::with_message(
+            file.path.clone(),
+            "materialize",
+            "read_error",
+            error.to_string(),
+        )
+    })?;
+    Ok(FileRecord {
+        path: file.path.clone(),
+        language: file.language.clone(),
+        size: file.size,
+        mtime_ms: file.mtime_ms,
+        mode: file.mode,
+        hash: format!("blake3:{}", blake3::hash(&content).to_hex()),
+    })
 }
 
 fn probably_binary_result(path: &Path) -> Result<bool> {
@@ -465,7 +574,38 @@ fn short_hash(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+
     use super::*;
+
+    #[test]
+    fn catalog_metadata_lookup_errors_skip_the_entry() {
+        // Given: Windows reserved device paths such as `nul` can be visible to
+        // the walker but fail when statted with OS error 1.
+        // When: catalog metadata lookup sees that OS error.
+        let metadata = file_metadata_for_catalog(|| Err(io::Error::from_raw_os_error(1)));
+
+        // Then: the caller can skip the entry instead of aborting indexing.
+        assert!(metadata.is_none());
+    }
+
+    #[test]
+    fn catalog_read_errors_skip_the_materialized_record() {
+        let file = FileCatalogRecord {
+            path: "nul".to_string(),
+            language: "text".to_string(),
+            size: 0,
+            mtime_ms: 0,
+            mode: 0,
+        };
+
+        let record = file_record_for_catalog(&file, || Err(io::Error::from_raw_os_error(1)));
+
+        let skipped = record.unwrap_err();
+        assert_eq!(skipped.path, "nul");
+        assert_eq!(skipped.stage, "materialize");
+        assert_eq!(skipped.reason, "read_error");
+    }
 
     #[test]
     fn parse_git_status_line_normalizes_windows_separators() {

@@ -33,11 +33,37 @@ pub(super) fn render_text_status_like(
             }
             "index status" | "index verify" => render_index_status_result(result, out)?,
             "index build" | "index update" => render_index_build_result(result, out)?,
+            "index skipped" => render_index_skipped_result(result, out)?,
             "index import-scip" => render_index_import_result(result, out)?,
             "index pack" => render_index_pack_result(result, out)?,
             "index unpack" => render_index_unpack_result(result, out)?,
             "index clean" => render_index_clean_result(result, out)?,
             _ => writeln!(out, "{}", one_line_json(result))?,
+        }
+    }
+    Ok(())
+}
+
+fn render_index_skipped_result(result: &Value, out: &mut dyn Write) -> io::Result<()> {
+    let count = result.get("count").and_then(Value::as_u64).unwrap_or(0);
+    writeln!(out, "Skipped files: {count}")?;
+    if let Some(path) = result.get("path").and_then(Value::as_str) {
+        writeln!(out, "Path: {path}")?;
+    }
+    let Some(items) = result.get("items").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for item in items {
+        let path = item.get("path").and_then(Value::as_str).unwrap_or("");
+        let reason = item
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("skipped");
+        let stage = item.get("stage").and_then(Value::as_str).unwrap_or("scan");
+        if let Some(message) = item.get("message").and_then(Value::as_str) {
+            writeln!(out, "{path}  {reason} ({stage}): {message}")?;
+        } else {
+            writeln!(out, "{path}  {reason} ({stage})")?;
         }
     }
     Ok(())
@@ -162,6 +188,7 @@ pub(super) fn is_status_like(command: &str) -> bool {
             | "index verify"
             | "index build"
             | "index update"
+            | "index skipped"
             | "index import-scip"
             | "index pack"
             | "index unpack"

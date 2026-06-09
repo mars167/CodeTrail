@@ -12,7 +12,7 @@ mod yaml;
 
 use std::{collections::BTreeSet, fs, path::Path};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -139,9 +139,9 @@ pub fn extract_workspace_config_facts(
     let mut facts = Vec::new();
     for path in paths {
         let full_path = workspace_root.join(&path);
-        let source = fs::read_to_string(&full_path).with_context(|| {
-            format!("failed to read config fact source {}", full_path.display())
-        })?;
+        let Ok(source) = fs::read_to_string(&full_path) else {
+            continue;
+        };
         facts.extend(extract_config_facts_for_file(
             &path, &source, graph, options,
         ));
