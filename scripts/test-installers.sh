@@ -31,6 +31,11 @@ if command -v pwsh >/dev/null 2>&1; then
   pwsh -NoLogo -NoProfile -NonInteractive -Command "\$ErrorActionPreference = 'Stop'; \$null = [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw '$repo_root/install.ps1'), [ref]\$null)"
   CODETRAIL_ARCH=X64 CODETRAIL_DRY_RUN=1 pwsh -NoLogo -NoProfile -NonInteractive -File "$repo_root/install.ps1" | grep -F 'asset=codetrail-windows-amd64.exe.zip' >/dev/null
   CODETRAIL_ARCH=Arm64 CODETRAIL_DRY_RUN=1 pwsh -NoLogo -NoProfile -NonInteractive -File "$repo_root/install.ps1" | grep -F 'asset=codetrail-windows-arm64.exe.zip' >/dev/null
+elif [[ "${REQUIRE_PWSH:-0}" == "1" ]]; then
+  echo "PowerShell installer smoke requested but pwsh is missing" >&2
+  exit 1
+else
+  echo "PowerShell installer smoke skipped: pwsh not found" >&2
 fi
 
 echo "Installer smoke tests passed."

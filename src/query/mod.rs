@@ -135,9 +135,7 @@ impl QueryService {
             scoped_query(query, &scan),
             &self.workspace.snapshot_id,
             output::source_fact(),
-            qo.index.clone(),
-            qo.results.clone(),
-            Vec::new(),
+            output::IndexedResponseParts::new(qo.index.clone(), qo.results.clone(), Vec::new()),
         );
         Ok(self.finalize(page_response(response, qo)))
     }
@@ -155,9 +153,7 @@ impl QueryService {
             ),
             &self.workspace.snapshot_id,
             output::source_fact(),
-            qo.index.clone(),
-            qo.results.clone(),
-            Vec::new(),
+            output::IndexedResponseParts::new(qo.index.clone(), qo.results.clone(), Vec::new()),
         );
         Ok(self.finalize(page_response(response, qo)))
     }
@@ -172,9 +168,7 @@ impl QueryService {
             scoped_query(json!({ "pattern": pattern, "mode": "strict_glob" }), &scan),
             &self.workspace.snapshot_id,
             output::source_fact(),
-            qo.index.clone(),
-            qo.results.clone(),
-            Vec::new(),
+            output::IndexedResponseParts::new(qo.index.clone(), qo.results.clone(), Vec::new()),
         );
         Ok(self.finalize(page_response(response, qo)))
     }
@@ -266,9 +260,7 @@ impl QueryService {
                 ),
                 &self.workspace.snapshot_id,
                 output::precise_fact(),
-                precise.index,
-                precise.results,
-                Vec::new(),
+                output::IndexedResponseParts::new(precise.index, precise.results, Vec::new()),
             )));
         }
 
@@ -309,9 +301,7 @@ impl QueryService {
                 ),
                 &self.workspace.snapshot_id,
                 output::precise_fact(),
-                precise.index,
-                precise.results,
-                Vec::new(),
+                output::IndexedResponseParts::new(precise.index, precise.results, Vec::new()),
             )));
         }
 
@@ -340,10 +330,12 @@ impl QueryService {
             ),
             &self.workspace.snapshot_id,
             output::source_fact(),
-            qo.index.clone(),
-            qo.results.clone(),
-            vec!["refs is identifier-boundary text search unless a precise occurrence index is available"
-                .to_string()],
+            output::IndexedResponseParts::new(
+                qo.index.clone(),
+                qo.results.clone(),
+                vec!["refs is identifier-boundary text search unless a precise occurrence index is available"
+                    .to_string()],
+            ),
         );
         Ok(self.finalize(page_response(response, qo)))
     }
@@ -367,9 +359,7 @@ impl QueryService {
                 scoped_query(json!({ "query": query, "producer": "scip" }), &scan),
                 &self.workspace.snapshot_id,
                 output::precise_fact(),
-                precise.index,
-                page.results.clone(),
-                Vec::new(),
+                output::IndexedResponseParts::new(precise.index, page.results.clone(), Vec::new()),
             );
             return Ok(self.finalize(output::with_page_meta(
                 response,
@@ -436,9 +426,7 @@ impl QueryService {
                     ),
                     &self.workspace.snapshot_id,
                     output::inferred_candidate(),
-                    index_meta,
-                    json!(results),
-                    Vec::new(),
+                    output::IndexedResponseParts::new(index_meta, json!(results), Vec::new()),
                 )));
             }
         }
@@ -478,9 +466,7 @@ impl QueryService {
                     ),
                     &self.workspace.snapshot_id,
                     output::inferred_candidate(),
-                    index_meta,
-                    json!(results),
-                    Vec::new(),
+                    output::IndexedResponseParts::new(index_meta, json!(results), Vec::new()),
                 )));
             }
         }

@@ -18,8 +18,8 @@ pub mod reconcile;
 pub struct Watcher {
     pub workspace_root: PathBuf,
     pub running: bool,
-    pub last_event_at: Option<Instant>,
-    pub last_reconcile_at: Option<Instant>,
+    pub last_event_at: Option<u64>,
+    pub last_reconcile_at: Option<u64>,
     pub queue_len: usize,
     overlay: Overlay,
 }
@@ -44,7 +44,7 @@ impl Watcher {
     /// Returns the reconcile result. Does NOT start long-running watch.
     pub fn run_once(&mut self) -> Result<ReconcileResult> {
         let result = reconcile::reconcile(&self.workspace_root)?;
-        self.last_reconcile_at = Some(Instant::now());
+        self.last_reconcile_at = Some(now_ms());
         self.overlay.update_from_reconcile(&result);
         Ok(result)
     }
@@ -57,6 +57,13 @@ impl Watcher {
     /// Collect a batch of file system events into a normalized change set.
     /// Uses notify crate to watch for events with a debounce window.
     pub fn collect_events(&mut self, debounce_ms: u64) -> Result<ChangeSet> {
+        self.running = true;
+        let result = self.collect_events_running(debounce_ms);
+        self.running = false;
+        result
+    }
+
+    fn collect_events_running(&mut self, debounce_ms: u64) -> Result<ChangeSet> {
         use notify::{Event, RecursiveMode, Watcher as _};
 
         let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
@@ -82,7 +89,7 @@ impl Watcher {
                     if !events::should_skip_event(&event) {
                         raw_events.push(event);
                     }
-                    self.last_event_at = Some(Instant::now());
+                    self.last_event_at = Some(now_ms());
                     // Break when debounce window has elapsed after events arrived
                     let elapsed = start.elapsed();
                     if elapsed >= timeout && !raw_events.is_empty() {
@@ -115,19 +122,16 @@ impl Watcher {
     /// Return the current watcher state as a JSON value.
     pub fn status(&self) -> Value {
         let overlay_status = self.overlay.status();
-        let dirty_is_empty = overlay_status["dirtyFiles"]
-            .as_array()
-            .map(|a| a.is_empty())
-            .unwrap_or(true);
-        let stale = !dirty_is_empty;
+        let stale = overlay_status["stale"].as_bool().unwrap_or(false);
 
         json!({
             "running": self.running,
+            "state": if self.running { "collecting" } else { "idle" },
             "root": self.workspace_root,
             "queueLength": self.queue_len,
             "stale": stale,
-            "lastEventAt": self.last_event_at.and_then(|_| Some(now_ms())),
-            "lastReconcileAt": self.last_reconcile_at.and_then(|_| Some(now_ms())),
+            "lastEventAt": self.last_event_at,
+            "lastReconcileAt": self.last_reconcile_at,
             "mode": "reconcile_on_demand",
             "overlay": overlay_status,
         })
@@ -140,4 +144,43 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_marks_stale_when_overlay_only_has_added_and_deleted_files() {
+        // Given: a reconcile result where only added/deleted files make the overlay stale.
+        let mut watcher = Watcher::start(Path::new("/tmp/codetrail-watch-status")).unwrap();
+        let result = ReconcileResult {
+            dirty_files: Vec::new(),
+            added_files: vec!["src/new.rs".to_string()],
+            deleted_files: vec!["src/old.rs".to_string()],
+            stale: true,
+            total_files_scanned: 1,
+            reconciled_at: 0,
+        };
+        watcher.overlay.update_from_reconcile(&result);
+
+        // When: top-level watcher status is rendered.
+        let status = watcher.status();
+
+        // Then: top-level stale follows the overlay stale state, not only dirty files.
+        assert_eq!(status["stale"], true);
+        assert_eq!(status["overlay"]["stale"], true);
+        assert_eq!(status["overlay"]["addedCount"], 1);
+        assert_eq!(status["overlay"]["deletedCount"], 1);
+    }
+
+    #[test]
+    fn status_reports_idle_state_for_on_demand_watcher() {
+        let watcher = Watcher::start(Path::new("/tmp/codetrail-watch-idle")).unwrap();
+        let status = watcher.status();
+
+        assert_eq!(status["running"], false);
+        assert_eq!(status["state"], "idle");
+        assert_eq!(status["mode"], "reconcile_on_demand");
+    }
 }

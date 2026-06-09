@@ -239,7 +239,6 @@ impl CapabilityManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::generation_manifest::GenerationManifest;
     use crate::project_graph::{ProjectLanguage, ProjectRoot, ProjectRootKind};
 
     #[test]

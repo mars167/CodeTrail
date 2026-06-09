@@ -54,7 +54,18 @@ pub(crate) fn build_petgraph_backend(
     Ok(())
 }
 
-/// Register function nodes and CALLS edges from the SCIP occurrence DB.
+#[derive(Clone)]
+struct ScipDefinition {
+    symbol_key: String,
+    name: String,
+    language: String,
+    path: String,
+    start_line: u32,
+    start_column: u32,
+    end_line: u32,
+    end_column: u32,
+}
+
 fn build_from_scip(backend: &mut PetgraphBackend, workspace: &Workspace) {
     let db_path = native_db_path(workspace);
     if !db_path.exists() {
@@ -68,58 +79,59 @@ fn build_from_scip(backend: &mut PetgraphBackend, workspace: &Workspace) {
         return;
     };
 
-    // Map: symbol name -> definition file path
-    let mut def_locations: HashMap<String, (String, u32, u32)> = HashMap::new();
+    let mut def_locations: HashMap<String, ScipDefinition> = HashMap::new();
 
     for sym in &symbols {
         if sym.role == "definition" {
             def_locations.insert(
-                sym.name.clone(),
-                (sym.path.clone(), sym.start_line, sym.start_column),
+                sym.symbol_key.clone(),
+                ScipDefinition {
+                    symbol_key: sym.symbol_key.clone(),
+                    name: sym.name.clone(),
+                    language: sym.language.clone(),
+                    path: sym.path.clone(),
+                    start_line: sym.start_line,
+                    start_column: sym.start_column,
+                    end_line: sym.end_line,
+                    end_column: sym.end_column,
+                },
             );
         }
     }
 
-    // Register function nodes from definitions
-    for (name, (file_path, start_line, start_column)) in &def_locations {
+    for definition in def_locations.values() {
         backend.ensure_node(GraphNode {
-            id: name.clone(),
+            id: definition.symbol_key.clone(),
+            display_name: definition.name.clone(),
             kind: NodeKind::Function,
-            language: String::new(),
-            file_path: file_path.clone(),
-            start_line: *start_line,
-            start_column: *start_column,
-            end_line: *start_line,
-            end_column: start_column.saturating_add(name.len() as u32),
+            language: definition.language.clone(),
+            file_path: definition.path.clone(),
+            start_line: definition.start_line,
+            start_column: definition.start_column,
+            end_line: definition.end_line,
+            end_column: definition.end_column,
         });
     }
 
-    // Build CALLS edges from references
-    // For each symbol, query its references; if a reference site falls within
-    // another function's body in the same file, add a CALLS edge.
-
-    for sym in &symbols {
-        let Ok(refs) = scip::query_refs(&db_path, &sym.name) else {
+    for sym in def_locations.values() {
+        let Ok(refs) = scip::query_refs_by_symbol_key(&db_path, &sym.symbol_key) else {
             continue;
         };
         for r in refs {
-            let callee_name = &r.name;
-            // Find enclosing function: the last function defined in the same file
-            // whose start_line is <= the reference line.
             let enclosing = def_locations
-                .iter()
-                .filter(|(_, (path, _, _))| path == &r.path)
-                .filter(|(_, (_, line, _))| *line <= r.start_line)
-                .max_by_key(|(_, (_, line, _))| *line);
+                .values()
+                .filter(|definition| definition.path == r.path)
+                .filter(|definition| definition.start_line <= r.start_line)
+                .max_by_key(|definition| definition.start_line);
 
-            if let Some((caller_name, _)) = enclosing {
-                if caller_name == callee_name {
-                    continue; // skip self-references
+            if let Some(caller) = enclosing {
+                if caller.symbol_key == r.symbol_key {
+                    continue;
                 }
 
-                // Ensure callee node exists
                 backend.ensure_node(GraphNode {
-                    id: callee_name.clone(),
+                    id: r.symbol_key.clone(),
+                    display_name: r.name.clone(),
                     kind: NodeKind::Function,
                     language: r.language.clone(),
                     file_path: r.path.clone(),
@@ -129,10 +141,13 @@ fn build_from_scip(backend: &mut PetgraphBackend, workspace: &Workspace) {
                     end_column: r.end_column,
                 });
 
-                let caller_idx = backend.node_by_id[caller_name];
-                let callee_idx = backend.node_by_id[callee_name];
+                let (Some(&caller_idx), Some(&callee_idx)) = (
+                    backend.node_by_id.get(&caller.symbol_key),
+                    backend.node_by_id.get(&r.symbol_key),
+                ) else {
+                    continue;
+                };
 
-                // Avoid duplicate edges
                 let edge_exists = backend
                     .graph
                     .edges_directed(caller_idx, petgraph::Direction::Outgoing)
@@ -148,8 +163,8 @@ fn build_from_scip(backend: &mut PetgraphBackend, workspace: &Workspace) {
                             file_path: r.path.clone(),
                             call_line: r.start_line,
                             call_column: r.start_column,
-                            caller_id: caller_name.clone(),
-                            callee_id: callee_name.clone(),
+                            caller_id: caller.symbol_key.clone(),
+                            callee_id: r.symbol_key.clone(),
                             language: r.language.clone(),
                             file_hash: r.file_hash.clone(),
                         },
@@ -196,6 +211,7 @@ fn build_tree_sitter_edges(backend: &mut PetgraphBackend, workspace: &Workspace)
         // Ensure caller node
         backend.ensure_node(GraphNode {
             id: caller_id.clone(),
+            display_name: caller_id.clone(),
             kind: NodeKind::Function,
             language: call.language.clone(),
             file_path: call.path.clone(),
@@ -209,6 +225,7 @@ fn build_tree_sitter_edges(backend: &mut PetgraphBackend, workspace: &Workspace)
         let callee_id = call.target.clone();
         backend.ensure_node(GraphNode {
             id: callee_id.clone(),
+            display_name: callee_id.clone(),
             kind: NodeKind::Function,
             language: call.language.clone(),
             file_path: call.path.clone(),

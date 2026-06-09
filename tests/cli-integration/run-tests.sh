@@ -54,11 +54,16 @@ run_test() {
     local safe_name="${cmd_name// /_}"
     local stdout_file="${RESULTS_DIR}/${repo}-${safe_name}.stdout"
     local stderr_file="${RESULTS_DIR}/${repo}-${safe_name}.stderr"
-    local combined_args="$*"
+    local args=("$@")
+    local extra_args=()
+    if [ -n "${extra_flags}" ]; then
+        read -r -a extra_args <<< "${extra_flags}"
+    fi
+    local combined_args="${args[*]}"
 
     local start_ms=$(now_ms)
     local exit_code=0
-    "${CODETRAIL}" -p "${repo_path}" --output json ${extra_flags} $combined_args \
+    "${CODETRAIL}" -p "${repo_path}" --output json "${extra_args[@]}" "${args[@]}" \
         > "${stdout_file}" 2> "${stderr_file}" || exit_code=$?
     local end_ms=$(now_ms)
     local elapsed=$((end_ms - start_ms))
@@ -153,16 +158,16 @@ for repo in go-gin rust-ripgrep java-junit4 ts-express; do
 
     # Index subcommands
     run_test "${repo}" "index_status"  "${lang}" ""          index status
-    run_test "${repo}" "index_verify"  "${lang}" ""          index verify 2>/dev/null || true
+    run_test "${repo}" "index_verify"  "${lang}" ""          index verify
 
     # Query save & replay
     run_test "${repo}" "find_save_query" "${lang}" "--allow-broad" find "${srch}" --save-query "test-${repo}"
-    run_test "${repo}" "query_replay"    "${lang}" ""        query replay "test-${repo}" 2>/dev/null || true
+    run_test "${repo}" "query_replay"    "${lang}" ""        query replay "test-${repo}"
 
     # Hooks & completions (smoke)
-    run_test "${repo}" "hooks_install"   "${lang}" ""        hooks install 2>/dev/null || true
-    run_test "${repo}" "hooks_uninstall" "${lang}" ""        hooks uninstall 2>/dev/null || true
-    run_test "${repo}" "completions"     "${lang}" ""        completions bash 2>/dev/null || true
+    run_test "${repo}" "hooks_install"   "${lang}" ""        hooks install
+    run_test "${repo}" "hooks_uninstall" "${lang}" ""        hooks uninstall
+    run_test "${repo}" "completions"     "${lang}" ""        completions bash
 done
 
 TOTAL_END=$(now_ms); TOTAL_ELAPSED=$((TOTAL_END - TOTAL_START))

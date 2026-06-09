@@ -100,7 +100,7 @@ pub fn candidate_ids(path: &Path, pattern: &str, mode: &str) -> Result<Option<Ha
 }
 
 pub fn query_grams(pattern: &str, mode: &str) -> Option<HashSet<[u8; 3]>> {
-    if mode != "literal" || pattern.as_bytes().len() < 3 {
+    if mode != "literal" || pattern.len() < 3 {
         return None;
     }
     let query_grams = grams_for_bytes(pattern.as_bytes());

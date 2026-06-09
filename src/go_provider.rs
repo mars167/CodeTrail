@@ -182,49 +182,49 @@ pub fn go_provider_capabilities() -> ProviderCapabilities {
 
 // ── Fixture design ──────────────────────────────────────────────────────────
 
-/// Test fixtures needed for Go provider validation:
-///
-/// 1. **Single package**:
-///    ```go
-///    // pkg/math.go
-///    package math
-///    func Add(a, b int) int { return a + b }
-///    ```
-///    Expected: one definition occurrence for `Add`, zero references.
-///
-/// 2. **Cross-file reference**:
-///    ```go
-///    // pkg/math.go
-///    func Add(a, b int) int { return a + b }
-///    // cmd/main.go
-///    import "example/pkg"
-///    func main() { pkg.Add(1, 2) }
-///    ```
-///    Expected: one def for `Add`, one ref in `cmd/main.go`.
-///
-/// 3. **Method receiver**:
-///    ```go
-///    type Server struct { port int }
-///    func (s *Server) Start() error { return nil }
-///    ```
-///    Expected: `Start` has receiver `*Server`, symbol id includes `(*Server).Start`.
-///
-/// 4. **Import alias**:
-///    ```go
-///    import nethttp "net/http"
-///    nethttp.ListenAndServe(":8080", nil)
-///    ```
-///    Expected: reference resolves to `net/http.ListenAndServe`.
-///
-/// 5. **Build tag variance**:
-///    ```go
-///    // +build linux
-///    func PlatformInit() { ... }
-///    ```
-///    Expected: symbol only present when `linux` build tag is active.
-///
-/// 6. **Package load failure**:
-///    Missing dependency → partial reason `ProviderPartial`, no fake precise facts.
+// Test fixtures needed for Go provider validation:
+//
+// 1. **Single package**:
+//    ```go
+//    // pkg/math.go
+//    package math
+//    func Add(a, b int) int { return a + b }
+//    ```
+//    Expected: one definition occurrence for `Add`, zero references.
+//
+// 2. **Cross-file reference**:
+//    ```go
+//    // pkg/math.go
+//    func Add(a, b int) int { return a + b }
+//    // cmd/main.go
+//    import "example/pkg"
+//    func main() { pkg.Add(1, 2) }
+//    ```
+//    Expected: one def for `Add`, one ref in `cmd/main.go`.
+//
+// 3. **Method receiver**:
+//    ```go
+//    type Server struct { port int }
+//    func (s *Server) Start() error { return nil }
+//    ```
+//    Expected: `Start` has receiver `*Server`, symbol id includes `(*Server).Start`.
+//
+// 4. **Import alias**:
+//    ```go
+//    import nethttp "net/http"
+//    nethttp.ListenAndServe(":8080", nil)
+//    ```
+//    Expected: reference resolves to `net/http.ListenAndServe`.
+//
+// 5. **Build tag variance**:
+//    ```go
+//    // +build linux
+//    func PlatformInit() { ... }
+//    ```
+//    Expected: symbol only present when `linux` build tag is active.
+//
+// 6. **Package load failure**:
+//    Missing dependency → partial reason `ProviderPartial`, no fake precise facts.
 
 #[cfg(test)]
 mod tests {

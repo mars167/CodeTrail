@@ -233,7 +233,7 @@ fn shared_config_and_environment_files_affect_multiple_roots() {
             .find(|edge| edge.path == path)
             .unwrap();
         assert_eq!(edge.affected_root_ids, vec!["go:api", "rust:worker"]);
-        assert_eq!(edge.unresolved, false);
+        assert!(!edge.unresolved);
     }
 
     let compose = graph
@@ -243,7 +243,7 @@ fn shared_config_and_environment_files_affect_multiple_roots() {
         .unwrap();
     assert_eq!(compose.kind, EnvironmentEdgeKind::Compose);
     assert_eq!(compose.affected_root_ids, vec!["go:api", "rust:worker"]);
-    assert_eq!(compose.unresolved, false);
+    assert!(!compose.unresolved);
 
     let k8s = graph
         .environment_edges
@@ -283,7 +283,7 @@ fn exposes_dependency_edges_for_config_environment_and_root_relationships() {
         == DependencyEdgeKind::DependencyConfigAffectsRoot
         && edge.from_root_id.is_none()
         && edge.to_root_id.is_some()
-        && edge.unresolved == false));
+        && !edge.unresolved));
 
     let compose_edges = graph
         .dependency_edges
@@ -347,7 +347,7 @@ fn orphan_files_get_no_semantic_owner_and_emit_unresolved_caveats() {
         .unwrap();
     assert_eq!(script_edge.kind, ConfigEdgeKind::AutomationScript);
     assert!(script_edge.affected_root_ids.is_empty());
-    assert_eq!(script_edge.unresolved, true);
+    assert!(script_edge.unresolved);
     assert!(graph.caveats.iter().any(|caveat| caveat.code
         == ProjectGraphCaveatCode::ConfigEdgeUnresolved
         && caveat.path == "scripts/deploy.sh"));

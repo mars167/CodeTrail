@@ -35,7 +35,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use bincode;
-use petgraph::graph::DiGraph;
+use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use serde_json::{json, Value};
 
@@ -275,20 +275,23 @@ impl GraphBackend for PetgraphBackend {
     }
 
     fn query_calls(&self, identifier: &str) -> Result<Vec<CallCandidate>> {
-        let node_idx = match self.node_by_id.get(identifier) {
-            Some(idx) => *idx,
-            None => return Ok(Vec::new()),
-        };
+        let mut results: Vec<CallCandidate> = Vec::new();
+        for node_idx in self.matching_node_indices(identifier) {
+            results.extend(
+                self.graph
+                    .edges_directed(node_idx, petgraph::Direction::Outgoing)
+                    .map(|edge| {
+                        let meta = edge.weight();
+                        let caller = &self.graph[edge.source()];
+                        let callee = &self.graph[edge.target()];
+                        edge_to_candidate(meta, caller, callee)
+                    }),
+            );
+        }
 
-        let mut results: Vec<CallCandidate> = self
-            .graph
-            .edges_directed(node_idx, petgraph::Direction::Outgoing)
-            .map(|edge| {
-                let meta = edge.weight();
-                let callee = &self.graph[edge.target()];
-                edge_to_candidate(meta, callee)
-            })
-            .collect();
+        if results.is_empty() {
+            return Ok(results);
+        }
 
         results.sort_by(|a, b| {
             a.path
@@ -301,20 +304,23 @@ impl GraphBackend for PetgraphBackend {
     }
 
     fn query_callers(&self, identifier: &str) -> Result<Vec<CallCandidate>> {
-        let node_idx = match self.node_by_id.get(identifier) {
-            Some(idx) => *idx,
-            None => return Ok(Vec::new()),
-        };
+        let mut results: Vec<CallCandidate> = Vec::new();
+        for node_idx in self.matching_node_indices(identifier) {
+            results.extend(
+                self.graph
+                    .edges_directed(node_idx, petgraph::Direction::Incoming)
+                    .map(|edge| {
+                        let meta = edge.weight();
+                        let caller = &self.graph[edge.source()];
+                        let callee = &self.graph[edge.target()];
+                        edge_to_caller_candidate(meta, caller, callee)
+                    }),
+            );
+        }
 
-        let mut results: Vec<CallCandidate> = self
-            .graph
-            .edges_directed(node_idx, petgraph::Direction::Incoming)
-            .map(|edge| {
-                let meta = edge.weight();
-                let caller = &self.graph[edge.source()];
-                edge_to_caller_candidate(meta, caller)
-            })
-            .collect();
+        if results.is_empty() {
+            return Ok(results);
+        }
 
         results.sort_by(|a, b| {
             a.path
@@ -333,16 +339,29 @@ impl GraphBackend for PetgraphBackend {
     }
 }
 
+impl PetgraphBackend {
+    fn matching_node_indices(&self, identifier: &str) -> Vec<NodeIndex> {
+        if let Some(idx) = self.node_by_id.get(identifier) {
+            return vec![*idx];
+        }
+
+        self.graph
+            .node_indices()
+            .filter(|idx| self.graph[*idx].display_name == identifier)
+            .collect()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // JSON conversion helpers
 // ---------------------------------------------------------------------------
 
-fn edge_to_candidate(meta: &EdgeMetadata, callee: &GraphNode) -> CallCandidate {
+fn edge_to_candidate(meta: &EdgeMetadata, caller: &GraphNode, callee: &GraphNode) -> CallCandidate {
     CallCandidate {
         path: meta.file_path.clone(),
         language: meta.language.clone(),
-        target: callee.id.clone(),
-        enclosing_symbol: Some(meta.caller_id.clone()),
+        target: node_display_name(callee),
+        enclosing_symbol: Some(node_display_name(caller)),
         range: json!({
             "start": { "line": meta.call_line, "column": meta.call_column },
             "end": { "line": meta.call_line, "column": meta.call_column + 1 }
@@ -354,12 +373,16 @@ fn edge_to_candidate(meta: &EdgeMetadata, callee: &GraphNode) -> CallCandidate {
     }
 }
 
-fn edge_to_caller_candidate(meta: &EdgeMetadata, caller: &GraphNode) -> CallCandidate {
+fn edge_to_caller_candidate(
+    meta: &EdgeMetadata,
+    caller: &GraphNode,
+    callee: &GraphNode,
+) -> CallCandidate {
     CallCandidate {
         path: meta.file_path.clone(),
         language: meta.language.clone(),
-        target: meta.callee_id.clone(),
-        enclosing_symbol: Some(caller.id.clone()),
+        target: node_display_name(callee),
+        enclosing_symbol: Some(node_display_name(caller)),
         range: json!({
             "start": { "line": meta.call_line, "column": meta.call_column },
             "end": { "line": meta.call_line, "column": meta.call_column + 1 }
@@ -368,6 +391,14 @@ fn edge_to_caller_candidate(meta: &EdgeMetadata, caller: &GraphNode) -> CallCand
         producer: format!("graph:{}", meta.source),
         source: format!("{}", meta.source),
         level: "inferred_candidate".to_string(), // ALWAYS inferred_candidate per spec
+    }
+}
+
+fn node_display_name(node: &GraphNode) -> String {
+    if node.display_name.is_empty() {
+        node.id.clone()
+    } else {
+        node.display_name.clone()
     }
 }
 
@@ -381,6 +412,7 @@ mod tests {
     fn make_test_node(id: &str, kind: NodeKind) -> GraphNode {
         GraphNode {
             id: id.to_string(),
+            display_name: id.to_string(),
             kind,
             language: "rust".to_string(),
             file_path: format!("src/{}.rs", id),
@@ -442,6 +474,37 @@ mod tests {
         assert_eq!(callers[0].target, "bar");
         assert_eq!(callers[0].level, "inferred_candidate");
         assert_eq!(callers[0].enclosing_symbol, Some("foo".to_string()));
+    }
+
+    #[test]
+    fn graph_keeps_unique_ids_for_duplicate_display_names() {
+        let mut backend = PetgraphBackend::empty();
+        let mut caller = make_test_node("scip:crate/a#parse", NodeKind::Function);
+        caller.display_name = "parse".to_string();
+        let mut callee = make_test_node("scip:crate/b#parse", NodeKind::Function);
+        callee.display_name = "parse".to_string();
+        backend.ensure_node(caller);
+        backend.ensure_node(callee);
+
+        let edge = make_test_edge(
+            "scip:crate/a#parse",
+            "scip:crate/b#parse",
+            "src/lib.rs",
+            EdgeSource::ScipPrecise,
+        );
+        let caller_idx = *backend.node_by_id.get("scip:crate/a#parse").unwrap();
+        let callee_idx = *backend.node_by_id.get("scip:crate/b#parse").unwrap();
+        backend.graph.add_edge(caller_idx, callee_idx, edge);
+
+        assert_eq!(backend.graph.node_count(), 2);
+        let calls = backend.query_calls("scip:crate/a#parse").unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].target, "parse");
+
+        let display_calls = backend.query_calls("parse").unwrap();
+        assert_eq!(display_calls.len(), 1);
+        assert_eq!(display_calls[0].target, "parse");
+        assert_eq!(display_calls[0].enclosing_symbol, Some("parse".to_string()));
     }
 
     #[test]

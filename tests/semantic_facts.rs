@@ -335,6 +335,10 @@ fn scip_writer_rejects_invalid_relative_paths_and_mixed_language_documents() {
     for path in [
         "",
         "/abs.rs",
+        "C:/abs.rs",
+        "C:abs.rs",
+        "//server/share/lib.rs",
+        r"\\server\share\lib.rs",
         "src/../lib.rs",
         "src\\lib.rs",
         "src//lib.rs",

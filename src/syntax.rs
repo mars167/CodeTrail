@@ -383,7 +383,7 @@ fn collect_symbols_prefiltered(
     let candidates = collect_candidates_prefiltered(workspace, opts, warnings, needle)?;
     let mut symbols = candidates
         .into_iter()
-        .filter(|candidate| is_symbol_candidate(&candidate))
+        .filter(is_symbol_candidate)
         .filter_map(symbol_from_candidate)
         .collect::<Vec<_>>();
     symbols.sort_by(|a, b| a.path.cmp(&b.path).then(a.name.cmp(&b.name)));
@@ -498,7 +498,7 @@ fn parser_candidate_files(
 ) -> Result<Vec<FileRecord>> {
     let mut scan_opts = opts.clone();
     scan_opts.limit = 0;
-    if let Some(needle) = needle.filter(|value| value.as_bytes().len() >= 3) {
+    if let Some(needle) = needle.filter(|value| value.len() >= 3) {
         if let Some((records, _index)) =
             index::fresh_text_records(workspace, &scan_opts, needle, "literal")?
         {
@@ -519,7 +519,7 @@ fn parse_symbols_in_file(
     Ok((
         candidates
             .into_iter()
-            .filter(|candidate| is_symbol_candidate(candidate))
+            .filter(is_symbol_candidate)
             .filter_map(symbol_from_candidate)
             .collect(),
         warnings,

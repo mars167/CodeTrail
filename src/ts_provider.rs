@@ -196,51 +196,51 @@ pub fn ts_provider_capabilities() -> ProviderCapabilities {
 
 // ── Fixture design ──────────────────────────────────────────────────────────
 
-/// Test fixtures needed for TypeScript provider validation:
-///
-/// 1. **Basic declaration and reference**:
-///    ```ts
-///    // src/math.ts
-///    export function add(a: number, b: number): number { return a + b; }
-///    // src/main.ts
-///    import { add } from "./math"; add(1, 2);
-///    ```
-///    Expected: `add` declaration at math.ts:1, reference at main.ts:1.
-///
-/// 2. **Default and named export**:
-///    ```ts
-///    // src/defaults.ts
-///    export default class App { }
-///    export const version = "1.0";
-///    // src/index.ts
-///    import App, { version } from "./defaults";
-///    ```
-///    Expected: `App` has `is_default_export: true`.
-///
-/// 3. **Path alias**:
-///    ```json
-///    // tsconfig.json
-///    { "compilerOptions": { "paths": { "@lib/*": ["./src/lib/*"] } } }
-///    ```
-///    ```ts
-///    import { helper } from "@lib/helpers";
-///    ```
-///    Expected: reference resolves to `src/lib/helpers.ts`.
-///
-/// 4. **Project references**:
-///    Multi-package monorepo: `packages/a` and `packages/b`.
-///    Expected: cross-package references resolved through project references.
-///
-/// 5. **allowJs / checkJs**:
-///    JavaScript files with JSDoc annotations.
-///    Expected: `TsPrecision::JsHeuristic` for `.js`, `Precise` for `.ts`.
-///
-/// 6. **Re-export chain**:
-///    ```ts
-///    // src/internal.ts: export function fn() {}
-///    // src/index.ts: export { fn } from "./internal";
-///    ```
-///    Expected: `refs fn` from `index.ts` resolves through the re-export.
+// Test fixtures needed for TypeScript provider validation:
+//
+// 1. **Basic declaration and reference**:
+//    ```ts
+//    // src/math.ts
+//    export function add(a: number, b: number): number { return a + b; }
+//    // src/main.ts
+//    import { add } from "./math"; add(1, 2);
+//    ```
+//    Expected: `add` declaration at math.ts:1, reference at main.ts:1.
+//
+// 2. **Default and named export**:
+//    ```ts
+//    // src/defaults.ts
+//    export default class App { }
+//    export const version = "1.0";
+//    // src/index.ts
+//    import App, { version } from "./defaults";
+//    ```
+//    Expected: `App` has `is_default_export: true`.
+//
+// 3. **Path alias**:
+//    ```json
+//    // tsconfig.json
+//    { "compilerOptions": { "paths": { "@lib/*": ["./src/lib/*"] } } }
+//    ```
+//    ```ts
+//    import { helper } from "@lib/helpers";
+//    ```
+//    Expected: reference resolves to `src/lib/helpers.ts`.
+//
+// 4. **Project references**:
+//    Multi-package monorepo: `packages/a` and `packages/b`.
+//    Expected: cross-package references resolved through project references.
+//
+// 5. **allowJs / checkJs**:
+//    JavaScript files with JSDoc annotations.
+//    Expected: `TsPrecision::JsHeuristic` for `.js`, `Precise` for `.ts`.
+//
+// 6. **Re-export chain**:
+//    ```ts
+//    // src/internal.ts: export function fn() {}
+//    // src/index.ts: export { fn } from "./internal";
+//    ```
+//    Expected: `refs fn` from `index.ts` resolves through the re-export.
 
 #[cfg(test)]
 mod tests {

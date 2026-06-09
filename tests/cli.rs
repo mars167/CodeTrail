@@ -2908,13 +2908,10 @@ fn git_dirty_index_status_uses_active_manifest_for_per_file_freshness() {
     let status = &json["results"][0];
     assert_eq!(status["exists"], true);
     assert_eq!(status["fresh"], false);
-    assert_eq!(
-        status["manifest"]["snapshotId"]
-            .as_str()
-            .unwrap()
-            .starts_with("commit:"),
-        true
-    );
+    assert!(status["manifest"]["snapshotId"]
+        .as_str()
+        .unwrap()
+        .starts_with("commit:"));
     assert_eq!(
         status["freshness"]["staleFiles"][0]["reason"],
         "file_hash_mismatch"
@@ -4218,6 +4215,7 @@ fn watch_status_output_format() {
     let watcher = &results[0];
     assert!(watcher.is_object());
     assert_eq!(watcher["running"], false);
+    assert_eq!(watcher["state"], "idle");
     assert!(watcher["root"].is_string());
     assert!(watcher["queueLength"].is_number());
     assert!(watcher["stale"].is_boolean());

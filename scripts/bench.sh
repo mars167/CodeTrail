@@ -129,7 +129,7 @@ compare() {
 
     local full_cmd="$CS --path $REPO $cmd"
     local current
-    if ! current=$(run_hyperfine_json "$warmup" 3 "$extra_opts" "$full_cmd" 2>/dev/null | \
+    if ! current=$(run_hyperfine_json "$warmup" "$runs" "$extra_opts" "$full_cmd" 2>/dev/null | \
         jq -r '.results[0].mean'); then
       echo "  ❌ $label — failed"; fail=$((fail+1)); continue
     fi

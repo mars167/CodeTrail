@@ -67,7 +67,7 @@ pub fn reconcile(workspace_root: &Path) -> Result<ReconcileResult> {
     }
 
     // Find files in snapshot that are no longer on disk
-    for (path, _record) in &snapshot_map {
+    for path in snapshot_map.keys() {
         if !current_files.contains_key(path) {
             let file_path = workspace_root.join(path);
             if !file_path.exists() {
@@ -123,11 +123,7 @@ pub fn walk_workspace_for_hashes(root: &Path, hashes: &mut HashMap<String, Strin
             continue;
         }
 
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let rel = crate::path_compat::relative_path(root, path);
 
         let content = match fs::read(path) {
             Ok(c) => c,
@@ -162,7 +158,6 @@ fn now_epoch_ms() -> u64 {
 /// Resolve the snapshot records by following the manifest chain:
 /// 1. Read working/manifest.json to get snapshotKey
 /// 2. Read snapshots/<snapshotKey>/files.parquet
-/// 3. Fall back to working/files.parquet if available
 fn resolve_snapshot_records(codetrail_dir: &Path, working_dir: &Path) -> Vec<FileRecord> {
     let manifest_path = working_dir.join("manifest.json");
 
@@ -213,11 +208,34 @@ fn resolve_snapshot_records(codetrail_dir: &Path, working_dir: &Path) -> Vec<Fil
         }
     }
 
-    // Last fallback: try working/files.parquet directly
-    let working_parquet = working_dir.join("files.parquet");
-    if working_parquet.exists() {
-        return snapshot_store::read_files_parquet(&working_parquet).unwrap_or_default();
-    }
-
     Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_snapshot_records_ignores_unmanifested_working_parquet() {
+        let temp = tempfile::tempdir().unwrap();
+        let codetrail_dir = temp.path().join(".codetrail");
+        let working_dir = codetrail_dir.join("working");
+        fs::create_dir_all(&working_dir).unwrap();
+
+        snapshot_store::write_files_parquet(
+            &working_dir.join("files.parquet"),
+            &[FileRecord {
+                path: "src/lib.rs".to_string(),
+                language: "rust".to_string(),
+                size: 3,
+                mtime_ms: 1,
+                mode: 0,
+                hash: "blake3:old".to_string(),
+            }],
+        )
+        .unwrap();
+
+        let records = resolve_snapshot_records(&codetrail_dir, &working_dir);
+        assert!(records.is_empty());
+    }
 }

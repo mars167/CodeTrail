@@ -253,10 +253,7 @@ fn query_native_defs(
             index: native_db_index_meta(&db_path, true),
         }));
     }
-    let json_results: Vec<Value> = results
-        .iter()
-        .map(|r| scip::occurrence_to_json(r))
-        .collect();
+    let json_results: Vec<Value> = results.iter().map(scip::occurrence_to_json).collect();
     Ok(Some(PreciseQueryOutput {
         results: Value::Array(json_results),
         index: native_db_index_meta(&db_path, true),
@@ -280,10 +277,7 @@ fn query_native_refs(
             index: native_db_index_meta(&db_path, true),
         }));
     }
-    let json_results: Vec<Value> = results
-        .iter()
-        .map(|r| scip::occurrence_to_json(r))
-        .collect();
+    let json_results: Vec<Value> = results.iter().map(scip::occurrence_to_json).collect();
     Ok(Some(PreciseQueryOutput {
         results: Value::Array(json_results),
         index: native_db_index_meta(&db_path, true),
@@ -307,7 +301,7 @@ fn query_native_symbols(
             index: native_db_index_meta(&db_path, true),
         }));
     }
-    let json_results: Vec<Value> = results.iter().map(|r| scip::symbol_to_json(r)).collect();
+    let json_results: Vec<Value> = results.iter().map(scip::symbol_to_json).collect();
     Ok(Some(PreciseQueryOutput {
         results: Value::Array(json_results),
         index: native_db_index_meta(&db_path, true),
@@ -550,8 +544,7 @@ fn scip_range(range: &[usize]) -> Option<PreciseRange> {
 fn display_name_from_symbol(symbol: &str) -> String {
     symbol
         .split(|ch: char| ch == '/' || ch == '#' || ch == '.' || ch.is_whitespace())
-        .filter(|part| !part.is_empty())
-        .next_back()
+        .rfind(|part| !part.is_empty())
         .unwrap_or(symbol)
         .trim_end_matches("().")
         .to_string()

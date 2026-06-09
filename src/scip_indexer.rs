@@ -15,13 +15,9 @@ pub fn generate_go_scip(project_root: &Path, output_path: &Path) -> Result<()> {
     let indexer_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("scip-indexer");
 
     let output = Command::new("go")
-        .args([
-            "run",
-            "main.go",
-            "--output",
-            output_path.to_str().unwrap(),
-            project_root.to_str().unwrap(),
-        ])
+        .args(["run", "main.go", "--output"])
+        .arg(output_path)
+        .arg(project_root)
         .current_dir(&indexer_dir)
         .output()
         .with_context(|| {
@@ -42,12 +38,18 @@ pub fn generate_go_scip(project_root: &Path, output_path: &Path) -> Result<()> {
 
 /// Run the Go SCIP indexer and then import the result.
 pub fn generate_and_import(project_root: &Path) -> Result<()> {
-    let tmp = std::env::temp_dir().join("codetrail-index.scip.json");
-    generate_go_scip(project_root, &tmp)?;
+    let tmp = tempfile::Builder::new()
+        .prefix("codetrail-index-")
+        .suffix(".scip.json")
+        .tempfile()
+        .with_context(|| "failed to create temporary SCIP output file")?;
+    let tmp_path = tmp.path().to_path_buf();
+    generate_go_scip(project_root, &tmp_path)?;
 
     // Import using the existing command
     let status = Command::new(std::env::current_exe().unwrap_or_else(|_| "codetrail".into()))
-        .args(["index", "import-scip", tmp.to_str().unwrap()])
+        .args(["index", "import-scip"])
+        .arg(&tmp_path)
         .current_dir(project_root)
         .status()
         .with_context(|| "failed to import generated SCIP index")?;
@@ -56,8 +58,6 @@ pub fn generate_and_import(project_root: &Path) -> Result<()> {
         anyhow::bail!("SCIP import failed");
     }
 
-    // Cleanup
-    let _ = std::fs::remove_file(&tmp);
     Ok(())
 }
 

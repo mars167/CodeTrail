@@ -830,10 +830,7 @@ fn path_under_root(path: &str, root_path: &str) -> bool {
 }
 
 fn rel_path(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
+    crate::path_compat::relative_path(root, path)
 }
 
 fn parent_dir(path: &str) -> String {

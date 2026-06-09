@@ -41,6 +41,8 @@ impl fmt::Display for NodeKind {
 pub struct GraphNode {
     /// Stable identifier — scoped name for functions, relative path for files.
     pub id: String,
+    #[serde(default)]
+    pub display_name: String,
     pub kind: NodeKind,
     /// Source language (rust, python, typescript, …).
     pub language: String,
@@ -171,5 +173,5 @@ pub struct SerialisedGraph {
 }
 
 impl SerialisedGraph {
-    pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+    pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 }

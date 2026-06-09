@@ -136,47 +136,47 @@ pub fn rust_provider_capabilities() -> ProviderCapabilities {
 
 // ── Fixture design ──────────────────────────────────────────────────────────
 
-/// Test fixtures needed for Rust provider validation:
-///
-/// 1. **Module reference**:
-///    ```rust
-///    // src/lib.rs
-///    pub fn init() { }
-///    // src/main.rs
-///    use my_crate::init;
-///    fn main() { init(); }
-///    ```
-///    Expected: one def `init`, one ref in `main.rs`.
-///
-/// 2. **Trait method**:
-///    ```rust
-///    trait Service { fn handle(&self); }
-///    struct App;
-///    impl Service for App { fn handle(&self) { } }
-///    ```
-///    Expected: `handle` on `App` resolves trait impl, not standalone.
-///
-/// 3. **Macro expansion limitation**:
-///    ```rust
-///    #[tokio::main]
-///    async fn main() { }
-///    ```
-///    Expected: `proc_macro_enabled=false` → partial reason, not fake def.
-///
-/// 4. **Feature cfg**:
-///    ```rust
-///    #[cfg(feature = "serde")]
-///    impl Serialize for MyType { }
-///    ```
-///    Expected: symbol only present when `serde` feature is active.
-///
-/// 5. **Workspace multi-crate**:
-///    Multiple crates in a Cargo workspace.
-///    Expected: cross-crate refs resolved through workspace layout.
-///
-/// 6. **Large workspace memory limit**:
-///    Cargo workspace with 50+ crates.
-///    Expected: `ResourceLimited` partial reason when RSS exceeds budget.
+// Test fixtures needed for Rust provider validation:
+//
+// 1. **Module reference**:
+//    ```rust
+//    // src/lib.rs
+//    pub fn init() { }
+//    // src/main.rs
+//    use my_crate::init;
+//    fn run() { init(); }
+//    ```
+//    Expected: one def `init`, one ref in `main.rs`.
+//
+// 2. **Trait method**:
+//    ```rust
+//    trait Service { fn handle(&self); }
+//    struct App;
+//    impl Service for App { fn handle(&self) { } }
+//    ```
+//    Expected: `handle` on `App` resolves trait impl, not standalone.
+//
+// 3. **Macro expansion limitation**:
+//    ```rust
+//    #[tokio::main]
+//    async fn main() { }
+//    ```
+//    Expected: `proc_macro_enabled=false` → partial reason, not fake def.
+//
+// 4. **Feature cfg**:
+//    ```rust
+//    #[cfg(feature = "serde")]
+//    impl Serialize for MyType { }
+//    ```
+//    Expected: symbol only present when `serde` feature is active.
+//
+// 5. **Workspace multi-crate**:
+//    Multiple crates in a Cargo workspace.
+//    Expected: cross-crate refs resolved through workspace layout.
+//
+// 6. **Large workspace memory limit**:
+//    Cargo workspace with 50+ crates.
+//    Expected: `ResourceLimited` partial reason when RSS exceeds budget.
 
 #[cfg(test)]
 mod tests {
