@@ -33,6 +33,16 @@ curl -fsSL https://raw.githubusercontent.com/mars167/CodeTrail/main/install.sh |
 $env:CODETRAIL_VERSION = "v0.1.4"; irm https://raw.githubusercontent.com/mars167/CodeTrail/main/install.ps1 | iex
 ```
 
+### Troubleshooting on Windows
+
+If `codetrail` exits immediately with no output in PowerShell or Git Bash, check the exit code first:
+
+```powershell
+codetrail --version; $LASTEXITCODE
+```
+
+An exit code of `-1073741515` (`0xC0000135`, STATUS_DLL_NOT_FOUND) means the Windows loader killed the process before it could print anything. Releases up to v0.1.6-beta.2 linked the MSVC C runtime dynamically and therefore required `VCRUNTIME140.dll` from the [Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist); a clean Windows 11 install does not ship it. Later releases link the CRT statically and are fully self-contained — upgrading to the latest release fixes this without installing anything else. An exit code of `-1073741795` usually means the binary architecture does not match the machine; reinstall with `CODETRAIL_ARCH` set to `arm64` or `amd64`.
+
 ## Quick Start
 
 ```bash

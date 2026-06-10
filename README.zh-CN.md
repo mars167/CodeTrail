@@ -33,6 +33,16 @@ curl -fsSL https://raw.githubusercontent.com/mars167/CodeTrail/main/install.sh |
 $env:CODETRAIL_VERSION = "v0.1.4"; irm https://raw.githubusercontent.com/mars167/CodeTrail/main/install.ps1 | iex
 ```
 
+### Windows 故障排查
+
+如果在 PowerShell 或 Git Bash 中执行 `codetrail` 没有任何输出且立即返回，先查看退出码：
+
+```powershell
+codetrail --version; $LASTEXITCODE
+```
+
+退出码为 `-1073741515`（`0xC0000135`，STATUS_DLL_NOT_FOUND）表示 Windows 加载器在程序打印任何内容之前就终止了进程。v0.1.6-beta.2 及更早版本动态链接 MSVC C 运行时，依赖 [Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) 提供的 `VCRUNTIME140.dll`，而干净的 Windows 11 系统并不自带该 DLL。之后的版本改为静态链接 CRT，二进制完全自包含——升级到最新版本即可解决，无需额外安装运行库。退出码为 `-1073741795` 通常表示二进制架构与机器不匹配，请设置 `CODETRAIL_ARCH` 为 `arm64` 或 `amd64` 后重新安装。
+
 ## 快速开始
 
 ```bash

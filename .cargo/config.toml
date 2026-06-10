@@ -1,0 +1,10 @@
+# Statically link the MSVC CRT so Windows binaries are fully self-contained.
+#
+# Without this, rustc links the CRT dynamically (/MD) and the produced
+# codetrail.exe imports VCRUNTIME140.dll, which ships with the VC++
+# Redistributable rather than with Windows itself. On a clean Windows 11
+# machine the loader then kills the process with STATUS_DLL_NOT_FOUND
+# (0xC0000135) before main() runs -- silently under Windows Terminal and
+# Git Bash, producing "no output at all" for every command.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
