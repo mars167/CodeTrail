@@ -27,18 +27,24 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: codetrail-linux-amd64
+            smoke: true
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact: codetrail-darwin-amd64
+            smoke: true
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact: codetrail-darwin-arm64
+            smoke: true
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: codetrail-windows-amd64.exe
+            smoke: true
           - os: windows-latest
             target: aarch64-pc-windows-msvc
             artifact: codetrail-windows-arm64.exe
+            # Cross-compiled; cannot execute on the x64 runner.
+            smoke: false
 
     steps:
       - uses: actions/checkout@v4
@@ -67,6 +73,41 @@ jobs:
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Verify static CRT (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe="target/${{ matrix.target }}/release/codetrail.exe"
+          # A dynamically linked CRT shows up as a VCRUNTIME140*.dll entry in
+          # the PE import table. Shipping such a binary makes codetrail exit
+          # silently (STATUS_DLL_NOT_FOUND) on Windows machines without the
+          # VC++ Redistributable installed.
+          if grep -qia "VCRUNTIME140" "$exe"; then
+            echo "ERROR: $exe references VCRUNTIME140.dll (dynamic CRT)." >&2
+            echo "Ensure .cargo/config.toml applies -C target-feature=+crt-static for MSVC targets." >&2
+            exit 1
+          fi
+          echo "OK: no VC++ runtime DLL dependency detected."
+
+      - name: Smoke test binary
+        if: matrix.smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/codetrail"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            bin="$bin.exe"
+          fi
+          "$bin" --version
+          out="$("$bin" --output json files Cargo)"
+          if [ -z "$out" ]; then
+            echo "ERROR: smoke query produced no output." >&2
+            exit 1
+          fi
+          printf '%s\n' "$out" | head -c 400
+          echo
 
       - name: Package (Linux/macOS)
         if: runner.os != 'Windows'

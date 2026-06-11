@@ -97,7 +97,28 @@ try {
     }
 
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    Copy-Item -Path $exePath -Destination (Join-Path $InstallDir "codetrail.exe") -Force
+    $installedExe = Join-Path $InstallDir "codetrail.exe"
+    Copy-Item -Path $exePath -Destination $installedExe -Force
+
+    # Run the installed binary once so a broken executable fails loudly here
+    # instead of silently printing nothing later. Relax the error preference so
+    # Windows PowerShell 5.1 does not turn stderr lines into terminating errors
+    # before we can report the exit code.
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $versionOutput = & $installedExe --version 2>&1
+    $ErrorActionPreference = $previousErrorActionPreference
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace("$versionOutput")) {
+        $code = $LASTEXITCODE
+        $hex = "0x{0:X8}" -f $code
+        $hint = switch ($code) {
+            -1073741515 { "The Windows loader could not start the binary (STATUS_DLL_NOT_FOUND). A required runtime DLL such as VCRUNTIME140.dll is missing. Releases v0.1.6-beta.2 and earlier require the Microsoft Visual C++ Redistributable; newer releases are fully self-contained." }
+            -1073741795 { "The binary uses CPU instructions this machine cannot execute (STATUS_ILLEGAL_INSTRUCTION). You may have installed the wrong architecture; set CODETRAIL_ARCH=arm64 or amd64 and reinstall." }
+            default { "The binary started but failed immediately. Check the architecture ($assetArch) matches this machine and that antivirus is not blocking it." }
+        }
+        throw "codetrail.exe failed its post-install check (exit code $code / $hex). $hint"
+    }
+    Write-Output "Verified: $versionOutput"
 
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $pathParts = @()
