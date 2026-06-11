@@ -82,6 +82,14 @@ MCP tool result 的 `content[0].text` 使用同一 public JSON 投影。
 - 宽查询 guard 仍会返回少量样本和 caveat，避免终端与机器输出被大结果集淹没。
 - `read` 仍是编辑前验证入口；公开 JSON 不再内嵌 `readCommand`，调用方应使用结果里的 `path` 和 `range` 组合读取目标。
 
+## Index Build 与语义阶段
+
+- `index build` 默认在文本索引之后 best-effort 运行 LSP 语义阶段，生成 `.codetrail/scip/<snapshot-key>/occurrences.db` 与 `generation.json`。
+- `--no-semantic` 关闭 LSP/SCIP 生成；`index build --staged` 不运行语义阶段。
+- build 结果的 `index.semantic` 摘要包含 `attempted`、`skipped`、`skipReason` 与各语言 `state`/`partialReasons`。
+- `index status` 在存在时返回 `semanticManifests` 数组，展示 per-root 生成状态。
+- LSP 缺失或超时时产生 `semantic_provider_missing` / `semantic_provider_partial` caveat；`defs`/`refs`/`symbols` 继续走 parser/text fallback。
+
 ## Index Skipped Log
 
 - `index build` 会把本次索引主动跳过的 generated、binary、metadata/read error 项写入 `.codetrail/working/skipped.json`；`index build --staged` 写入 `.codetrail/staged/skipped.json`。

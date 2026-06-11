@@ -174,6 +174,9 @@ pub enum IndexCommand {
         changed: bool,
         #[arg(long)]
         force: bool,
+        /// Skip the best-effort LSP semantic / SCIP generation phase.
+        #[arg(long)]
+        no_semantic: bool,
     },
     Update,
     Status,
