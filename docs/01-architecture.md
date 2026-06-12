@@ -12,7 +12,8 @@ flowchart TB
 
   Fresh --> Store["Primary local store\n.codetrail/index.lance"]
   Store --> Text["Text/path candidates"]
-  Store --> Occ["SCIP occurrences"]
+  Build["index build semantic phase"] --> LSP["LSP bridge\ngopls / rust-analyzer / jdtls / tls"]
+  LSP --> Occ["SCIP occurrences.db"]
   Fresh --> Parser["Tree-sitter fallback"]
   Fresh --> G["Petgraph call candidates"]
   Snap --> Saved["Saved query metadata"]
@@ -53,7 +54,7 @@ flowchart LR
   index.lance/              # primary local store
   working/manifest.json     # pack/unpack compatibility
   staged/manifest.json
-  scip/<snapshot-key>/      # native or imported occurrences
+  scip/<snapshot-key>/      # occurrences.db + generation.json
   graph/<snapshot-key>/     # petgraph.bin + graph manifest
   remote/<snapshot-key>/    # unpacked remote snapshots
   queries/<name>.json       # saved query replay metadata
@@ -104,6 +105,15 @@ flowchart LR
 - Watcher 只维护 worktree overlay 和实时性状态。
 - Watcher 不执行 `git add`，不修改 staged，不生成 commit snapshot。
 - 当前 `watch --once` 是按需 reconcile；`serve` 暴露 query service 状态和 watcher 状态。
+
+## 语义索引（LSP → SCIP）
+
+`index build` 在文本索引与调用图之后，默认 best-effort 启动各语言 LSP（`gopls`、`rust-analyzer`、`jdtls`、`typescript-language-server`），通过 `documentSymbol` 与采样 `references` 合成 `SemanticOccurrence`，写入 `.codetrail/scip/<snapshot-key>/occurrences.db`。
+
+- `--no-semantic` 跳过该阶段；`index build --staged` 不运行语义阶段。
+- 任何 LSP 失败只产生 partial/missing manifest 与 caveat，不阻塞 build。
+- 环境变量：`CODETRAIL_LSP_<LANG>` 覆盖 server 命令；`CODETRAIL_SEMANTIC_BUDGET_MS` 控制总墙钟预算（默认 60s）。
+- 若 `occurrences.db` 已与当前 snapshot 和 file hash 对齐，重复 build 会跳过语义阶段。
 
 ## Remote
 

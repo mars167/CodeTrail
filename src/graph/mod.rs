@@ -341,21 +341,24 @@ impl GraphBackend for PetgraphBackend {
 
 impl PetgraphBackend {
     fn matching_node_indices(&self, identifier: &str) -> Vec<NodeIndex> {
+        let mut matches = Vec::new();
         if let Some(idx) = self.node_by_id.get(identifier) {
-            return vec![*idx];
+            matches.push(*idx);
         }
 
         let query_is_simple = last_identifier(identifier) == identifier;
-        self.graph
-            .node_indices()
-            .filter(|idx| {
-                let node = &self.graph[*idx];
-                node.display_name == identifier
-                    || (query_is_simple
-                        && (last_identifier(&node.display_name) == identifier
-                            || last_identifier(&node.id) == identifier))
-            })
-            .collect()
+        for idx in self.graph.node_indices().filter(|idx| {
+            let node = &self.graph[*idx];
+            node.display_name == identifier
+                || (query_is_simple
+                    && (last_identifier(&node.display_name) == identifier
+                        || last_identifier(&node.id) == identifier))
+        }) {
+            if !matches.contains(&idx) {
+                matches.push(idx);
+            }
+        }
+        matches
     }
 }
 

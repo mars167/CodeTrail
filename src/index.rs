@@ -90,6 +90,7 @@ pub fn build(
     staged: bool,
     changed: bool,
     force: bool,
+    semantic_enabled: bool,
     verbose: output::VerboseLogger,
 ) -> Result<Value> {
     let changed_only = changed || opts.changed;
@@ -203,7 +204,25 @@ pub fn build(
         )
     })?;
 
-    // Build call graph (best-effort; non-fatal on failure)
+    let semantic = if !staged && semantic_enabled {
+        crate::lsp::generate_best_effort(workspace, &records, verbose).unwrap_or_else(|error| {
+            verbose.log(format!("semantic: phase failed (non-fatal): {error}"));
+            crate::lsp::SemanticBuildReport {
+                attempted: true,
+                skipped: false,
+                skip_reason: None,
+                languages: Vec::new(),
+            }
+        })
+    } else {
+        let reason = if staged {
+            "staged_build"
+        } else {
+            "semantic_disabled"
+        };
+        crate::lsp::SemanticBuildReport::skipped(reason)
+    };
+
     if !staged {
         let _ =
             crate::graph::GraphStore::open(workspace).and_then(|mut store| store.build(workspace));
@@ -223,6 +242,7 @@ pub fn build(
             "force": force,
             "path": root,
             "storageBackend": "lancedb",
+            "semantic": crate::lsp::scip_gen::semantic_summary_json(&semantic),
             "skipped": {
                 "count": skipped_count,
                 "path": skipped_log_path
@@ -259,7 +279,7 @@ pub fn update(
     }
 
     verbose.log("index update: rebuilding stale or missing index");
-    let mut value = build(workspace, opts, false, false, false, verbose)?;
+    let mut value = build(workspace, opts, false, false, false, true, verbose)?;
     value["updated"] = json!(true);
     value["reason"] = json!("index_stale_or_missing");
     Ok(value)
@@ -267,6 +287,8 @@ pub fn update(
 
 pub fn status(workspace: &Workspace) -> Result<Value> {
     let root = storage_root(workspace);
+    let semantic_manifests =
+        crate::lsp::scip_gen::read_generation_manifests(workspace).unwrap_or_default();
     let manifest_path = active_manifest_path(workspace, false);
     let active_manifest = manifest_path
         .exists()
@@ -301,7 +323,8 @@ pub fn status(workspace: &Workspace) -> Result<Value> {
                         "snapshotPath": lancedb_store::lancedb_root(&workspace.root),
                         "textPath": text_dir(workspace, &snapshot.snapshot_key),
                         "manifest": manifest,
-                        "freshness": freshness
+                        "freshness": freshness,
+                        "semanticManifests": semantic_manifests,
                     }));
                 }
             }
@@ -339,7 +362,8 @@ pub fn status(workspace: &Workspace) -> Result<Value> {
         "snapshotPath": snapshot_path,
         "textPath": text_path,
         "manifest": manifest,
-        "freshness": freshness
+        "freshness": freshness,
+        "semanticManifests": semantic_manifests,
     });
     if !remote.as_array().is_some_and(|a| a.is_empty()) {
         result["remote"] = remote;

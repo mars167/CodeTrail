@@ -416,18 +416,20 @@ impl QueryService {
         if let Some(ref store) = graph_store {
             if store.freshness_check().unwrap_or(false) {
                 let results = store.query_calls(identifier).unwrap_or_default();
-                let index_meta = store.index_meta(true);
-                return Ok(self.finalize(output::response_with_index(
-                    "calls",
-                    "calls",
-                    scoped_query(
-                        json!({ "identifier": identifier, "producer": "graph" }),
-                        &scan,
-                    ),
-                    &self.workspace.snapshot_id,
-                    output::inferred_candidate(),
-                    output::IndexedResponseParts::new(index_meta, json!(results), Vec::new()),
-                )));
+                if !results.is_empty() {
+                    let index_meta = store.index_meta(true);
+                    return Ok(self.finalize(output::response_with_index(
+                        "calls",
+                        "calls",
+                        scoped_query(
+                            json!({ "identifier": identifier, "producer": "graph" }),
+                            &scan,
+                        ),
+                        &self.workspace.snapshot_id,
+                        output::inferred_candidate(),
+                        output::IndexedResponseParts::new(index_meta, json!(results), Vec::new()),
+                    )));
+                }
             }
         }
 
@@ -456,18 +458,20 @@ impl QueryService {
         if let Some(ref store) = graph_store {
             if store.freshness_check().unwrap_or(false) {
                 let results = store.query_callers(identifier).unwrap_or_default();
-                let index_meta = store.index_meta(true);
-                return Ok(self.finalize(output::response_with_index(
-                    "callers",
-                    "callers",
-                    scoped_query(
-                        json!({ "identifier": identifier, "producer": "graph" }),
-                        &scan,
-                    ),
-                    &self.workspace.snapshot_id,
-                    output::inferred_candidate(),
-                    output::IndexedResponseParts::new(index_meta, json!(results), Vec::new()),
-                )));
+                if !results.is_empty() {
+                    let index_meta = store.index_meta(true);
+                    return Ok(self.finalize(output::response_with_index(
+                        "callers",
+                        "callers",
+                        scoped_query(
+                            json!({ "identifier": identifier, "producer": "graph" }),
+                            &scan,
+                        ),
+                        &self.workspace.snapshot_id,
+                        output::inferred_candidate(),
+                        output::IndexedResponseParts::new(index_meta, json!(results), Vec::new()),
+                    )));
+                }
             }
         }
 

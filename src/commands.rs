@@ -586,17 +586,29 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 staged,
                 changed,
                 force,
+                no_semantic,
             } => {
+                let semantic_enabled = !*no_semantic;
                 let result = with_progress(
                     &cli.output,
                     "Building index",
                     "Index build complete",
-                    || index::build(&workspace, &scan_opts, *staged, *changed, *force, verbose),
+                    || {
+                        index::build(
+                            &workspace,
+                            &scan_opts,
+                            *staged,
+                            *changed,
+                            *force,
+                            semantic_enabled,
+                            verbose,
+                        )
+                    },
                 )?;
                 output::response(
                     "index build",
                     "index build",
-                    json!({ "staged": staged, "changed": changed, "force": force }),
+                    json!({ "staged": staged, "changed": changed, "force": force, "noSemantic": no_semantic }),
                     &workspace.snapshot_id,
                     output::freshness(),
                     json!([result]),

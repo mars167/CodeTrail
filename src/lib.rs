@@ -10,6 +10,7 @@ pub mod generation_manifest;
 pub mod index;
 pub mod java_provider;
 pub mod lancedb_store;
+pub mod lsp;
 pub mod output;
 mod path_compat;
 pub mod project_graph;
