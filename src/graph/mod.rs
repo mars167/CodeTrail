@@ -40,7 +40,11 @@ use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
 use serde_json::{json, Value};
 
-use crate::{index, workspace::Workspace};
+use crate::{
+    index,
+    query_input::{matched_variant_value, InputMode, InputPlan, InputVariant, SymbolMatchMode},
+    workspace::{ScanOptions, Workspace},
+};
 
 use self::schema::{CallCandidate, EdgeMetadata, GraphNode, SerialisedGraph};
 
@@ -61,6 +65,18 @@ pub trait GraphBackend {
 
     /// Query incoming call relationships for a given function identifier.
     fn query_callers(&self, identifier: &str) -> Result<Vec<CallCandidate>>;
+
+    fn query_calls_with_input(
+        &self,
+        plan: &InputPlan,
+        case_sensitive: bool,
+    ) -> Result<Vec<CallCandidate>>;
+
+    fn query_callers_with_input(
+        &self,
+        plan: &InputPlan,
+        case_sensitive: bool,
+    ) -> Result<Vec<CallCandidate>>;
 
     /// Check whether the stored graph is fresh relative to the given snapshot.
     fn freshness_check(&self, snapshot_id: &str) -> Result<bool>;
@@ -123,6 +139,22 @@ impl GraphStore {
         self.backend.query_callers(identifier)
     }
 
+    pub fn query_calls_with_input(
+        &self,
+        plan: &InputPlan,
+        case_sensitive: bool,
+    ) -> Result<Vec<CallCandidate>> {
+        self.backend.query_calls_with_input(plan, case_sensitive)
+    }
+
+    pub fn query_callers_with_input(
+        &self,
+        plan: &InputPlan,
+        case_sensitive: bool,
+    ) -> Result<Vec<CallCandidate>> {
+        self.backend.query_callers_with_input(plan, case_sensitive)
+    }
+
     /// Check whether the persisted graph matches the current snapshot.
     pub fn freshness_check(&self) -> Result<bool> {
         self.backend.freshness_check(&self.snapshot_id)
@@ -163,6 +195,37 @@ pub fn graph_index_exists_for_snapshot(workspace: &Workspace, snapshot_id: &str)
     graph_dir_for_snapshot(workspace, snapshot_id)
         .join("petgraph.bin")
         .exists()
+}
+
+pub fn filter_candidates_by_scan_scope(
+    workspace: &Workspace,
+    opts: &ScanOptions,
+    mut results: Vec<CallCandidate>,
+) -> Result<Vec<CallCandidate>> {
+    if graph_scope_restricts_paths(opts) {
+        let mut scope_opts = opts.clone();
+        scope_opts.limit = 0;
+        let allowed_paths = workspace
+            .scan_catalog(&scope_opts)?
+            .into_iter()
+            .map(|file| file.path)
+            .collect::<HashSet<_>>();
+        results.retain(|candidate| allowed_paths.contains(&candidate.path));
+    }
+    if opts.limit > 0 && results.len() > opts.limit {
+        results.truncate(opts.limit);
+    }
+    Ok(results)
+}
+
+fn graph_scope_restricts_paths(opts: &ScanOptions) -> bool {
+    opts.changed
+        || !opts.dirs.is_empty()
+        || !opts.extensions.is_empty()
+        || !opts.file_patterns.is_empty()
+        || !opts.include.is_empty()
+        || !opts.exclude.is_empty()
+        || !opts.lang.is_empty()
 }
 
 // ---------------------------------------------------------------------------
@@ -276,8 +339,22 @@ impl GraphBackend for PetgraphBackend {
     }
 
     fn query_calls(&self, identifier: &str) -> Result<Vec<CallCandidate>> {
+        let plan = InputPlan::new(identifier, InputMode::Strict);
+        self.query_calls_with_input(&plan, true)
+    }
+
+    fn query_callers(&self, identifier: &str) -> Result<Vec<CallCandidate>> {
+        let plan = InputPlan::new(identifier, InputMode::Strict);
+        self.query_callers_with_input(&plan, true)
+    }
+
+    fn query_calls_with_input(
+        &self,
+        plan: &InputPlan,
+        case_sensitive: bool,
+    ) -> Result<Vec<CallCandidate>> {
         let mut results: Vec<CallCandidate> = Vec::new();
-        for node_idx in self.matching_node_indices(identifier) {
+        for (node_idx, variant) in self.matching_node_indices_for_plan(plan, case_sensitive) {
             results.extend(
                 self.graph
                     .edges_directed(node_idx, petgraph::Direction::Outgoing)
@@ -285,32 +362,24 @@ impl GraphBackend for PetgraphBackend {
                         let meta = edge.weight();
                         let caller = &self.graph[edge.source()];
                         let callee = &self.graph[edge.target()];
-                        edge_to_candidate(meta, caller, callee)
+                        let mut candidate = edge_to_candidate(meta, caller, callee);
+                        candidate.matched_input_variant = Some(matched_variant_value(&variant));
+                        candidate
                     }),
             );
         }
 
-        if results.is_empty() {
-            return Ok(results);
-        }
-
-        results.sort_by(|a, b| {
-            a.path
-                .cmp(&b.path)
-                .then(a.enclosing_symbol.cmp(&b.enclosing_symbol))
-                .then(a.target.cmp(&b.target))
-                .then(candidate_start_line(a).cmp(&candidate_start_line(b)))
-                .then(candidate_start_column(a).cmp(&candidate_start_column(b)))
-        });
-        prefer_scip_precise_candidates(&mut results);
-        results.dedup_by(|a, b| same_candidate_site(a, b));
-
+        finalize_call_candidates(&mut results);
         Ok(results)
     }
 
-    fn query_callers(&self, identifier: &str) -> Result<Vec<CallCandidate>> {
+    fn query_callers_with_input(
+        &self,
+        plan: &InputPlan,
+        case_sensitive: bool,
+    ) -> Result<Vec<CallCandidate>> {
         let mut results: Vec<CallCandidate> = Vec::new();
-        for node_idx in self.matching_node_indices(identifier) {
+        for (node_idx, variant) in self.matching_node_indices_for_plan(plan, case_sensitive) {
             results.extend(
                 self.graph
                     .edges_directed(node_idx, petgraph::Direction::Incoming)
@@ -318,26 +387,14 @@ impl GraphBackend for PetgraphBackend {
                         let meta = edge.weight();
                         let caller = &self.graph[edge.source()];
                         let callee = &self.graph[edge.target()];
-                        edge_to_caller_candidate(meta, caller, callee)
+                        let mut candidate = edge_to_caller_candidate(meta, caller, callee);
+                        candidate.matched_input_variant = Some(matched_variant_value(&variant));
+                        candidate
                     }),
             );
         }
 
-        if results.is_empty() {
-            return Ok(results);
-        }
-
-        results.sort_by(|a, b| {
-            a.path
-                .cmp(&b.path)
-                .then(a.enclosing_symbol.cmp(&b.enclosing_symbol))
-                .then(a.target.cmp(&b.target))
-                .then(candidate_start_line(a).cmp(&candidate_start_line(b)))
-                .then(candidate_start_column(a).cmp(&candidate_start_column(b)))
-        });
-        prefer_scip_precise_candidates(&mut results);
-        results.dedup_by(|a, b| same_candidate_site(a, b));
-
+        finalize_call_candidates(&mut results);
         Ok(results)
     }
 
@@ -349,22 +406,20 @@ impl GraphBackend for PetgraphBackend {
 }
 
 impl PetgraphBackend {
-    fn matching_node_indices(&self, identifier: &str) -> Vec<NodeIndex> {
+    fn matching_node_indices_for_plan(
+        &self,
+        plan: &InputPlan,
+        case_sensitive: bool,
+    ) -> Vec<(NodeIndex, InputVariant)> {
         let mut matches = Vec::new();
-        if let Some(idx) = self.node_by_id.get(identifier) {
-            matches.push(*idx);
-        }
-
-        let query_is_simple = last_identifier(identifier) == identifier;
-        for idx in self.graph.node_indices().filter(|idx| {
-            let node = &self.graph[*idx];
-            node.display_name == identifier
-                || (query_is_simple
-                    && (matches_simple_identifier(&node.display_name, identifier)
-                        || matches_simple_identifier(&node.id, identifier)))
-        }) {
-            if !matches.contains(&idx) {
-                matches.push(idx);
+        let mut seen = HashSet::new();
+        for idx in self.graph.node_indices() {
+            let node = &self.graph[idx];
+            let Some(variant) = matched_node_variant(node, plan, case_sensitive) else {
+                continue;
+            };
+            if seen.insert(idx) {
+                matches.push((idx, variant));
             }
         }
         matches
@@ -389,6 +444,7 @@ fn edge_to_candidate(meta: &EdgeMetadata, caller: &GraphNode, callee: &GraphNode
         producer: format!("graph:{}", meta.source),
         source: format!("{}", meta.source),
         level: "inferred_candidate".to_string(), // ALWAYS inferred_candidate per spec
+        matched_input_variant: None,
     }
 }
 
@@ -410,7 +466,44 @@ fn edge_to_caller_candidate(
         producer: format!("graph:{}", meta.source),
         source: format!("{}", meta.source),
         level: "inferred_candidate".to_string(), // ALWAYS inferred_candidate per spec
+        matched_input_variant: None,
     }
+}
+
+fn finalize_call_candidates(results: &mut Vec<CallCandidate>) {
+    if results.is_empty() {
+        return;
+    }
+    results.sort_by(|a, b| {
+        a.path
+            .cmp(&b.path)
+            .then(a.enclosing_symbol.cmp(&b.enclosing_symbol))
+            .then(a.target.cmp(&b.target))
+            .then(candidate_start_line(a).cmp(&candidate_start_line(b)))
+            .then(candidate_start_column(a).cmp(&candidate_start_column(b)))
+    });
+    prefer_scip_precise_candidates(results);
+    results.dedup_by(|a, b| same_candidate_site(a, b));
+}
+
+fn matched_node_variant(
+    node: &GraphNode,
+    plan: &InputPlan,
+    case_sensitive: bool,
+) -> Option<InputVariant> {
+    [
+        node.id.as_str(),
+        node.display_name.as_str(),
+        last_identifier(&node.id),
+        last_identifier(&node.display_name),
+        method_base_identifier(&node.id),
+        method_base_identifier(&node.display_name),
+    ]
+    .into_iter()
+    .find_map(|candidate| {
+        plan.matched_variant(candidate, case_sensitive, SymbolMatchMode::Exact)
+            .cloned()
+    })
 }
 
 fn node_display_name(node: &GraphNode) -> String {
@@ -476,10 +569,6 @@ fn last_identifier(target: &str) -> &str {
         .rsplit(|ch: char| !(ch == '_' || ch.is_ascii_alphanumeric()))
         .find(|part| !part.is_empty())
         .unwrap_or(target)
-}
-
-fn matches_simple_identifier(target: &str, identifier: &str) -> bool {
-    last_identifier(target) == identifier || method_base_identifier(target) == identifier
 }
 
 fn method_base_identifier(target: &str) -> &str {

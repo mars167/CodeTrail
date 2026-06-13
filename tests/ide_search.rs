@@ -215,6 +215,21 @@ fn compatible_symbol_input_matches_qualified_signature_style_and_case_forms() {
     let callers_json = parse_json(callers_output);
     assert_eq!(callers_json["results"][0]["enclosingSymbol"], "run");
     assert_eq!(callers_json["results"][0]["target"], "helper");
+
+    let case_sensitive_output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--ext", "java", "--case-sensitive", "defs", "finduser"])
+        .assert()
+        .code(2)
+        .get_output()
+        .stdout
+        .clone();
+    let case_sensitive_json = parse_json(case_sensitive_output);
+    assert!(case_sensitive_json["results"]
+        .as_array()
+        .unwrap()
+        .is_empty());
 }
 
 #[test]

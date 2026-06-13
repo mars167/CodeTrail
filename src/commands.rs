@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use crate::{
     cli::{Cli, Command, HooksCommand, IndexCommand, OutputFormat, QueryCommand},
     completions, graph, index, output,
-    query_input::compatible_input_needs_expansion,
+    query_input::{compatible_input_needs_expansion, InputPlan},
     saved_query, scip_index, search,
     search_pattern::SearchPatternMode,
     syntax,
@@ -53,8 +53,14 @@ pub fn run(cli: Cli) -> AppResult<i32> {
 
     let value = match &cli.command {
         Command::Find { text, mode } => {
-            let query_output =
-                search::find(&workspace, &scan_opts, text, (*mode).into(), cli.context, false)?;
+            let query_output = search::find(
+                &workspace,
+                &scan_opts,
+                text,
+                (*mode).into(),
+                cli.context,
+                false,
+            )?;
             exit_code = output::no_match_exit(&query_output.results);
             page_response(
                 output::response_with_index(
@@ -81,8 +87,14 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             context,
         } => {
             let context = context.unwrap_or(cli.context);
-            let query_output =
-                search::find(&workspace, &scan_opts, pattern, (*mode).into(), context, false)?;
+            let query_output = search::find(
+                &workspace,
+                &scan_opts,
+                pattern,
+                (*mode).into(),
+                context,
+                false,
+            )?;
             exit_code = output::no_match_exit(&query_output.results);
             page_response(
                 output::response_with_index(
@@ -406,7 +418,13 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             let graph_store = graph::GraphStore::open(&workspace).ok();
             if let Some(ref store) = graph_store {
                 if store.freshness_check().unwrap_or(false) {
-                    let results = store.query_calls(identifier).unwrap_or_default();
+                    let plan = InputPlan::new(identifier, scan_opts.input_mode);
+                    let results = store
+                        .query_calls_with_input(&plan, scan_opts.case_sensitive)
+                        .and_then(|results| {
+                            graph::filter_candidates_by_scan_scope(&workspace, &scan_opts, results)
+                        })
+                        .unwrap_or_default();
                     if !results.is_empty() {
                         let index_meta = store.index_meta(true);
                         let warnings: Vec<String> = Vec::new();
@@ -454,7 +472,13 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             let graph_store = graph::GraphStore::open(&workspace).ok();
             if let Some(ref store) = graph_store {
                 if store.freshness_check().unwrap_or(false) {
-                    let results = store.query_callers(identifier).unwrap_or_default();
+                    let plan = InputPlan::new(identifier, scan_opts.input_mode);
+                    let results = store
+                        .query_callers_with_input(&plan, scan_opts.case_sensitive)
+                        .and_then(|results| {
+                            graph::filter_candidates_by_scan_scope(&workspace, &scan_opts, results)
+                        })
+                        .unwrap_or_default();
                     if !results.is_empty() {
                         let index_meta = store.index_meta(true);
                         let warnings: Vec<String> = Vec::new();

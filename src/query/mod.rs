@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 use crate::{
     graph, output,
-    query_input::{compatible_input_needs_expansion, InputMode},
+    query_input::{compatible_input_needs_expansion, InputMode, InputPlan},
     scip_index, search,
     search_pattern::SearchPatternMode,
     syntax,
@@ -464,7 +464,13 @@ impl QueryService {
         let graph_store = graph::GraphStore::open(&self.workspace).ok();
         if let Some(ref store) = graph_store {
             if store.freshness_check().unwrap_or(false) {
-                let results = store.query_calls(identifier).unwrap_or_default();
+                let plan = InputPlan::new(identifier, scan.input_mode);
+                let results = store
+                    .query_calls_with_input(&plan, scan.case_sensitive)
+                    .and_then(|results| {
+                        graph::filter_candidates_by_scan_scope(&self.workspace, &scan, results)
+                    })
+                    .unwrap_or_default();
                 if !results.is_empty() {
                     let index_meta = store.index_meta(true);
                     return Ok(self.finalize(output::response_with_index(
@@ -506,7 +512,13 @@ impl QueryService {
         let graph_store = graph::GraphStore::open(&self.workspace).ok();
         if let Some(ref store) = graph_store {
             if store.freshness_check().unwrap_or(false) {
-                let results = store.query_callers(identifier).unwrap_or_default();
+                let plan = InputPlan::new(identifier, scan.input_mode);
+                let results = store
+                    .query_callers_with_input(&plan, scan.case_sensitive)
+                    .and_then(|results| {
+                        graph::filter_candidates_by_scan_scope(&self.workspace, &scan, results)
+                    })
+                    .unwrap_or_default();
                 if !results.is_empty() {
                     let index_meta = store.index_meta(true);
                     return Ok(self.finalize(output::response_with_index(

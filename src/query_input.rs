@@ -84,7 +84,19 @@ impl InputPlan {
     }
 
     pub fn expanded(&self) -> bool {
-        self.mode == InputMode::Compatible && self.variants.len() > 1
+        if self.mode != InputMode::Compatible {
+            return false;
+        }
+        if self.truncated {
+            return true;
+        }
+        let raw = self.raw.as_str();
+        let trimmed = self.raw.trim();
+        self.variants.iter().any(|variant| {
+            !matches!(variant.kind, "raw" | "trimmed")
+                && variant.value != raw
+                && variant.value != trimmed
+        })
     }
 
     pub fn expansion_warning(&self) -> Option<String> {
@@ -109,6 +121,7 @@ impl InputPlan {
         case_sensitive: bool,
         mode: SymbolMatchMode,
     ) -> Option<&InputVariant> {
+        let case_sensitive = case_sensitive || self.mode == InputMode::Strict;
         self.variants
             .iter()
             .find(|variant| variant_matches(candidate, variant, case_sensitive, mode))
@@ -178,6 +191,9 @@ fn variant_matches(
         return compare(&style_key(candidate), &variant.value, false, mode);
     }
     if variant.kind == "case_fold" {
+        if case_sensitive {
+            return false;
+        }
         return compare(&candidate.to_lowercase(), &variant.value, true, mode);
     }
     compare(candidate, &variant.value, case_sensitive, mode)

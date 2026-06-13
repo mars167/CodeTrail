@@ -292,6 +292,34 @@ pub fn query_refs_by_symbol_key(db_path: &Path, symbol_key: &str) -> Result<Vec<
     Ok(results)
 }
 
+pub fn query_all_defs(db_path: &Path) -> Result<Vec<OccurrenceResult>> {
+    query_occurrences_by_role(db_path, "definition")
+}
+
+pub fn query_all_refs(db_path: &Path) -> Result<Vec<OccurrenceResult>> {
+    query_occurrences_by_role(db_path, "reference")
+}
+
+pub fn query_all_symbols(db_path: &Path) -> Result<Vec<SymbolResult>> {
+    if !db_path.exists() {
+        return Ok(Vec::new());
+    }
+    let conn = Connection::open(db_path)?;
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT s.symbol_key, s.symbol, s.name, s.kind, s.language, \
+                o.file_path, o.role, o.start_line, o.start_column, o.end_line, o.end_column \
+         FROM symbols s \
+         JOIN occurrences o ON o.symbol_id = s.id \
+         WHERE o.role = 'definition' \
+         ORDER BY s.kind, s.name, s.symbol_key, o.file_path",
+    )?;
+    let results = stmt
+        .query_map([], map_symbol_row)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(anyhow::Error::from)?;
+    Ok(results)
+}
+
 /// Query symbols with name containing the query string.
 pub fn query_symbols(db_path: &Path, query: &str) -> Result<Vec<SymbolResult>> {
     if !db_path.exists() {
@@ -310,24 +338,46 @@ pub fn query_symbols(db_path: &Path, query: &str) -> Result<Vec<SymbolResult>> {
 
     let like_pattern = format!("%{}%", query);
     let results = stmt
-        .query_map(params![like_pattern], |row| {
-            Ok(SymbolResult {
-                symbol_key: row.get(0)?,
-                symbol: row.get(1)?,
-                name: row.get(2)?,
-                kind: row.get(3)?,
-                language: row.get(4)?,
-                path: row.get(5)?,
-                role: row.get(6)?,
-                start_line: row.get(7)?,
-                start_column: row.get(8)?,
-                end_line: row.get(9)?,
-                end_column: row.get(10)?,
-            })
-        })?
+        .query_map(params![like_pattern], map_symbol_row)?
         .collect::<std::result::Result<Vec<_>, _>>()?;
 
     Ok(results)
+}
+
+fn query_occurrences_by_role(db_path: &Path, role: &str) -> Result<Vec<OccurrenceResult>> {
+    if !db_path.exists() {
+        return Ok(Vec::new());
+    }
+    let conn = Connection::open(db_path)?;
+    let mut stmt = conn.prepare(
+        "SELECT s.symbol_key, o.file_path, o.language, o.symbol, s.name, s.kind, o.role, \
+                o.start_line, o.start_column, o.end_line, o.end_column, o.file_hash \
+         FROM occurrences o \
+         JOIN symbols s ON o.symbol_id = s.id \
+         WHERE o.role = ?1 \
+         ORDER BY o.file_path, o.start_line, o.start_column",
+    )?;
+    let mut results = stmt
+        .query_map(params![role], map_occurrence_row)?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    dedup_occurrence_results(&mut results);
+    Ok(results)
+}
+
+fn map_symbol_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SymbolResult> {
+    Ok(SymbolResult {
+        symbol_key: row.get(0)?,
+        symbol: row.get(1)?,
+        name: row.get(2)?,
+        kind: row.get(3)?,
+        language: row.get(4)?,
+        path: row.get(5)?,
+        role: row.get(6)?,
+        start_line: row.get(7)?,
+        start_column: row.get(8)?,
+        end_line: row.get(9)?,
+        end_column: row.get(10)?,
+    })
 }
 
 /// Convert an OccurrenceResult to JSON.
