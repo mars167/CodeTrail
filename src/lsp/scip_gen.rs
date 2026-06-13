@@ -138,6 +138,8 @@ pub fn generate_best_effort(
     }
 
     if all_occurrences.is_empty() {
+        scip::invalidate_db(&db_path)
+            .with_context(|| "failed to invalidate empty occurrence database")?;
         write_generation_manifests(workspace, &manifests)?;
         return Ok(SemanticBuildReport {
             attempted: true,
@@ -220,6 +222,14 @@ fn generation_manifests_allow_occurrence_skip(manifests: &[GenerationManifest]) 
         || manifests.iter().all(|manifest| {
             manifest.state == ManifestState::Fresh && manifest.partial_reasons.is_empty()
         })
+}
+
+pub fn generation_manifests_allow_precise_use(workspace: &Workspace) -> Result<bool> {
+    let manifests = read_generation_manifests(workspace)?;
+    Ok(manifests.is_empty()
+        || manifests
+            .iter()
+            .all(|manifest| !manifest.state.blocks_precise()))
 }
 
 fn load_file_contents(workspace: &Workspace, records: &[FileRecord]) -> BTreeMap<String, String> {
@@ -949,5 +959,38 @@ mod tests {
             ManifestState::Missing,
             vec!["semantic_provider_missing".to_string()]
         )]));
+    }
+
+    #[test]
+    fn precise_use_blocks_missing_stale_and_updating_manifests() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = Workspace::discover(dir.path()).unwrap();
+        assert!(generation_manifests_allow_precise_use(&workspace).unwrap());
+
+        let path = generation_manifest_path(&workspace);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for state in [
+            ManifestState::Missing,
+            ManifestState::Stale,
+            ManifestState::Updating,
+        ] {
+            fs::write(
+                &path,
+                serde_json::to_vec_pretty(&vec![manifest(state, Vec::new())]).unwrap(),
+            )
+            .unwrap();
+            assert!(!generation_manifests_allow_precise_use(&workspace).unwrap());
+        }
+
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&vec![manifest(
+                ManifestState::Partial,
+                vec!["semantic_provider_partial: reference_budget".to_string()],
+            )])
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(generation_manifests_allow_precise_use(&workspace).unwrap());
     }
 }

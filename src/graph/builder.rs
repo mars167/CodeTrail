@@ -22,6 +22,7 @@ use anyhow::Result;
 use petgraph::{graph::NodeIndex, visit::EdgeRef};
 
 use crate::{
+    lsp::scip_gen,
     scip,
     scip_index::native_db_path,
     syntax,
@@ -141,6 +142,9 @@ fn build_from_scip(backend: &mut PetgraphBackend, workspace: &Workspace) {
         return;
     }
     if !scip::occurrence_db_fresh(&db_path, &workspace.snapshot_id, &workspace.root) {
+        return;
+    }
+    if !scip_gen::generation_manifests_allow_precise_use(workspace).unwrap_or(false) {
         return;
     }
     // Read all symbols with their definitions

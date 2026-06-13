@@ -145,11 +145,8 @@ impl LspClient {
                         {
                             return Ok(());
                         }
-                    } else {
-                        break;
                     }
                 }
-                Ok(())
             }
         }
     }
