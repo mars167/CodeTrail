@@ -47,9 +47,7 @@ pub fn resolve_server(language: &ProjectLanguage) -> Option<ServerSpec> {
             program: resolve_binary("jdtls")?,
             args: Vec::new(),
             provider_id: "jdtls".to_string(),
-            readiness: ReadinessStrategy::LanguageStatus {
-                timeout_ms: 180_000,
-            },
+            readiness: ReadinessStrategy::LanguageStatus { timeout_ms: 5_000 },
         }),
         ProjectLanguage::TypeScript => Some(ServerSpec {
             program: resolve_binary("typescript-language-server")?,

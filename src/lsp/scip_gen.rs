@@ -122,14 +122,16 @@ pub fn generate_best_effort(
         }
 
         let reports = index_lsp_group(
-            workspace,
-            language,
-            &lsp_root_path,
-            &roots,
-            &file_contents,
+            LspGroupRequest {
+                workspace,
+                language,
+                lsp_root_path: &lsp_root_path,
+                roots: &roots,
+                file_contents: &file_contents,
+                deadline,
+                verbose,
+            },
             &mut all_occurrences,
-            deadline,
-            verbose,
         );
         for (root, files, report) in reports {
             language_reports.push(report.clone());
@@ -257,6 +259,29 @@ fn source_files_for_root(graph: &ProjectGraph, root: &ProjectRoot) -> Vec<String
 
 type LspWorkGroups<'a> = BTreeMap<(ProjectLanguage, PathBuf), Vec<(&'a ProjectRoot, Vec<String>)>>;
 
+struct LspGroupRequest<'a> {
+    workspace: &'a Workspace,
+    language: ProjectLanguage,
+    lsp_root_path: &'a Path,
+    roots: &'a [(&'a ProjectRoot, Vec<String>)],
+    file_contents: &'a BTreeMap<String, String>,
+    deadline: Instant,
+    verbose: VerboseLogger,
+}
+
+struct RootIndexRequest<'a> {
+    workspace: &'a Workspace,
+    root: &'a ProjectRoot,
+    files: &'a [String],
+    file_contents: &'a BTreeMap<String, String>,
+    deadline: Instant,
+    client: &'a LspClient,
+    provider_id: &'a str,
+    provider_version: &'a SemanticProviderVersion,
+    lsp_root_path: &'a Path,
+    language_id: &'a str,
+}
+
 fn lsp_work_groups<'a>(workspace: &Workspace, graph: &'a ProjectGraph) -> LspWorkGroups<'a> {
     let mut groups = BTreeMap::new();
     for root in &graph.roots {
@@ -284,15 +309,19 @@ fn lsp_workspace_root(workspace: &Workspace, root: &ProjectRoot) -> PathBuf {
 }
 
 fn index_lsp_group<'a>(
-    workspace: &Workspace,
-    language: ProjectLanguage,
-    lsp_root_path: &Path,
-    roots: &'a [(&'a ProjectRoot, Vec<String>)],
-    file_contents: &BTreeMap<String, String>,
+    request: LspGroupRequest<'a>,
     occurrences: &mut Vec<SemanticOccurrence>,
-    deadline: Instant,
-    verbose: VerboseLogger,
 ) -> Vec<(&'a ProjectRoot, &'a [String], SemanticLanguageReport)> {
+    let LspGroupRequest {
+        workspace,
+        language,
+        lsp_root_path,
+        roots,
+        file_contents,
+        deadline,
+        verbose,
+    } = request;
+
     let Some(spec) = resolve_server(&language) else {
         return roots
             .iter()
@@ -342,13 +371,24 @@ fn index_lsp_group<'a>(
         }
     };
 
-    if let Err(error) = client.initialize(&root_uri, &spec.readiness) {
-        let _ = client.shutdown();
-        return group_failure_reports(
-            roots,
-            &spec,
-            format!("semantic_provider_startup_failed: {error}"),
-        );
+    match client.initialize(&root_uri, &spec.readiness) {
+        Ok(true) => {}
+        Ok(false) => {
+            let _ = client.shutdown();
+            return group_failure_reports(
+                roots,
+                &spec,
+                "semantic_provider_partial: readiness_timeout".to_string(),
+            );
+        }
+        Err(error) => {
+            let _ = client.shutdown();
+            return group_failure_reports(
+                roots,
+                &spec,
+                format!("semantic_provider_startup_failed: {error}"),
+            );
+        }
     }
 
     let language_id = lsp_language_id(&language);
@@ -378,18 +418,19 @@ fn index_lsp_group<'a>(
             root.id, language, spec.provider_id
         ));
         let report = index_root_with_client(
-            workspace,
-            root,
-            files,
-            file_contents,
+            RootIndexRequest {
+                workspace,
+                root,
+                files,
+                file_contents,
+                deadline,
+                client: &client,
+                provider_id: &spec.provider_id,
+                provider_version: &provider_version,
+                lsp_root_path,
+                language_id,
+            },
             occurrences,
-            deadline,
-            verbose,
-            &client,
-            &spec.provider_id,
-            &provider_version,
-            lsp_root_path,
-            language_id,
         );
         verbose.log(format!(
             "semantic: finished root {} state={} occurrences={} elapsed_ms={} remaining_roots={}",
@@ -447,19 +488,22 @@ fn semantic_report(
 }
 
 fn index_root_with_client(
-    workspace: &Workspace,
-    root: &ProjectRoot,
-    files: &[String],
-    file_contents: &BTreeMap<String, String>,
+    request: RootIndexRequest<'_>,
     occurrences: &mut Vec<SemanticOccurrence>,
-    deadline: Instant,
-    _verbose: VerboseLogger,
-    client: &LspClient,
-    provider_id: &str,
-    provider_version: &SemanticProviderVersion,
-    lsp_root_path: &Path,
-    language_id: &str,
 ) -> SemanticLanguageReport {
+    let RootIndexRequest {
+        workspace,
+        root,
+        files,
+        file_contents,
+        deadline,
+        client,
+        provider_id,
+        provider_version,
+        lsp_root_path,
+        language_id,
+    } = request;
+
     let package = package_for_root(root);
     let ctx = OccurrenceBuildCtx {
         workspace,
@@ -512,7 +556,7 @@ fn index_root_with_client(
                 ));
                 continue;
             };
-            let locations = collect_reference_locations(&client, &lsp_path, &probe.position, 32);
+            let locations = collect_reference_locations(client, &lsp_path, &probe.position, 32);
             for location in locations {
                 let Some(path) = uri_to_relative_path(&workspace.root, &location.uri) else {
                     continue;

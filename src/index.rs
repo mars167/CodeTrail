@@ -18,7 +18,10 @@ use crate::{
     graph, lancedb_store, output,
     scan_diagnostics::SkippedFile,
     snapshot_store, text_index,
-    workspace::{read_staged_blob, staged_tree, tracked_files, FileRecord, ScanOptions, Workspace},
+    workspace::{
+        read_staged_blob, staged_tree, tracked_files, FileRecord, MaterializedIndexData,
+        ScanOptions, Workspace,
+    },
 };
 
 const INDEX_SCHEMA_VERSION: u32 = 1;
@@ -110,10 +113,10 @@ pub fn build(
         "index build: snapshot_id={snapshot_id} staged={staged} changed_only={changed_only} force={force}"
     ));
 
-    let (records, skipped_files) = if staged {
+    let (records, skipped_files, materialized_index_data) = if staged {
         let records = staged_records(workspace, None)?;
         verbose.log(format!("index build: staged records={}", records.len()));
-        (records, Vec::new())
+        (records, Vec::new(), Vec::new())
     } else {
         let mut scan_opts = effective_opts.clone();
         scan_opts.limit = 0;
@@ -134,7 +137,7 @@ pub fn build(
         let materialized = workspace.materialize_proofs_with_skips(&catalog_scan.files)?;
         let mut skipped_files = catalog_scan.skipped;
         skipped_files.extend(materialized.skipped);
-        (materialized.records, skipped_files)
+        (materialized.records, skipped_files, materialized.index_data)
     };
     verbose.log(format!(
         "index build: materialized proofs={}",
@@ -197,7 +200,16 @@ pub fn build(
         )
     })?;
 
-    write_to_lancedb(workspace, &manifest, &records, staged, verbose).with_context(|| {
+    let materialized_index_data = (!staged).then_some(materialized_index_data.as_slice());
+    write_to_lancedb(
+        workspace,
+        &manifest,
+        &records,
+        materialized_index_data,
+        staged,
+        verbose,
+    )
+    .with_context(|| {
         format!(
             "LanceDB write failed for snapshot {}. Run 'codetrail index build --force' to rebuild.",
             manifest.snapshot_id
@@ -1661,9 +1673,18 @@ fn write_to_lancedb(
     workspace: &Workspace,
     manifest: &Manifest,
     records: &[FileRecord],
+    materialized_index_data: Option<&[MaterializedIndexData]>,
     staged: bool,
     verbose: output::VerboseLogger,
 ) -> Result<()> {
+    if let Some(index_data) = materialized_index_data {
+        anyhow::ensure!(
+            index_data.len() == records.len(),
+            "materialized index data length {} does not match records length {}",
+            index_data.len(),
+            records.len()
+        );
+    }
     verbose.log(format!(
         "index build: opening LanceDB store path={}",
         lancedb_store::lancedb_root(&workspace.root).display()
@@ -1712,27 +1733,26 @@ fn write_to_lancedb(
         .with_context(|| "failed to write file catalog to LanceDB")?;
 
     verbose.log("index build: writing LanceDB file proofs");
+    let precomputed_line_offsets = materialized_index_data.map(|index_data| {
+        index_data
+            .iter()
+            .map(|data| data.line_offsets_json.as_str())
+            .collect::<Vec<_>>()
+    });
     lancedb
-        .write_file_proofs(&manifest.snapshot_id, records, Some(&workspace.root))
+        .write_file_proofs_with_line_offsets(
+            &manifest.snapshot_id,
+            records,
+            precomputed_line_offsets.as_deref(),
+            Some(&workspace.root),
+        )
         .with_context(|| "failed to write file proofs to LanceDB")?;
 
     if !staged {
-        verbose.log("index build: building gram postings");
-        let mut gram_index: BTreeMap<[u8; 3], Vec<u32>> = BTreeMap::new();
-        for (doc_id, record) in records.iter().enumerate() {
-            let bytes = match fs::read(workspace.abs_path(&record.path)) {
-                Ok(b) => b,
-                Err(_) => continue,
-            };
-            for window in bytes.windows(3) {
-                let gram = [window[0], window[1], window[2]];
-                gram_index.entry(gram).or_default().push(doc_id as u32);
-            }
-        }
-        for ids in gram_index.values_mut() {
-            ids.sort_unstable();
-            ids.dedup();
-        }
+        verbose.log("index build: building gram postings from materialized files");
+        let index_data =
+            materialized_index_data.context("missing materialized index data for gram postings")?;
+        let gram_index = gram_index_from_materialized_files(index_data);
         if !gram_index.is_empty() {
             let posting_count = gram_index.values().map(Vec::len).sum::<usize>();
             verbose.log(format!(
@@ -1747,6 +1767,18 @@ fn write_to_lancedb(
     }
 
     Ok(())
+}
+
+fn gram_index_from_materialized_files(
+    index_data: &[MaterializedIndexData],
+) -> BTreeMap<[u8; 3], Vec<u32>> {
+    let mut gram_index: BTreeMap<[u8; 3], Vec<u32>> = BTreeMap::new();
+    for (doc_id, data) in index_data.iter().enumerate() {
+        for &gram in &data.unique_grams {
+            gram_index.entry(gram).or_default().push(doc_id as u32);
+        }
+    }
+    gram_index
 }
 
 fn write_manifest(path: &Path, manifest: &Manifest) -> Result<()> {
