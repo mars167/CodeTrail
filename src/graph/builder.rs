@@ -280,6 +280,7 @@ fn build_tree_sitter_edges(backend: &mut PetgraphBackend, workspace: &Workspace)
         cursor: None,
         allow_broad: false,
         limit: 0,
+        ..ScanOptions::default()
     };
 
     let mut warnings = Vec::new();

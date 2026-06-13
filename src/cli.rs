@@ -1,5 +1,10 @@
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
+use crate::{
+    query_input::InputMode,
+    search_pattern::{ContentPatternMode, SearchPatternMode},
+};
+
 #[derive(Debug, Parser)]
 #[command(name = "codetrail")]
 #[command(version)]
@@ -28,6 +33,48 @@ pub struct Cli {
 
     #[arg(long, global = true)]
     pub lang: Vec<String>,
+
+    #[arg(
+        long,
+        global = true,
+        help = "Workspace-relative directory scope; repeat for OR"
+    )]
+    pub dir: Vec<String>,
+
+    #[arg(
+        long,
+        global = true,
+        help = "File extension scope, with or without leading dot; repeat for OR"
+    )]
+    pub ext: Vec<String>,
+
+    #[arg(
+        long,
+        global = true,
+        help = "Path pattern scope applied before content/symbol search; repeat for OR"
+    )]
+    pub file_pattern: Vec<String>,
+
+    #[arg(long, global = true, value_enum, default_value_t = SearchPatternMode::Wildcard, help = "Pattern mode for --file-pattern")]
+    pub file_mode: SearchPatternMode,
+
+    #[arg(
+        long,
+        global = true,
+        conflicts_with = "ignore_case",
+        help = "Match text, paths, and compatible symbol input with exact case"
+    )]
+    pub case_sensitive: bool,
+
+    #[arg(
+        long,
+        global = true,
+        help = "Match text, paths, and compatible symbol input ignoring case (default)"
+    )]
+    pub ignore_case: bool,
+
+    #[arg(long, global = true, value_enum, default_value_t = InputMode::Compatible, help = "Symbol input handling for defs/refs/symbols/calls/callers")]
+    pub input_mode: InputMode,
 
     #[arg(long, global = true)]
     pub changed: bool,
@@ -63,25 +110,31 @@ pub enum OutputFormat {
 pub enum Command {
     Find {
         text: String,
-        #[arg(long, default_value = "literal")]
-        mode: String,
+        #[arg(long, value_enum, default_value_t = ContentPatternMode::Literal, help = "Content match mode")]
+        mode: ContentPatternMode,
     },
     Grep {
         pattern: String,
-        #[arg(long, default_value = "regex")]
-        mode: String,
+        #[arg(long, value_enum, default_value_t = ContentPatternMode::Regex, help = "Content match mode")]
+        mode: ContentPatternMode,
         #[arg(long)]
         context: Option<u16>,
     },
     Files {
         pattern: String,
+        #[arg(long, value_enum, default_value_t = SearchPatternMode::Literal, help = "Path match mode")]
+        mode: SearchPatternMode,
     },
     #[command(alias = "findpath", alias = "path")]
     FindPath {
         pattern: String,
+        #[arg(long, value_enum, default_value_t = SearchPatternMode::Literal, help = "Path match mode")]
+        mode: SearchPatternMode,
     },
     Glob {
         pattern: String,
+        #[arg(long, value_enum, default_value_t = SearchPatternMode::Glob, help = "Path match mode")]
+        mode: SearchPatternMode,
     },
     #[command(alias = "ls")]
     List {

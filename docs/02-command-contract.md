@@ -37,6 +37,120 @@ flowchart TB
 `analyze data-model` 这类行为应由 Agent/subagent 模板通过上述原语组合完成，
 不进入 CodeTrail CLI/MCP 的公共命令契约。
 
+## IDE-like 搜索选项
+
+所有搜索和导航命令共享同一套 workspace scope：
+
+```bash
+codetrail --dir src/main --ext java --file-pattern '*Service.java' find user
+```
+
+- `--dir <dir>` 可重复，workspace-relative，多个目录为 OR。遍历从这些目录
+  启动，不先扫全仓库再过滤。
+- `--ext <ext>` 可重复，接受 `java` 或 `.java`，按路径后缀字符串匹配。
+- `--file-pattern <pattern>` 可重复，多个 pattern 为 OR。
+- `--file-mode literal|regex|wildcard|glob` 控制 `--file-pattern`，默认
+  `wildcard`。
+- `--case-sensitive` 和 `--ignore-case` 互斥；默认是 ignore-case。
+- `--mode literal|regex|wildcard` 控制内容或路径匹配。`find` 默认
+  `literal`，`grep` 默认 `regex`，`files/find-path` 默认 `literal`，`glob`
+  默认 `glob`。
+
+wildcard 中 `*` 匹配任意长度，`?` 匹配单字符；内容 wildcard 不跨行。路径
+`glob` 支持 `**` 跨目录。
+
+## 标识符输入
+
+`defs`、`refs`、`symbols`、`calls` 和 `callers` 默认使用
+`--input-mode compatible`。调用方可以传 simple name、`Class.method`、
+`findUser(Long)`、`Class.findUser(Long)`、snake_case 或 kebab-case style key。
+兼容模式会一次性生成有限候选集合并在已抽取的 symbol/call 名上匹配，不做编辑
+距离 fuzzy。需要精确原样匹配时使用 `--input-mode strict`。
+
+这些命令的 CLI 参数面都是单个字符串：
+
+```bash
+codetrail refs <identifier>
+codetrail calls <caller-name>
+codetrail callers <callee-name>
+```
+
+如果字符串包含空格、括号或 shell 特殊字符，调用方必须按普通 shell 规则加引号；
+以 `-` 开头的值应放在 `--` 之后。
+
+- `refs <identifier>` 优先查 fresh SCIP occurrence。SCIP 路径匹配 exact
+  display name、SCIP symbol、symbol key，以及不带签名的 bare method name；
+  例如 `selectUserById` 可以匹配 `selectUserById(Long)`。没有可用 SCIP 时，
+  fallback 是 identifier-boundary literal text search，不是语义引用解析。
+- `calls <caller-name>` 查询某个函数或方法体内发出的调用。parser fallback
+  使用 enclosing function/method 的简单名称精确匹配。
+- `callers <callee-name>` 查询调用某个目标的调用点。parser fallback 使用目标
+  的最后一段简单标识符匹配，因此查询 `helper` 可以命中 `self.helper()`、
+  `pkg.Helper()` 或 `obj.helper()` 这类返回为限定 target 的调用。
+- 兼容输入命中时结果会带 `matchedInputVariant`；使用兼容候选或非默认 scope 时
+  public JSON 会返回 `query_input_expanded` caveat，severity 为 `info`、
+  category 为 `capability`。
+
+Go、Rust、Python、TypeScript、JavaScript 和 Java 有 tree-sitter parser
+fallback；其他语言的关系查询主要依赖 fresh graph/SCIP 派生结果。所有
+`calls`/`callers` 输出无论来自 graph 还是 parser，可靠性都保持
+`inferred_candidate`。
+
+## 性能契约
+
+搜索必须先收窄候选文件，再读内容或解析 AST。固定顺序为：
+
+1. `--dir` walker roots。
+2. ignore/hidden/no-ignore。
+3. `--ext` 和 `--lang`。
+4. `--include` 和 `--exclude`。
+5. `--file-pattern` 和 `--file-mode`。
+6. `--changed`。
+7. binary/generated skip。
+8. 内容扫描、SCIP 查询或 tree-sitter parse。
+
+所有 pattern 在查询开始时编译一次。`regex` 使用 Rust `regex::RegexBuilder`
+并注入大小写选项；`wildcard` 先 escape 再转 regex。`files/glob` 只需要
+metadata，不读取文件正文。internal JSON 可包含 `queryPlan` 和 `scanStats`；
+public JSON 不暴露内部计时和扫描统计。
+
+目标性能：
+
+- 小仓库 `<1k files`：普通搜索目标 `<300ms`。
+- 中仓库 `<20k files`：带 `--dir` 或 `--ext` 的搜索目标 `<1.5s`。
+- 大仓库：输出必须受 `--limit`/budget 控制，不允许无界输出。
+- `--dir + --ext + literal` 不应比旧 `find --include + --lang` 慢超过 20%。
+
+## 其他输入格式
+
+以下格式是调用方可以依赖的稳定输入约束：
+
+- `find <text>` 默认 `--mode literal`；`grep <pattern>` 默认 `--mode regex`。
+  内容搜索支持 `literal`、`regex` 和 `wildcard`。`regex` 使用 Rust `regex`
+  语法，非法 regex 返回错误而不是无匹配。
+- `files <pattern>` 和 `find-path <pattern>` 默认 literal path substring；
+  `glob <pattern>` 默认 glob match，例如 `src/**/*.rs`。三者都支持
+  `--mode literal|regex|wildcard|glob`。
+- `list [dir]` 和 `tree [dir]` 接受 workspace-relative 目录；省略时为 `.`。
+  目录必须存在、必须是目录，且 canonical path 不能逃出 workspace root。
+- `read <target>` 接受 `path`、`path:line` 或 `path:start-end`。行号从 1
+  开始，`0`、空行号和 start 大于 end 的范围非法。只有最后一个 `:` 后面全是
+  数字或 `数字-数字` 时才按范围解析，否则整个 target 按路径处理。
+- `--lang <lang>` 按扩展名映射出的语言名过滤，大小写不敏感。当前内置语言名为
+  `go`、`rust`、`python`、`java`、`typescript`、`javascript`、`markdown`、
+  `json`、`toml`、`yaml`、`html`、`css` 和 `text`。
+- `--cursor <cursor>` 是不透明分页 token，只能用于相同 query scope 和相同
+  snapshot；scope 或 snapshot 不匹配会返回 cursor 错误。
+- `--save-query <name>`、`query replay <name>`、`query show <name>` 和
+  `query delete <name>` 使用同一名称规则：非空，不能是 `.` 或 `..`，并且只能
+  包含 ASCII 字母、数字、`.`、`_` 和 `-`。
+- `index import-scip <path>` 接受 SCIP JSON 或 native binary `index.scip`
+  protobuf，按文件内容自动识别。`index generate-scip` 当前只支持 `--lang go`，
+  默认输出 `index.scip.json`。
+- `index pack --output <path>` 输出 `.tar.gz` remote snapshot archive；
+  `--output -` 或空 output 会把 archive bytes 写到 stdout。`index unpack
+  <path>` 只接受该 archive 格式并解包到 `.codetrail/remote/`。
+
 ## 输出契约
 
 默认输出是短文本，面向真实终端阅读。需要机器读取时显式传 `--output json` 或 `--output jsonl`。

@@ -11,10 +11,20 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::scan_diagnostics::SkippedFile;
+use crate::{
+    query_input::InputMode,
+    scan_diagnostics::SkippedFile,
+    search_pattern::{compile_any, normalize_extension, PatternTarget, SearchPatternMode},
+};
 
 #[derive(Clone, Debug)]
 pub struct ScanOptions {
+    pub dirs: Vec<String>,
+    pub extensions: Vec<String>,
+    pub file_patterns: Vec<String>,
+    pub file_mode: SearchPatternMode,
+    pub case_sensitive: bool,
+    pub input_mode: InputMode,
     pub include: Vec<String>,
     pub exclude: Vec<String>,
     pub hidden: bool,
@@ -24,6 +34,46 @@ pub struct ScanOptions {
     pub cursor: Option<String>,
     pub allow_broad: bool,
     pub limit: usize,
+}
+
+impl Default for ScanOptions {
+    fn default() -> Self {
+        Self {
+            dirs: Vec::new(),
+            extensions: Vec::new(),
+            file_patterns: Vec::new(),
+            file_mode: SearchPatternMode::Wildcard,
+            case_sensitive: false,
+            input_mode: InputMode::Compatible,
+            include: Vec::new(),
+            exclude: Vec::new(),
+            hidden: false,
+            no_ignore: false,
+            lang: Vec::new(),
+            changed: false,
+            cursor: None,
+            allow_broad: false,
+            limit: 100,
+        }
+    }
+}
+
+impl ScanOptions {
+    pub fn uses_new_scope(&self) -> bool {
+        !self.dirs.is_empty()
+            || !self.extensions.is_empty()
+            || !self.file_patterns.is_empty()
+            || self.case_sensitive
+            || self.file_mode != SearchPatternMode::Wildcard
+    }
+
+    pub fn normalized_extensions(&self) -> Vec<String> {
+        self.extensions
+            .iter()
+            .map(|value| normalize_extension(value))
+            .filter(|value| !value.is_empty())
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -157,107 +207,121 @@ impl Workspace {
     }
 
     pub fn scan_catalog_with_skips(&self, opts: &ScanOptions) -> Result<CatalogScan> {
-        let mut builder = WalkBuilder::new(&self.root);
-        builder
-            .hidden(!opts.hidden)
-            .ignore(!opts.no_ignore)
-            .git_ignore(!opts.no_ignore)
-            .git_global(!opts.no_ignore)
-            .git_exclude(!opts.no_ignore)
-            .parents(!opts.no_ignore);
+        let roots = self.walker_roots(opts)?;
+        let extensions = opts.normalized_extensions();
+        let file_matchers = compile_any(
+            &opts.file_patterns,
+            opts.file_mode,
+            opts.case_sensitive,
+            PatternTarget::Path,
+        )?;
 
         let mut files = Vec::new();
         let mut skipped = Vec::new();
-        for entry in builder.build() {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(error) => {
-                    skipped.push(SkippedFile::with_message(
-                        "<unknown>",
-                        "walk",
-                        "walk_error",
-                        error.to_string(),
-                    ));
+        let mut seen = std::collections::BTreeSet::new();
+        'roots: for root in roots {
+            let mut builder = WalkBuilder::new(root);
+            configure_walker(&mut builder, opts);
+            for entry in builder.build() {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        skipped.push(SkippedFile::with_message(
+                            "<unknown>",
+                            "walk",
+                            "walk_error",
+                            error.to_string(),
+                        ));
+                        continue;
+                    }
+                };
+                let path = entry.path();
+                let Some(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if file_type.is_dir() && should_skip_dir(path, opts.no_ignore) {
+                    if !opts.no_ignore && is_generated_path(path) {
+                        skipped.push(SkippedFile::new(
+                            self.rel_path(path),
+                            "catalog",
+                            "generated",
+                        ));
+                    }
                     continue;
                 }
-            };
-            let path = entry.path();
-            let Some(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_dir() && should_skip_dir(path, opts.no_ignore) {
-                if !opts.no_ignore && is_generated_path(path) {
-                    skipped.push(SkippedFile::new(
-                        self.rel_path(path),
-                        "catalog",
-                        "generated",
-                    ));
+                if !file_type.is_file() {
+                    continue;
                 }
-                continue;
-            }
-            if !file_type.is_file() {
-                continue;
-            }
-            if should_skip_path(path, opts.no_ignore) {
-                if !opts.no_ignore && is_generated_path(path) {
-                    skipped.push(SkippedFile::new(
-                        self.rel_path(path),
-                        "catalog",
-                        "generated",
-                    ));
+                if should_skip_path(path, opts.no_ignore) {
+                    if !opts.no_ignore && is_generated_path(path) {
+                        skipped.push(SkippedFile::new(
+                            self.rel_path(path),
+                            "catalog",
+                            "generated",
+                        ));
+                    }
+                    continue;
                 }
-                continue;
-            }
 
-            let rel = self.rel_path(path);
-            if !matches_filters(&rel, &opts.include, &opts.exclude) {
-                continue;
-            }
-            let language = language_for_path(path).to_string();
-            if !matches_lang(&language, &opts.lang) {
-                continue;
-            }
-            if opts.changed && !self.changed.iter().any(|changed| changed.path == rel) {
-                continue;
-            }
-            let metadata = match fs::metadata(path) {
-                Ok(metadata) if metadata.is_file() => metadata,
-                Ok(_) => continue,
-                Err(error) => {
-                    skipped.push(SkippedFile::with_message(
-                        rel,
-                        "catalog",
-                        "metadata_error",
-                        error.to_string(),
-                    ));
+                let rel = self.rel_path(path);
+                if !seen.insert(rel.clone()) {
                     continue;
                 }
-            };
-            match probably_binary_result(path) {
-                Ok(true) => {
-                    skipped.push(SkippedFile::new(rel, "catalog", "binary"));
+                if !matches_extensions(path, &extensions) {
                     continue;
                 }
-                Ok(false) => {}
-                Err(error) => {
-                    skipped.push(SkippedFile::with_message(
-                        rel,
-                        "catalog",
-                        "read_error",
-                        error.to_string(),
-                    ));
+                if !matches_path_patterns(&rel, &file_matchers) {
                     continue;
                 }
-            }
-            files.push(FileCatalogRecord {
-                path: rel,
-                language,
-                size: metadata.len(),
-                mtime_ms: mtime_ms(&metadata),
-                mode: file_mode(&metadata),
-            });
-            if opts.limit > 0 && files.len() >= opts.limit {
-                break;
+                if !matches_filters(&rel, &opts.include, &opts.exclude) {
+                    continue;
+                }
+                let language = language_for_path(path).to_string();
+                if !matches_lang(&language, &opts.lang) {
+                    continue;
+                }
+                if opts.changed && !self.changed.iter().any(|changed| changed.path == rel) {
+                    continue;
+                }
+                let metadata = match fs::metadata(path) {
+                    Ok(metadata) if metadata.is_file() => metadata,
+                    Ok(_) => continue,
+                    Err(error) => {
+                        skipped.push(SkippedFile::with_message(
+                            rel,
+                            "catalog",
+                            "metadata_error",
+                            error.to_string(),
+                        ));
+                        continue;
+                    }
+                };
+                match probably_binary_result(path) {
+                    Ok(true) => {
+                        skipped.push(SkippedFile::new(rel, "catalog", "binary"));
+                        continue;
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        skipped.push(SkippedFile::with_message(
+                            rel,
+                            "catalog",
+                            "read_error",
+                            error.to_string(),
+                        ));
+                        continue;
+                    }
+                }
+                files.push(FileCatalogRecord {
+                    path: rel,
+                    language,
+                    size: metadata.len(),
+                    mtime_ms: mtime_ms(&metadata),
+                    mode: file_mode(&metadata),
+                });
+                if opts.limit > 0 && files.len() >= opts.limit {
+                    break 'roots;
+                }
             }
         }
 
@@ -316,53 +380,67 @@ impl Workspace {
         let mut total_seen = 0_u64;
         let mut included = 0_u64;
 
-        let mut builder = WalkBuilder::new(&self.root);
-        builder
-            .hidden(!opts.hidden)
-            .ignore(!opts.no_ignore)
-            .git_ignore(!opts.no_ignore)
-            .git_global(!opts.no_ignore)
-            .git_exclude(!opts.no_ignore)
-            .parents(!opts.no_ignore);
+        let roots = self.walker_roots(opts)?;
+        let extensions = opts.normalized_extensions();
+        let file_matchers = compile_any(
+            &opts.file_patterns,
+            opts.file_mode,
+            opts.case_sensitive,
+            PatternTarget::Path,
+        )?;
+        let mut seen = std::collections::BTreeSet::new();
 
-        for entry in builder.build() {
-            let Ok(entry) = entry else {
-                unreadable_skipped += 1;
-                continue;
-            };
-            let path = entry.path();
-            let Some(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_dir() {
-                if should_skip_dir(path, opts.no_ignore) && is_generated_path(path) {
-                    generated_skipped += 1;
+        for root in roots {
+            let mut builder = WalkBuilder::new(root);
+            configure_walker(&mut builder, opts);
+            for entry in builder.build() {
+                let Ok(entry) = entry else {
+                    unreadable_skipped += 1;
+                    continue;
+                };
+                let path = entry.path();
+                let Some(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if file_type.is_dir() {
+                    if should_skip_dir(path, opts.no_ignore) && is_generated_path(path) {
+                        generated_skipped += 1;
+                    }
+                    continue;
                 }
-                continue;
-            }
-            if !file_type.is_file() || should_skip_path(path, opts.no_ignore) {
-                if file_type.is_file() && is_generated_path(path) && !opts.no_ignore {
-                    generated_skipped += 1;
+                if !file_type.is_file() || should_skip_path(path, opts.no_ignore) {
+                    if file_type.is_file() && is_generated_path(path) && !opts.no_ignore {
+                        generated_skipped += 1;
+                    }
+                    continue;
                 }
-                continue;
-            }
 
-            total_seen += 1;
-            let rel = self.rel_path(path);
-            if !matches_filters(&rel, &opts.include, &opts.exclude) {
-                continue;
-            }
-            let language = language_for_path(path).to_string();
-            if !matches_lang(&language, &opts.lang) {
-                continue;
-            }
-            if opts.changed && !self.changed.iter().any(|changed| changed.path == rel) {
-                continue;
-            }
-            match probably_binary_result(path) {
-                Ok(true) => binary_skipped += 1,
-                Ok(false) => included += 1,
-                Err(_) => unreadable_skipped += 1,
+                total_seen += 1;
+                let rel = self.rel_path(path);
+                if !seen.insert(rel.clone()) {
+                    continue;
+                }
+                if !matches_extensions(path, &extensions) {
+                    continue;
+                }
+                if !matches_path_patterns(&rel, &file_matchers) {
+                    continue;
+                }
+                if !matches_filters(&rel, &opts.include, &opts.exclude) {
+                    continue;
+                }
+                let language = language_for_path(path).to_string();
+                if !matches_lang(&language, &opts.lang) {
+                    continue;
+                }
+                if opts.changed && !self.changed.iter().any(|changed| changed.path == rel) {
+                    continue;
+                }
+                match probably_binary_result(path) {
+                    Ok(true) => binary_skipped += 1,
+                    Ok(false) => included += 1,
+                    Err(_) => unreadable_skipped += 1,
+                }
             }
         }
 
@@ -377,6 +455,37 @@ impl Workspace {
             }
         }))
     }
+
+    fn walker_roots(&self, opts: &ScanOptions) -> Result<Vec<PathBuf>> {
+        if opts.dirs.is_empty() {
+            return Ok(vec![self.root.clone()]);
+        }
+        let mut roots = Vec::new();
+        for dir in &opts.dirs {
+            let rel = dir.trim().trim_start_matches('/');
+            let candidate = self.root.join(rel);
+            let canonical = dunce::canonicalize(&candidate).with_context(|| {
+                format!("failed to resolve scoped directory {}", candidate.display())
+            })?;
+            if !canonical.starts_with(&self.root) {
+                return Err(anyhow!("directory scope escapes workspace root: {dir}"));
+            }
+            if canonical.is_dir() {
+                roots.push(canonical);
+            }
+        }
+        Ok(roots)
+    }
+}
+
+fn configure_walker(builder: &mut WalkBuilder, opts: &ScanOptions) {
+    builder
+        .hidden(!opts.hidden)
+        .ignore(!opts.no_ignore)
+        .git_ignore(!opts.no_ignore)
+        .git_global(!opts.no_ignore)
+        .git_exclude(!opts.no_ignore)
+        .parents(!opts.no_ignore);
 }
 
 pub fn git_output(root: &Path, args: &[&str]) -> Result<String> {
@@ -526,6 +635,22 @@ pub fn matches_lang(language: &str, lang: &[String]) -> bool {
         || lang
             .iter()
             .any(|expected| expected.eq_ignore_ascii_case(language))
+}
+
+fn matches_extensions(path: &Path, extensions: &[String]) -> bool {
+    if extensions.is_empty() {
+        return true;
+    }
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    extensions.iter().any(|expected| expected == &extension)
+}
+
+fn matches_path_patterns(rel: &str, matchers: &[crate::search_pattern::PatternMatcher]) -> bool {
+    matchers.is_empty() || matchers.iter().any(|matcher| matcher.is_match(rel))
 }
 
 fn is_generated_path(path: &Path) -> bool {

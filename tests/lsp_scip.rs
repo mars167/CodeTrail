@@ -139,6 +139,7 @@ fn fake_lsp_server_builds_scip_occurrence_db() {
         cursor: None,
         allow_broad: true,
         limit: 0,
+        ..ScanOptions::default()
     };
 
     let build_result = index::build(
@@ -239,6 +240,7 @@ fn failed_semantic_rerun_invalidates_existing_occurrence_db() {
         cursor: None,
         allow_broad: true,
         limit: 0,
+        ..ScanOptions::default()
     };
     let records = workspace.scan_files(&scan).unwrap();
     let db_path = native_db_path(&workspace);
@@ -348,6 +350,7 @@ fn defs_use_precise_fact_after_lsp_index_build() {
         cursor: None,
         allow_broad: true,
         limit: 0,
+        ..ScanOptions::default()
     };
     index::build(
         &workspace,
@@ -400,6 +403,7 @@ fn gopls_e2e_builds_precise_index_when_available() {
         cursor: None,
         allow_broad: true,
         limit: 0,
+        ..ScanOptions::default()
     };
 
     let build_result = index::build(

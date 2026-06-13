@@ -43,12 +43,69 @@ Use `--path <dir>` when searching from outside the repository root or when the u
    - `codetrail files <substring>`
    - `codetrail glob '<pattern>'`
    - `codetrail defs|refs|symbols <name>`
+   - `codetrail calls <caller-name>`
+   - `codetrail callers <callee-name>`
 2. Inspect `reliability`, `index`, `warnings`, `suggestedReads`, and `nextActions`.
    - Treat `severity=info, category=capability` as an expected capability-level note, not a risk warning.
    - Treat `severity=warning, category=risk` and `severity=error, category=error` as requiring narrowing, verification, or remediation.
 3. Before editing or making a strong claim, verify key ranges with `codetrail read <path[:start-end]>`.
 4. Treat `calls` and `callers` as `inferred_candidate`; inspect the returned ranges before relying on them.
 5. Treat `remote_unverified` as a lead only; verify with local `read`.
+
+## Command Input Quick Reference
+
+Search and navigation inputs have a few command-specific formats that are not
+obvious from the CLI argument names:
+
+- `find <text>` defaults to literal search. `grep <pattern>` defaults to Rust
+  regex search. Content search accepts `--mode literal|regex|wildcard`.
+- `files <pattern>` and `find-path <pattern>` default to path literal
+  substring matching. `glob <pattern>` defaults to glob syntax such as
+  `src/**/*.rs`. Path commands accept `--mode literal|regex|wildcard|glob`.
+- Use `--dir`, `--ext`, `--file-pattern`, and `--file-mode` to scope before
+  scanning file contents or parsing symbols. Matching is ignore-case by
+  default; add `--case-sensitive` when exact case matters.
+- `list [dir]` and `tree [dir]` take workspace-relative directories and reject
+  paths outside the workspace. Omitted `dir` means `.`.
+- `read <target>` accepts `path`, `path:line`, or `path:start-end`. Line numbers
+  are 1-based; `0`, empty ranges, and descending ranges are invalid. If the
+  text after the final `:` is not a line or range, the whole target is treated
+  as a path.
+
+Navigation and relationship commands take one string argument. They default to
+`--input-mode compatible`, so simple names, `Class.method`, signature display
+names, and snake/kebab style keys are accepted when they can be normalized.
+Use `--input-mode strict` to match only the raw input.
+
+- `refs <identifier>` finds references to that identifier. With SCIP it matches
+  exact symbol names, SCIP symbols, symbol keys, and bare method names for
+  signature display names such as `selectUserById(Long)`. Without SCIP it is
+  identifier-boundary literal text search.
+- `calls <caller-name>` finds outgoing calls made inside a function or method
+  whose name matches `<caller-name>`.
+- `callers <callee-name>` finds incoming callers of a callee. For parser
+  fallback, pass the simple final identifier such as `helper`, not
+  `self.helper`, `pkg.Helper`, or `obj.helper`.
+
+For Go, Rust, Python, TypeScript, JavaScript, and Java parser fallback,
+compatible input matching is done after symbols/calls are extracted. It does
+not use edit-distance fuzzy matching. Member or selector calls may be returned
+as qualified targets, but `callers` still queries by the final identifier.
+
+Scope and workflow inputs:
+
+- `--include` and `--exclude` are path substring filters, not globs.
+- `--lang` is a case-insensitive language name derived from extension: `go`,
+  `rust`, `python`, `java`, `typescript`, `javascript`, `markdown`, `json`,
+  `toml`, `yaml`, `html`, `css`, or `text`.
+- `--cursor` is opaque and must come from the same query scope and snapshot.
+- `--save-query <name>` and `query replay|show|delete <name>` use names made
+  only from ASCII letters, digits, `.`, `_`, and `-`; `.` and `..` are invalid.
+- `index import-scip <path>` accepts either SCIP JSON or native binary
+  `index.scip` protobuf and auto-detects by content. `index generate-scip`
+  currently supports only `--lang go`.
+- `index pack --output <path>` writes a `.tar.gz` archive; `--output -` writes
+  the archive bytes to stdout. `index unpack <path>` expects that archive.
 
 ## Subagent Handoff
 

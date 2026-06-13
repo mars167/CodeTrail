@@ -45,13 +45,15 @@ Keep the boundary sharp:
 Use `$codetrail` if the skill is available. Prefer these primitives:
 
 - `codetrail --output json status`
-- `codetrail --output json files <pattern> --limit <n>`
 - `codetrail --output json find <literal> --limit <n>`
 - `codetrail --output json grep <regex> --limit <n>`
+- `codetrail --output json files <path-substring> --limit <n>`
+- `codetrail --output json glob '<glob-pattern>' --limit <n>`
 - `codetrail --output json symbols <name> --limit <n>`
 - `codetrail --output json defs <name> --limit <n>`
 - `codetrail --output json refs <name> --limit <n>`
-- `codetrail --output json calls|callers <name> --limit <n>`
+- `codetrail --output json calls <caller-name> --limit <n>`
+- `codetrail --output json callers <callee-name> --limit <n>`
 - `codetrail --output json read <path:start-end>`
 
 Search discipline:
@@ -60,8 +62,18 @@ Search discipline:
 - Use `--context 0` unless line context is necessary.
 - Keep `--limit` small and use `--cursor` only when the next page is clearly
   needed.
+- Use `read <path>`, `read <path:line>`, or `read <path:start-end>`; line
+  numbers are 1-based.
 - Verify every important claim with `codetrail read <path:start-end>`.
 - Treat `calls` and `callers` as candidates until verified with `read`.
+- Navigation and relationship commands default to compatible input; use simple
+  names, qualified names, signature display names, or snake/kebab style keys as
+  needed. Add `--input-mode strict` only when raw exact input is required.
+- For parser fallback, `calls` takes the enclosing function/method name.
+  `callers` takes the callee's simple final identifier, for example `helper`
+  rather than `self.helper`, `pkg.Helper`, or `obj.helper`.
+- Use `--dir`, `--ext`, `--file-pattern`, and `--file-mode` to prune files
+  before scanning. `--include` and `--exclude` remain path substring filters.
 - Ignore `.git`, `.codetrail`, `.opencode`, `node_modules`, `target`, `build`,
   `dist`, `vendor`, generated files, dependency caches, and bundled third-party
   code unless the task explicitly asks about them.

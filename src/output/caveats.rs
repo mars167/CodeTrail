@@ -116,6 +116,7 @@ pub(super) fn caveat_metadata(code: &str) -> (&'static str, &'static str) {
         "precise_scip_index_unavailable"
         | "parser_fact"
         | "refs_identifier_boundary_text_search_unless_a_precise_occurrence_index_is_available"
+        | "query_input_expanded"
         | "inferred_candidate" => ("info", "capability"),
         "unknown_tool" | "invalid_mcp_argument" | "unsupported_mcp_scope" | "cli_usage_error" => {
             ("error", "error")
@@ -235,6 +236,9 @@ pub(super) fn stable_code(message: &str) -> String {
     }
     if message.starts_with("unsupported search mode: ") {
         return "unsupported_search_mode".to_string();
+    }
+    if message.starts_with("query_input_expanded:") {
+        return "query_input_expanded".to_string();
     }
     if message
         .starts_with("refs is identifier-boundary text search unless a precise occurrence index")

@@ -6,14 +6,13 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
-use globset::Glob;
 use ignore::WalkBuilder;
-use regex::Regex;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
     index,
+    search_pattern::{PatternMatcher, PatternTarget, SearchPatternMode},
     workspace::{
         language_for_path, matches_filters, matches_lang, FileCatalogRecord, FileRecord,
         ScanOptions, Workspace,
@@ -40,6 +39,8 @@ pub struct QueryOutput {
     pub facets: Value,
     pub guard: Option<Value>,
     pub budget: Value,
+    pub query_plan: Value,
+    pub scan_stats: Value,
 }
 
 pub struct Page {
@@ -72,15 +73,16 @@ pub fn files(
     workspace: &Workspace,
     opts: &ScanOptions,
     pattern: &str,
-    strict_glob: bool,
+    mode: SearchPatternMode,
 ) -> Result<QueryOutput> {
     let mut results = Vec::new();
-    let matcher = if strict_glob {
-        Some(Glob::new(pattern)?.compile_matcher())
+    let matcher = PatternMatcher::compile(pattern, mode, opts.case_sensitive, PatternTarget::Path)?;
+    let command_kind = if mode == SearchPatternMode::Glob {
+        "glob"
     } else {
-        None
+        "files"
     };
-    let guard = broad_guard(if strict_glob { "glob" } else { "files" }, pattern, None);
+    let guard = broad_guard(command_kind, pattern, Some(mode.as_str()));
     let broad_path = guard
         .as_ref()
         .map(|guard| guard.reason == "broad_path_pattern")
@@ -90,11 +92,7 @@ pub fn files(
     let repository_files = source.records.len();
     let repository_bytes = source.records.iter().map(|file| file.size).sum();
     for file in source.records {
-        let matches = broad_path
-            || matcher
-                .as_ref()
-                .map(|glob| glob.is_match(&file.path))
-                .unwrap_or_else(|| file.path.contains(pattern));
+        let matches = broad_path || matcher.is_match(&file.path);
         if matches {
             results.push(json!({
                 "path": file.path,
@@ -102,6 +100,7 @@ pub fn files(
                 "size": file.size,
                 "hash": file.hash,
                 "producer": file.source.file_catalog_producer(),
+                "matchedPatternMode": mode.as_str(),
                 "indexFresh": file.source.index_fresh(),
                 "sourceReason": file.source.reason(),
                 "reliability": "source_fact",
@@ -116,19 +115,22 @@ pub fn files(
         opts.limit,
         0,
     );
-    paged_query_output(
+    let mut output = paged_query_output(
         results,
         source.index,
         opts,
         guard,
         budget,
         &pagination_scope(
-            if strict_glob { "glob" } else { "files" },
-            json!({ "pattern": pattern, "strictGlob": strict_glob }),
+            command_kind,
+            json!({ "pattern": pattern, "mode": mode.as_str() }),
             opts,
             &workspace.snapshot_id,
         ),
-    )
+    )?;
+    output.query_plan = query_plan(mode, opts);
+    output.scan_stats = scan_stats(repository_files, repository_files, 0);
+    Ok(output)
 }
 
 pub fn list(
@@ -260,15 +262,18 @@ pub fn find(
     workspace: &Workspace,
     opts: &ScanOptions,
     pattern: &str,
-    mode: &str,
+    mode: SearchPatternMode,
     context: u16,
     refs_mode: bool,
 ) -> Result<QueryOutput> {
-    let regex = match mode {
-        "literal" => Regex::new(&regex::escape(pattern))?,
-        "regex" => Regex::new(pattern)?,
-        other => return Err(anyhow!("unsupported search mode: {other}")),
-    };
+    if mode == SearchPatternMode::Glob {
+        return Err(anyhow!("unsupported search mode: glob"));
+    }
+    let matcher =
+        PatternMatcher::compile(pattern, mode, opts.case_sensitive, PatternTarget::Content)?;
+    let regex = matcher
+        .regex()
+        .ok_or_else(|| anyhow!("unsupported search mode: {}", mode.as_str()))?;
 
     let source = candidate_text_files(workspace, opts, pattern, mode)?;
     let repository_files = source.records.len();
@@ -300,6 +305,7 @@ pub fn find(
                 "fileHash": file.record.hash,
                 "language": file.record.language,
                 "producer": file.source.text_search_producer(refs_mode),
+                "matchedPatternMode": mode.as_str(),
                 "indexFresh": file.source.index_fresh(),
                 "sourceReason": file.source.reason(),
                 "reliability": "source_fact",
@@ -315,19 +321,26 @@ pub fn find(
         context,
     );
     apply_output_budget(&mut results, &budget);
-    paged_query_output(
+    let mut output = paged_query_output(
         results,
         source.index,
         opts,
-        broad_guard(if refs_mode { "refs" } else { "find" }, pattern, Some(mode)),
+        broad_guard(
+            if refs_mode { "refs" } else { "find" },
+            pattern,
+            Some(mode.as_str()),
+        ),
         budget,
         &pagination_scope(
             if refs_mode { "refs" } else { "find" },
-            json!({ "pattern": pattern, "mode": mode, "context": context }),
+            json!({ "pattern": pattern, "mode": mode.as_str(), "context": context }),
             opts,
             &workspace.snapshot_id,
         ),
-    )
+    )?;
+    output.query_plan = query_plan(mode, opts);
+    output.scan_stats = scan_stats(repository_files, repository_files, 0);
+    Ok(output)
 }
 
 pub(crate) fn annotate_identifier_refs_with_definitions(
@@ -597,6 +610,8 @@ fn paged_query_output(
         facets: page.facets,
         guard: page.guard,
         budget: budget.to_value(),
+        query_plan: json!({}),
+        scan_stats: json!({}),
     })
 }
 
@@ -962,6 +977,12 @@ fn pagination_scope(kind: &str, args: Value, opts: &ScanOptions, snapshot_id: &s
 
 pub fn scope_value(opts: &ScanOptions) -> Value {
     json!({
+        "dirs": &opts.dirs,
+        "extensions": opts.normalized_extensions(),
+        "filePatterns": &opts.file_patterns,
+        "fileMode": opts.file_mode.as_str(),
+        "caseSensitive": opts.case_sensitive,
+        "inputMode": opts.input_mode.as_str(),
         "include": &opts.include,
         "exclude": &opts.exclude,
         "lang": &opts.lang,
@@ -976,6 +997,12 @@ pub fn scope_value(opts: &ScanOptions) -> Value {
 
 fn pagination_scope_value(opts: &ScanOptions) -> Value {
     json!({
+        "dirs": &opts.dirs,
+        "extensions": opts.normalized_extensions(),
+        "filePatterns": &opts.file_patterns,
+        "fileMode": opts.file_mode.as_str(),
+        "caseSensitive": opts.case_sensitive,
+        "inputMode": opts.input_mode.as_str(),
         "include": &opts.include,
         "exclude": &opts.exclude,
         "lang": &opts.lang,
@@ -984,6 +1011,34 @@ fn pagination_scope_value(opts: &ScanOptions) -> Value {
         "noIgnore": opts.no_ignore,
         "allowBroad": opts.allow_broad,
         "limit": opts.limit
+    })
+}
+
+pub fn attach_query_diagnostics(mut value: Value, page: &QueryOutput) -> Value {
+    if let Some(object) = value.as_object_mut() {
+        object.insert("queryPlan".to_string(), page.query_plan.clone());
+        object.insert("scanStats".to_string(), page.scan_stats.clone());
+    }
+    value
+}
+
+fn query_plan(mode: SearchPatternMode, opts: &ScanOptions) -> Value {
+    json!({
+        "compiledMode": mode.as_str(),
+        "caseSensitive": opts.case_sensitive,
+        "dirs": &opts.dirs,
+        "extensions": opts.normalized_extensions(),
+        "filePatterns": &opts.file_patterns,
+        "fileMode": opts.file_mode.as_str()
+    })
+}
+
+fn scan_stats(candidate_files: usize, searched_files: usize, skipped_files: usize) -> Value {
+    json!({
+        "candidateFiles": candidate_files,
+        "searchedFiles": searched_files,
+        "skippedFiles": skipped_files,
+        "elapsedMs": Value::Null
     })
 }
 
@@ -1172,7 +1227,7 @@ fn candidate_file_catalog(
     workspace: &Workspace,
     opts: &ScanOptions,
 ) -> Result<CandidateFileCatalog> {
-    if !opts.changed {
+    if !opts.changed && !opts.uses_new_scope() {
         if let Some(indexed) = index::indexed_file_records(workspace, opts)? {
             let indexed_source = indexed_candidate_source(&indexed.index);
             let mut records = filter_file_entries(
@@ -1215,10 +1270,11 @@ fn candidate_text_files(
     workspace: &Workspace,
     opts: &ScanOptions,
     pattern: &str,
-    mode: &str,
+    mode: SearchPatternMode,
 ) -> Result<CandidateFiles> {
-    if !opts.changed {
-        if let Some(indexed) = index::indexed_text_records(workspace, opts, pattern, mode)? {
+    if !opts.changed && !opts.uses_new_scope() {
+        if let Some(indexed) = index::indexed_text_records(workspace, opts, pattern, mode.as_str())?
+        {
             let indexed_source = indexed_candidate_source(&indexed.index);
             let mut records = filter_records(indexed.records, opts)
                 .into_iter()

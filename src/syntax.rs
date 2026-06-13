@@ -13,6 +13,7 @@ use tree_sitter::{Language, Node, Parser};
 use crate::{
     index,
     project_graph::discover_project_graph,
+    query_input::{attach_matched_input, InputMode, InputPlan, SymbolMatchMode},
     search::{line_range_for_node, symbol_range, SymbolRange},
     workspace::{language_for_path, FileRecord, ScanOptions, Workspace},
 };
@@ -255,19 +256,24 @@ pub fn symbols(
 ) -> Result<(Value, Vec<String>)> {
     let mut results = Vec::new();
     let mut warnings = Vec::new();
+    let plan = InputPlan::new(query, opts.input_mode);
     let budget = CandidateBudget::default();
     let (query_limit, budget_limited) = query_result_limit(opts, budget);
-    for symbol in collect_symbols_prefiltered(workspace, opts, &mut warnings, Some(query))? {
-        if symbol.name.contains(query) {
+    let prefilter = (opts.input_mode == InputMode::Strict).then_some(query);
+    for symbol in collect_symbols_prefiltered(workspace, opts, &mut warnings, prefilter)? {
+        if let Some(variant) =
+            plan.matched_variant(&symbol.name, opts.case_sensitive, SymbolMatchMode::Contains)
+        {
             if results.len() >= query_limit {
                 if budget_limited {
                     push_query_budget_warning(&mut warnings, "symbols", budget.max_per_query);
                 }
                 break;
             }
-            results.push(symbol_to_json(symbol));
+            results.push(attach_matched_input(symbol_to_json(symbol), variant));
         }
     }
+    push_input_plan_warning(&mut warnings, &plan);
     Ok((Value::Array(results), warnings))
 }
 
@@ -278,19 +284,24 @@ pub fn defs(
 ) -> Result<(Value, Vec<String>)> {
     let mut results = Vec::new();
     let mut warnings = Vec::new();
+    let plan = InputPlan::new(identifier, opts.input_mode);
     let budget = CandidateBudget::default();
     let (query_limit, budget_limited) = query_result_limit(opts, budget);
-    for symbol in collect_symbols_prefiltered(workspace, opts, &mut warnings, Some(identifier))? {
-        if symbol.name == identifier {
+    let prefilter = (opts.input_mode == InputMode::Strict).then_some(identifier);
+    for symbol in collect_symbols_prefiltered(workspace, opts, &mut warnings, prefilter)? {
+        if let Some(variant) =
+            plan.matched_variant(&symbol.name, opts.case_sensitive, SymbolMatchMode::Exact)
+        {
             if results.len() >= query_limit {
                 if budget_limited {
                     push_query_budget_warning(&mut warnings, "defs", budget.max_per_query);
                 }
                 break;
             }
-            results.push(symbol_to_json(symbol));
+            results.push(attach_matched_input(symbol_to_json(symbol), variant));
         }
     }
+    push_input_plan_warning(&mut warnings, &plan);
     Ok((Value::Array(results), warnings))
 }
 
@@ -318,19 +329,27 @@ pub fn calls(
 ) -> Result<(Value, Vec<String>)> {
     let mut warnings = Vec::new();
     let mut results = Vec::new();
+    let plan = InputPlan::new(identifier, opts.input_mode);
     let budget = CandidateBudget::default();
     let (query_limit, budget_limited) = query_result_limit(opts, budget);
-    for call in collect_calls_prefiltered(workspace, opts, &mut warnings, Some(identifier))? {
-        if call.enclosing_symbol.as_deref() == Some(identifier) {
+    let prefilter = (opts.input_mode == InputMode::Strict).then_some(identifier);
+    for call in collect_calls_prefiltered(workspace, opts, &mut warnings, prefilter)? {
+        if let Some(enclosing) = call.enclosing_symbol.as_deref() {
+            let Some(variant) =
+                plan.matched_variant(enclosing, opts.case_sensitive, SymbolMatchMode::Exact)
+            else {
+                continue;
+            };
             if results.len() >= query_limit {
                 if budget_limited {
                     push_query_budget_warning(&mut warnings, "calls", budget.max_per_query);
                 }
                 break;
             }
-            results.push(call_to_json(call));
+            results.push(attach_matched_input(call_to_json(call), variant));
         }
     }
+    push_input_plan_warning(&mut warnings, &plan);
     Ok((Value::Array(results), warnings))
 }
 
@@ -341,20 +360,32 @@ pub fn callers(
 ) -> Result<(Value, Vec<String>)> {
     let mut warnings = Vec::new();
     let mut results = Vec::new();
+    let plan = InputPlan::new(identifier, opts.input_mode);
     let budget = CandidateBudget::default();
     let (query_limit, budget_limited) = query_result_limit(opts, budget);
-    for call in collect_calls_prefiltered(workspace, opts, &mut warnings, Some(identifier))? {
-        if last_identifier(&call.target) == identifier {
+    let prefilter = (opts.input_mode == InputMode::Strict).then_some(identifier);
+    for call in collect_calls_prefiltered(workspace, opts, &mut warnings, prefilter)? {
+        let target = last_identifier(&call.target);
+        if let Some(variant) =
+            plan.matched_variant(&target, opts.case_sensitive, SymbolMatchMode::Exact)
+        {
             if results.len() >= query_limit {
                 if budget_limited {
                     push_query_budget_warning(&mut warnings, "callers", budget.max_per_query);
                 }
                 break;
             }
-            results.push(call_to_json(call));
+            results.push(attach_matched_input(call_to_json(call), variant));
         }
     }
+    push_input_plan_warning(&mut warnings, &plan);
     Ok((Value::Array(results), warnings))
+}
+
+fn push_input_plan_warning(warnings: &mut Vec<String>, plan: &InputPlan) {
+    if let Some(warning) = plan.expansion_warning() {
+        warnings.push(warning);
+    }
 }
 
 fn query_result_limit(opts: &ScanOptions, budget: CandidateBudget) -> (usize, bool) {
@@ -1121,6 +1152,7 @@ mod tests {
             cursor: None,
             allow_broad: true,
             limit: 0,
+            ..ScanOptions::default()
         }
     }
 

@@ -70,7 +70,7 @@ fn bash() -> String {
   esac
 
   if [[ "$cur" == -* ]]; then
-    COMPREPLY=( $(compgen -W "--path --output --include --exclude --hidden --no-ignore --lang --changed --cursor --allow-broad --limit --context --save-query --help --version" -- "$cur") )
+    COMPREPLY=( $(compgen -W "--path --output --include --exclude --hidden --no-ignore --lang --dir --ext --file-pattern --file-mode --case-sensitive --ignore-case --input-mode --changed --cursor --allow-broad --limit --context --save-query --help --version" -- "$cur") )
   else
     COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
   fi
@@ -92,7 +92,7 @@ _codetrail() {{
   index_cmds=(build update status verify clean import-scip)
   hooks_cmds=(install uninstall status)
   shells=(bash zsh fish)
-  global_opts=(--path --output --include --exclude --hidden --no-ignore --lang --changed --cursor --allow-broad --limit --context --save-query --help --version)
+  global_opts=(--path --output --include --exclude --hidden --no-ignore --lang --dir --ext --file-pattern --file-mode --case-sensitive --ignore-case --input-mode --changed --cursor --allow-broad --limit --context --save-query --help --version)
 
   if [[ "$words[CURRENT]" == -* ]]; then
     _describe 'option' global_opts

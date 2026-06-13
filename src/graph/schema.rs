@@ -154,6 +154,8 @@ pub struct CallCandidate {
     pub source: String,
     /// Reliability level.
     pub level: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_input_variant: Option<serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------

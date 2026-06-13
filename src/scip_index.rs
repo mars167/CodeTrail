@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use crate::{
     index, lancedb_store,
     lsp::scip_gen,
+    query_input::{attach_matched_input, InputPlan, InputVariant, SymbolMatchMode},
     scip,
     scip::store::{OccurrenceResult, SymbolResult},
     workspace::{ScanOptions, Workspace},
@@ -194,14 +195,16 @@ pub fn symbols(
     opts: &ScanOptions,
     query: &str,
 ) -> Result<Option<PreciseQueryOutput>> {
-    // Try native occurrence DB first
     if let Some(output) = query_native_symbols(workspace, opts, query)? {
         return Ok(Some(output));
     }
-    // Fall back to old occurrence.idx format
-    query_precise(workspace, opts, |record| {
-        record.role == "definition" && record.name.contains(query)
-    })
+    query_precise_with_input(
+        workspace,
+        opts,
+        query,
+        |record| record.role == "definition",
+        SymbolMatchMode::Contains,
+    )
 }
 
 pub fn defs(
@@ -209,14 +212,16 @@ pub fn defs(
     opts: &ScanOptions,
     identifier: &str,
 ) -> Result<Option<PreciseQueryOutput>> {
-    // Try native occurrence DB first
     if let Some(output) = query_native_defs(workspace, opts, identifier)? {
         return Ok(Some(output));
     }
-    // Fall back to old occurrence.idx format
-    query_precise(workspace, opts, |record| {
-        record.role == "definition" && matches_identifier(record, identifier)
-    })
+    query_precise_with_input(
+        workspace,
+        opts,
+        identifier,
+        |record| record.role == "definition",
+        SymbolMatchMode::Exact,
+    )
 }
 
 pub fn refs(
@@ -224,14 +229,16 @@ pub fn refs(
     opts: &ScanOptions,
     identifier: &str,
 ) -> Result<Option<PreciseQueryOutput>> {
-    // Try native occurrence DB first
     if let Some(output) = query_native_refs(workspace, opts, identifier)? {
         return Ok(Some(output));
     }
-    // Fall back to old occurrence.idx format
-    query_precise(workspace, opts, |record| {
-        record.role != "definition" && matches_identifier(record, identifier)
-    })
+    query_precise_with_input(
+        workspace,
+        opts,
+        identifier,
+        |record| record.role != "definition",
+        SymbolMatchMode::Exact,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -250,15 +257,29 @@ fn query_native_defs(
     if !scip_gen::generation_manifests_allow_precise_use(workspace).unwrap_or(false) {
         return Ok(None);
     }
-    let mut results = scip::query_defs(&db_path, identifier)?;
-    filter_and_limit(workspace, &mut results, opts)?;
+    let plan = InputPlan::new(identifier, opts.input_mode);
+    let candidates = if opts.input_mode == crate::query_input::InputMode::Strict {
+        scip::query_defs(&db_path, identifier)?
+    } else {
+        scip::query_all_defs(&db_path)?
+    };
+    let mut results = matched_occurrence_results(
+        candidates,
+        &plan,
+        opts.case_sensitive,
+        SymbolMatchMode::Exact,
+    );
+    filter_and_limit_occurrence_matches(workspace, &mut results, opts)?;
     if results.is_empty() {
         return Ok(Some(PreciseQueryOutput {
             results: Value::Array(Vec::new()),
             index: native_db_index_meta(&db_path, true),
         }));
     }
-    let json_results: Vec<Value> = results.iter().map(scip::occurrence_to_json).collect();
+    let json_results = results
+        .iter()
+        .map(|(result, variant)| attach_matched_input(scip::occurrence_to_json(result), variant))
+        .collect();
     Ok(Some(PreciseQueryOutput {
         results: Value::Array(json_results),
         index: native_db_index_meta(&db_path, true),
@@ -277,15 +298,29 @@ fn query_native_refs(
     if !scip_gen::generation_manifests_allow_precise_use(workspace).unwrap_or(false) {
         return Ok(None);
     }
-    let mut results = scip::query_refs(&db_path, identifier)?;
-    filter_and_limit(workspace, &mut results, opts)?;
+    let plan = InputPlan::new(identifier, opts.input_mode);
+    let candidates = if opts.input_mode == crate::query_input::InputMode::Strict {
+        scip::query_refs(&db_path, identifier)?
+    } else {
+        scip::query_all_refs(&db_path)?
+    };
+    let mut results = matched_occurrence_results(
+        candidates,
+        &plan,
+        opts.case_sensitive,
+        SymbolMatchMode::Exact,
+    );
+    filter_and_limit_occurrence_matches(workspace, &mut results, opts)?;
     if results.is_empty() {
         return Ok(Some(PreciseQueryOutput {
             results: Value::Array(Vec::new()),
             index: native_db_index_meta(&db_path, true),
         }));
     }
-    let json_results: Vec<Value> = results.iter().map(scip::occurrence_to_json).collect();
+    let json_results = results
+        .iter()
+        .map(|(result, variant)| attach_matched_input(scip::occurrence_to_json(result), variant))
+        .collect();
     Ok(Some(PreciseQueryOutput {
         results: Value::Array(json_results),
         index: native_db_index_meta(&db_path, true),
@@ -304,15 +339,29 @@ fn query_native_symbols(
     if !scip_gen::generation_manifests_allow_precise_use(workspace).unwrap_or(false) {
         return Ok(None);
     }
-    let mut results = scip::query_symbols(&db_path, query)?;
-    filter_symbol_results(workspace, &mut results, opts)?;
+    let plan = InputPlan::new(query, opts.input_mode);
+    let candidates = if opts.input_mode == crate::query_input::InputMode::Strict {
+        scip::query_symbols(&db_path, query)?
+    } else {
+        scip::query_all_symbols(&db_path)?
+    };
+    let mut results = matched_symbol_results(
+        candidates,
+        &plan,
+        opts.case_sensitive,
+        SymbolMatchMode::Contains,
+    );
+    filter_and_limit_symbol_matches(workspace, &mut results, opts)?;
     if results.is_empty() {
         return Ok(Some(PreciseQueryOutput {
             results: Value::Array(Vec::new()),
             index: native_db_index_meta(&db_path, true),
         }));
     }
-    let json_results: Vec<Value> = results.iter().map(scip::symbol_to_json).collect();
+    let json_results = results
+        .iter()
+        .map(|(result, variant)| attach_matched_input(scip::symbol_to_json(result), variant))
+        .collect();
     Ok(Some(PreciseQueryOutput {
         results: Value::Array(json_results),
         index: native_db_index_meta(&db_path, true),
@@ -329,26 +378,26 @@ fn native_db_index_meta(db_path: &std::path::Path, fresh: bool) -> Value {
     })
 }
 
-fn filter_and_limit(
+fn filter_and_limit_occurrence_matches(
     workspace: &Workspace,
-    results: &mut Vec<OccurrenceResult>,
+    results: &mut Vec<(OccurrenceResult, InputVariant)>,
     opts: &ScanOptions,
 ) -> Result<()> {
     let allowed_paths = allowed_scan_paths(workspace, opts)?;
-    results.retain(|r| allowed_paths.contains(&r.path));
+    results.retain(|(result, _variant)| allowed_paths.contains(&result.path));
     if opts.limit > 0 && results.len() > opts.limit {
         results.truncate(opts.limit);
     }
     Ok(())
 }
 
-fn filter_symbol_results(
+fn filter_and_limit_symbol_matches(
     workspace: &Workspace,
-    results: &mut Vec<SymbolResult>,
+    results: &mut Vec<(SymbolResult, InputVariant)>,
     opts: &ScanOptions,
 ) -> Result<()> {
     let allowed_paths = allowed_scan_paths(workspace, opts)?;
-    results.retain(|r| allowed_paths.contains(&r.path));
+    results.retain(|(result, _variant)| allowed_paths.contains(&result.path));
     if opts.limit > 0 && results.len() > opts.limit {
         results.truncate(opts.limit);
     }
@@ -369,17 +418,78 @@ fn allowed_scan_paths(workspace: &Workspace, opts: &ScanOptions) -> Result<HashS
 // LEGACY: Old occurrence.idx binary format (compatibility path)
 // ---------------------------------------------------------------------------
 
-fn query_precise(
+fn matched_occurrence_results(
+    candidates: Vec<OccurrenceResult>,
+    plan: &InputPlan,
+    case_sensitive: bool,
+    mode: SymbolMatchMode,
+) -> Vec<(OccurrenceResult, InputVariant)> {
+    candidates
+        .into_iter()
+        .filter_map(|result| {
+            occurrence_variant(&result, plan, case_sensitive, mode)
+                .cloned()
+                .map(|variant| (result, variant))
+        })
+        .collect()
+}
+
+fn matched_symbol_results(
+    candidates: Vec<SymbolResult>,
+    plan: &InputPlan,
+    case_sensitive: bool,
+    mode: SymbolMatchMode,
+) -> Vec<(SymbolResult, InputVariant)> {
+    candidates
+        .into_iter()
+        .filter_map(|result| {
+            symbol_variant(&result, plan, case_sensitive, mode)
+                .cloned()
+                .map(|variant| (result, variant))
+        })
+        .collect()
+}
+
+fn occurrence_variant<'a>(
+    result: &OccurrenceResult,
+    plan: &'a InputPlan,
+    case_sensitive: bool,
+    mode: SymbolMatchMode,
+) -> Option<&'a InputVariant> {
+    plan.matched_variant(&result.name, case_sensitive, mode)
+        .or_else(|| plan.matched_variant(&result.symbol, case_sensitive, mode))
+        .or_else(|| plan.matched_variant(&result.symbol_key, case_sensitive, mode))
+}
+
+fn symbol_variant<'a>(
+    result: &SymbolResult,
+    plan: &'a InputPlan,
+    case_sensitive: bool,
+    mode: SymbolMatchMode,
+) -> Option<&'a InputVariant> {
+    plan.matched_variant(&result.name, case_sensitive, mode)
+        .or_else(|| plan.matched_variant(&result.symbol, case_sensitive, mode))
+        .or_else(|| plan.matched_variant(&result.symbol_key, case_sensitive, mode))
+}
+
+fn query_precise_with_input(
     workspace: &Workspace,
     opts: &ScanOptions,
-    matches: impl Fn(&PreciseOccurrenceRecord) -> bool,
+    input: &str,
+    role_matches: impl Fn(&PreciseOccurrenceRecord) -> bool,
+    mode: SymbolMatchMode,
 ) -> Result<Option<PreciseQueryOutput>> {
     let Some((records, index_meta)) = fresh_records(workspace, opts)? else {
         return Ok(None);
     };
+    let plan = InputPlan::new(input, opts.input_mode);
     let mut results = Vec::new();
-    for record in records.into_iter().filter(matches) {
-        results.push(record_to_json(record));
+    for record in records.into_iter().filter(role_matches) {
+        let Some(variant) = precise_record_variant(&record, &plan, opts.case_sensitive, mode)
+        else {
+            continue;
+        };
+        results.push(attach_matched_input(record_to_json(record), variant));
         if opts.limit > 0 && results.len() >= opts.limit {
             break;
         }
@@ -388,6 +498,16 @@ fn query_precise(
         results: Value::Array(results),
         index: index_meta,
     }))
+}
+
+fn precise_record_variant<'a>(
+    record: &PreciseOccurrenceRecord,
+    plan: &'a InputPlan,
+    case_sensitive: bool,
+    mode: SymbolMatchMode,
+) -> Option<&'a InputVariant> {
+    plan.matched_variant(&record.name, case_sensitive, mode)
+        .or_else(|| plan.matched_variant(&record.symbol, case_sensitive, mode))
 }
 
 fn fresh_records(
@@ -567,22 +687,6 @@ fn kind_to_string(kind: &Value) -> String {
         Value::Number(value) => value.to_string(),
         _ => String::new(),
     }
-}
-
-fn matches_identifier(record: &PreciseOccurrenceRecord, identifier: &str) -> bool {
-    record.name == identifier
-        || record.symbol == identifier
-        || matches_bare_method_name(&record.name, identifier)
-        || matches_bare_method_name(&record.symbol, identifier)
-}
-
-fn matches_bare_method_name(value: &str, identifier: &str) -> bool {
-    if identifier.is_empty() || identifier.contains('(') {
-        return false;
-    }
-    value
-        .strip_prefix(identifier)
-        .is_some_and(|suffix| suffix.starts_with('('))
 }
 
 fn record_to_json(record: PreciseOccurrenceRecord) -> Value {
