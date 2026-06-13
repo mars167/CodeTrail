@@ -559,7 +559,19 @@ fn kind_to_string(kind: &Value) -> String {
 }
 
 fn matches_identifier(record: &PreciseOccurrenceRecord, identifier: &str) -> bool {
-    record.name == identifier || record.symbol == identifier
+    record.name == identifier
+        || record.symbol == identifier
+        || matches_bare_method_name(&record.name, identifier)
+        || matches_bare_method_name(&record.symbol, identifier)
+}
+
+fn matches_bare_method_name(value: &str, identifier: &str) -> bool {
+    if identifier.is_empty() || identifier.contains('(') {
+        return false;
+    }
+    value
+        .strip_prefix(identifier)
+        .is_some_and(|suffix| suffix.starts_with('('))
 }
 
 fn record_to_json(record: PreciseOccurrenceRecord) -> Value {
