@@ -6,6 +6,9 @@ use dunce::canonicalize;
 
 use crate::project_graph::ProjectLanguage;
 
+const DEFAULT_JDTLS_READY_TIMEOUT_MS: u64 = 30_000;
+const JDTLS_READY_TIMEOUT_ENV: &str = "CODETRAIL_LSP_JAVA_READY_TIMEOUT_MS";
+
 #[derive(Clone, Debug)]
 pub struct ServerSpec {
     pub program: String,
@@ -48,7 +51,7 @@ pub fn resolve_server(language: &ProjectLanguage) -> Option<ServerSpec> {
             args: Vec::new(),
             provider_id: "jdtls".to_string(),
             readiness: ReadinessStrategy::LanguageStatus {
-                timeout_ms: 180_000,
+                timeout_ms: jdtls_ready_timeout_ms(),
             },
         }),
         ProjectLanguage::TypeScript => Some(ServerSpec {
@@ -58,6 +61,14 @@ pub fn resolve_server(language: &ProjectLanguage) -> Option<ServerSpec> {
             readiness: ReadinessStrategy::Immediate,
         }),
     }
+}
+
+fn jdtls_ready_timeout_ms() -> u64 {
+    env::var(JDTLS_READY_TIMEOUT_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|timeout_ms| *timeout_ms > 0)
+        .unwrap_or(DEFAULT_JDTLS_READY_TIMEOUT_MS)
 }
 
 fn resolve_from_env(language: &ProjectLanguage) -> Option<ServerSpec> {
@@ -280,6 +291,25 @@ mod tests {
             spec.args,
             vec!["--mode".to_string(), "test value".to_string()]
         );
+        match previous {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn jdtls_readiness_timeout_is_configurable() {
+        let key = JDTLS_READY_TIMEOUT_ENV;
+        let previous = std::env::var(key).ok();
+        std::env::remove_var(key);
+        assert_eq!(jdtls_ready_timeout_ms(), DEFAULT_JDTLS_READY_TIMEOUT_MS);
+
+        std::env::set_var(key, "60000");
+        assert_eq!(jdtls_ready_timeout_ms(), 60_000);
+
+        std::env::set_var(key, "0");
+        assert_eq!(jdtls_ready_timeout_ms(), DEFAULT_JDTLS_READY_TIMEOUT_MS);
+
         match previous {
             Some(value) => std::env::set_var(key, value),
             None => std::env::remove_var(key),

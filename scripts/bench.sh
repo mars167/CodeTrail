@@ -12,6 +12,9 @@ BASELINE_VALUES_DIR="$SCRIPT_DIR/baseline_values"
 RESULTS_DIR="$SCRIPT_DIR/bench_results"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
+: "${CODETRAIL_LSP_JAVA_READY_TIMEOUT_MS:=5000}"
+export CODETRAIL_LSP_JAVA_READY_TIMEOUT_MS
+
 mkdir -p "$RESULTS_DIR"
 
 declare -a TESTS=(
@@ -42,7 +45,7 @@ run_hyperfine_json() {
   local raw_opts="$3"
   local full_cmd="$4"
   local json_file
-  json_file="$(mktemp "${TMPDIR:-/tmp}/codetrail-bench.XXXXXX.json")"
+  json_file="$(mktemp "${TMPDIR:-/tmp}/codetrail-bench-json.XXXXXX")"
   local args=(--warmup "$warmup" --min-runs "$runs" --export-json "$json_file")
 
   case "$raw_opts" in

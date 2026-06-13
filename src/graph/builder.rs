@@ -67,6 +67,49 @@ struct ScipDefinition {
     end_column: u32,
 }
 
+impl ScipDefinition {
+    const fn range(&self) -> SourceRange {
+        SourceRange::new(
+            self.start_line,
+            self.start_column,
+            self.end_line,
+            self.end_column,
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SourceRange {
+    start_line: u32,
+    start_column: u32,
+    end_line: u32,
+    end_column: u32,
+}
+
+impl SourceRange {
+    const fn new(start_line: u32, start_column: u32, end_line: u32, end_column: u32) -> Self {
+        Self {
+            start_line,
+            start_column,
+            end_line,
+            end_column,
+        }
+    }
+
+    const fn contains(self, inner: Self) -> bool {
+        self.starts_before_or_at(inner.start_line, inner.start_column)
+            && self.ends_after_or_at(inner.end_line, inner.end_column)
+    }
+
+    const fn starts_before_or_at(self, line: u32, column: u32) -> bool {
+        self.start_line < line || (self.start_line == line && self.start_column <= column)
+    }
+
+    const fn ends_after_or_at(self, line: u32, column: u32) -> bool {
+        self.end_line > line || (self.end_line == line && self.end_column >= column)
+    }
+}
+
 fn enclosing_definition<'a>(
     def_locations: &'a HashMap<String, ScipDefinition>,
     path: &str,
@@ -75,21 +118,11 @@ fn enclosing_definition<'a>(
     end_line: u32,
     end_column: u32,
 ) -> Option<&'a ScipDefinition> {
+    let inner = SourceRange::new(start_line, start_column, end_line, end_column);
     def_locations
         .values()
         .filter(|definition| definition.path == path)
-        .filter(|definition| {
-            range_contains(
-                definition.start_line,
-                definition.start_column,
-                definition.end_line,
-                definition.end_column,
-                start_line,
-                start_column,
-                end_line,
-                end_column,
-            )
-        })
+        .filter(|definition| definition.range().contains(inner))
         .max_by_key(|definition| (definition.start_line, definition.start_column))
         .or_else(|| {
             def_locations
@@ -100,20 +133,6 @@ fn enclosing_definition<'a>(
                 })
                 .max_by_key(|definition| (definition.start_line, definition.start_column))
         })
-}
-
-fn range_contains(
-    outer_start_line: u32,
-    outer_start_column: u32,
-    outer_end_line: u32,
-    outer_end_column: u32,
-    inner_start_line: u32,
-    inner_start_column: u32,
-    inner_end_line: u32,
-    inner_end_column: u32,
-) -> bool {
-    (outer_start_line, outer_start_column) <= (inner_start_line, inner_start_column)
-        && (outer_end_line, outer_end_column) >= (inner_end_line, inner_end_column)
 }
 
 fn edge_exists_at_site(

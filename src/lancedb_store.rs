@@ -311,8 +311,26 @@ impl LanceDbStore {
         records: &[crate::workspace::FileRecord],
         workspace_root: Option<&Path>,
     ) -> Result<()> {
+        self.write_file_proofs_with_line_offsets(snapshot_id, records, None, workspace_root)
+    }
+
+    pub fn write_file_proofs_with_line_offsets(
+        &self,
+        snapshot_id: &str,
+        records: &[crate::workspace::FileRecord],
+        precomputed_line_offsets: Option<&[&str]>,
+        workspace_root: Option<&Path>,
+    ) -> Result<()> {
         if records.is_empty() {
             return Ok(());
+        }
+        if let Some(offsets) = precomputed_line_offsets {
+            anyhow::ensure!(
+                offsets.len() == records.len(),
+                "precomputed line offsets length {} does not match records length {}",
+                offsets.len(),
+                records.len()
+            );
         }
 
         use arrow::array::{StringArray, UInt64Array};
@@ -326,13 +344,17 @@ impl LanceDbStore {
         let mut line_offsets: Vec<Option<String>> = Vec::with_capacity(n);
         let mut blob_keys = Vec::with_capacity(n);
 
-        for r in records {
+        for (idx, r) in records.iter().enumerate() {
             snapshot_ids.push(snapshot_id.to_string());
             file_paths.push(r.path.clone());
             content_hashes.push(r.hash.clone());
             size_bytes.push(r.size);
-            line_offsets
-                .push(workspace_root.and_then(|root| line_offsets_json(&root.join(&r.path)).ok()));
+            let offsets = precomputed_line_offsets
+                .and_then(|values| values.get(idx).copied().map(ToOwned::to_owned))
+                .or_else(|| {
+                    workspace_root.and_then(|root| line_offsets_json(&root.join(&r.path)).ok())
+                });
+            line_offsets.push(offsets);
             blob_keys.push(r.hash.trim_start_matches("blake3:").to_string());
         }
 
@@ -854,13 +876,7 @@ fn decode_gram_hex(value: &str) -> Option<[u8; 3]> {
 
 fn line_offsets_json(path: &Path) -> Result<String> {
     let content = std::fs::read(path)?;
-    let mut offsets = vec![0_u64];
-    for (idx, byte) in content.iter().enumerate() {
-        if *byte == b'\n' && idx + 1 < content.len() {
-            offsets.push((idx + 1) as u64);
-        }
-    }
-    Ok(serde_json::to_string(&offsets).unwrap_or_else(|_| "[0]".to_string()))
+    Ok(crate::workspace::line_offsets_json_for_content(&content))
 }
 
 fn snapshots_schema() -> SchemaRef {
@@ -1158,6 +1174,32 @@ mod tests {
         let proofs = store.read_file_proofs("worktree:non-git").unwrap();
         assert_eq!(proofs.len(), 1);
         assert_eq!(proofs[0].line_offsets.as_deref(), Some("[0,4,8]"));
+    }
+
+    #[test]
+    fn test_file_proofs_use_precomputed_line_offsets() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        let store = LanceDbStore::open_or_create(root).unwrap();
+        store.ensure_tables().unwrap();
+        let records = vec![crate::workspace::FileRecord {
+            path: "missing.txt".to_string(),
+            language: "text".to_string(),
+            size: 14,
+            mtime_ms: 1,
+            mode: 0,
+            hash: "blake3:test".to_string(),
+        }];
+        let offsets = ["[0,7]"];
+
+        store
+            .write_file_proofs_with_line_offsets("worktree:non-git", &records, Some(&offsets), None)
+            .unwrap();
+
+        let proofs = store.read_file_proofs("worktree:non-git").unwrap();
+        assert_eq!(proofs.len(), 1);
+        assert_eq!(proofs[0].line_offsets.as_deref(), Some("[0,7]"));
     }
 
     #[test]

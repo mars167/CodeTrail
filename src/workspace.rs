@@ -54,10 +54,23 @@ pub struct CatalogScan {
     pub skipped: Vec<SkippedFile>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MaterializedIndexData {
+    pub line_offsets_json: String,
+    pub unique_grams: Vec<[u8; 3]>,
+}
+
 #[derive(Clone, Debug)]
 pub struct MaterializedProofs {
     pub records: Vec<FileRecord>,
     pub skipped: Vec<SkippedFile>,
+    pub index_data: Vec<MaterializedIndexData>,
+}
+
+#[derive(Clone, Debug)]
+struct MaterializedFile {
+    record: FileRecord,
+    index_data: MaterializedIndexData,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -265,20 +278,30 @@ impl Workspace {
             .par_iter()
             .map(|file| {
                 let path = self.abs_path(&file.path);
-                file_record_for_catalog(file, || fs::read(&path))
+                materialized_file_for_catalog(file, || fs::read(&path))
             })
             .collect::<Vec<_>>();
-        let mut records = Vec::new();
+        let mut files = Vec::new();
         let mut skipped = Vec::new();
         for outcome in outcomes {
             match outcome {
-                Ok(record) => records.push(record),
+                Ok(file) => files.push(file),
                 Err(skip) => skipped.push(skip),
             }
         }
-        records.sort_by(|a, b| a.path.cmp(&b.path));
+        files.sort_by(|a, b| a.record.path.cmp(&b.record.path));
+        let mut records = Vec::with_capacity(files.len());
+        let mut index_data = Vec::with_capacity(files.len());
+        for file in files {
+            records.push(file.record);
+            index_data.push(file.index_data);
+        }
         skipped.sort_by(|a, b| a.path.cmp(&b.path).then(a.stage.cmp(&b.stage)));
-        Ok(MaterializedProofs { records, skipped })
+        Ok(MaterializedProofs {
+            records,
+            skipped,
+            index_data,
+        })
     }
 
     pub fn scan_files(&self, opts: &ScanOptions) -> Result<Vec<FileRecord>> {
@@ -522,10 +545,10 @@ fn file_metadata_for_catalog(
     }
 }
 
-fn file_record_for_catalog(
+fn materialized_file_for_catalog(
     file: &FileCatalogRecord,
     read_file: impl FnOnce() -> std::io::Result<Vec<u8>>,
-) -> std::result::Result<FileRecord, SkippedFile> {
+) -> std::result::Result<MaterializedFile, SkippedFile> {
     let content = read_file().map_err(|error| {
         SkippedFile::with_message(
             file.path.clone(),
@@ -534,14 +557,44 @@ fn file_record_for_catalog(
             error.to_string(),
         )
     })?;
-    Ok(FileRecord {
+    Ok(MaterializedFile {
+        record: file_record_for_content(file, &content),
+        index_data: MaterializedIndexData {
+            line_offsets_json: line_offsets_json_for_content(&content),
+            unique_grams: unique_grams_for_content(&content),
+        },
+    })
+}
+
+fn file_record_for_content(file: &FileCatalogRecord, content: &[u8]) -> FileRecord {
+    FileRecord {
         path: file.path.clone(),
         language: file.language.clone(),
         size: file.size,
         mtime_ms: file.mtime_ms,
         mode: file.mode,
-        hash: format!("blake3:{}", blake3::hash(&content).to_hex()),
-    })
+        hash: format!("blake3:{}", blake3::hash(content).to_hex()),
+    }
+}
+
+pub(crate) fn line_offsets_json_for_content(content: &[u8]) -> String {
+    let mut offsets = vec![0_u64];
+    for (idx, byte) in content.iter().enumerate() {
+        if *byte == b'\n' && idx + 1 < content.len() {
+            offsets.push((idx + 1) as u64);
+        }
+    }
+    serde_json::to_string(&offsets).unwrap_or_else(|_| "[0]".to_string())
+}
+
+fn unique_grams_for_content(content: &[u8]) -> Vec<[u8; 3]> {
+    let mut grams = Vec::with_capacity(content.len().saturating_sub(2));
+    for window in content.windows(3) {
+        grams.push([window[0], window[1], window[2]]);
+    }
+    grams.sort_unstable();
+    grams.dedup();
+    grams
 }
 
 fn probably_binary_result(path: &Path) -> Result<bool> {
@@ -582,6 +635,7 @@ mod tests {
     use std::io;
 
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn catalog_metadata_lookup_errors_skip_the_entry() {
@@ -604,12 +658,67 @@ mod tests {
             mode: 0,
         };
 
-        let record = file_record_for_catalog(&file, || Err(io::Error::from_raw_os_error(1)));
+        let record = materialized_file_for_catalog(&file, || Err(io::Error::from_raw_os_error(1)));
 
         let skipped = record.unwrap_err();
         assert_eq!(skipped.path, "nul");
         assert_eq!(skipped.stage, "materialize");
         assert_eq!(skipped.reason, "read_error");
+    }
+
+    #[test]
+    fn materialized_proofs_include_sorted_index_data() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("z.txt"), "zzz\n").unwrap();
+        fs::write(dir.path().join("a.txt"), "aba\naba").unwrap();
+        let workspace = Workspace {
+            root: dir.path().to_path_buf(),
+            git_root: None,
+            head: None,
+            dirty: false,
+            staged_count: 0,
+            worktree_count: 0,
+            changed: Vec::new(),
+            snapshot_id: "worktree:non-git".to_string(),
+        };
+        let catalog = vec![
+            FileCatalogRecord {
+                path: "z.txt".to_string(),
+                language: "text".to_string(),
+                size: 4,
+                mtime_ms: 0,
+                mode: 0,
+            },
+            FileCatalogRecord {
+                path: "a.txt".to_string(),
+                language: "text".to_string(),
+                size: 7,
+                mtime_ms: 0,
+                mode: 0,
+            },
+        ];
+
+        let materialized = workspace.materialize_proofs_with_skips(&catalog).unwrap();
+
+        assert_eq!(materialized.records[0].path, "a.txt");
+        assert_eq!(materialized.records[1].path, "z.txt");
+        assert_eq!(materialized.index_data[0].line_offsets_json, "[0,4]");
+        assert_eq!(
+            materialized.index_data[0].unique_grams,
+            vec![*b"\nab", *b"a\na", *b"aba", *b"ba\n"]
+        );
+        assert_eq!(materialized.index_data[1].line_offsets_json, "[0]");
+        assert_eq!(
+            materialized.index_data[1].unique_grams,
+            vec![*b"zz\n", *b"zzz"]
+        );
+    }
+
+    #[test]
+    fn line_offsets_skip_trailing_empty_line() {
+        let offsets = line_offsets_json_for_content(b"one\ntwo\nthree\n");
+
+        assert_eq!(offsets, "[0,4,8]");
     }
 
     #[test]

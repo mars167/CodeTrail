@@ -80,14 +80,38 @@ fn language_status_readiness_waits_across_quiet_intervals() {
     let root_uri = file_path_to_uri(dir.path()).unwrap();
 
     let started = Instant::now();
-    client.initialize(&root_uri, &spec.readiness).unwrap();
+    let ready = client.initialize(&root_uri, &spec.readiness).unwrap();
     let elapsed = started.elapsed();
     client.shutdown().unwrap();
 
+    assert!(ready);
     assert!(
         elapsed >= Duration::from_millis(1_100),
         "language/status readiness returned before the delayed ready notification: {elapsed:?}"
     );
+}
+
+#[test]
+fn language_status_readiness_reports_timeout() {
+    let dir = tempdir().unwrap();
+    let server = fake_lsp_server_path();
+    if !server.exists() {
+        return;
+    }
+
+    let spec = ServerSpec {
+        program: server.to_string_lossy().to_string(),
+        args: vec!["--language-status-delay-ms=1200".to_string()],
+        provider_id: "fake-jdtls".to_string(),
+        readiness: ReadinessStrategy::LanguageStatus { timeout_ms: 100 },
+    };
+    let mut client = LspClient::spawn(&spec, dir.path()).unwrap();
+    let root_uri = file_path_to_uri(dir.path()).unwrap();
+
+    let ready = client.initialize(&root_uri, &spec.readiness).unwrap();
+    client.shutdown().unwrap();
+
+    assert!(!ready);
 }
 
 #[test]

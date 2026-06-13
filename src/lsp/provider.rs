@@ -95,7 +95,7 @@ impl SemanticProvider for LspSemanticProvider {
                 message: error.to_string(),
             }
         })?;
-        client
+        let ready = client
             .initialize(&root_uri, &spec.readiness)
             .map_err(|error| ProviderFailure {
                 root_id: input.root.id.clone(),
@@ -103,6 +103,14 @@ impl SemanticProvider for LspSemanticProvider {
                 reason: ProviderFailureReason::StartupFailed,
                 message: error.to_string(),
             })?;
+        if !ready {
+            return Err(ProviderFailure {
+                root_id: input.root.id.clone(),
+                provider_id: spec.provider_id.clone(),
+                reason: ProviderFailureReason::StartupFailed,
+                message: "semantic provider readiness timed out".to_string(),
+            });
+        }
         // Session state is managed by scip_gen; trait session is metadata only here.
         Ok(ProviderSession {
             root_id: input.root.id.clone(),

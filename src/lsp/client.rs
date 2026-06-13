@@ -58,7 +58,7 @@ impl LspClient {
         })
     }
 
-    pub fn initialize(&mut self, root_uri: &str, readiness: &ReadinessStrategy) -> Result<()> {
+    pub fn initialize(&mut self, root_uri: &str, readiness: &ReadinessStrategy) -> Result<bool> {
         let result = self.transport.request(
             "initialize",
             json!({
@@ -112,25 +112,26 @@ impl LspClient {
         }
 
         self.transport.notify("initialized", json!({}))?;
-        self.wait_readiness(readiness)?;
-        Ok(())
+        self.wait_readiness(readiness)
     }
 
-    fn wait_readiness(&self, readiness: &ReadinessStrategy) -> Result<()> {
+    fn wait_readiness(&self, readiness: &ReadinessStrategy) -> Result<bool> {
         match readiness {
-            ReadinessStrategy::Immediate => Ok(()),
+            ReadinessStrategy::Immediate => Ok(true),
             ReadinessStrategy::ProgressEnd { timeout_ms } => {
+                // rust-analyzer is often usable even when no final progress
+                // notification arrives, so this readiness signal is advisory.
                 let _ = self
                     .transport
                     .wait_notification("$/progress", Duration::from_millis(*timeout_ms));
-                Ok(())
+                Ok(true)
             }
             ReadinessStrategy::LanguageStatus { timeout_ms } => {
                 let deadline = std::time::Instant::now() + Duration::from_millis(*timeout_ms);
                 loop {
                     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
                     if remaining.is_zero() {
-                        return Ok(());
+                        return Ok(false);
                     }
                     let wait_for = remaining.min(Duration::from_secs(1));
                     if let Some(notification) = self
@@ -143,7 +144,7 @@ impl LspClient {
                             .and_then(Value::as_u64)
                             == Some(2)
                         {
-                            return Ok(());
+                            return Ok(true);
                         }
                     }
                 }
