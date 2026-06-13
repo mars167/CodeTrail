@@ -545,22 +545,6 @@ fn file_metadata_for_catalog(
     }
 }
 
-#[cfg(test)]
-fn file_record_for_catalog(
-    file: &FileCatalogRecord,
-    read_file: impl FnOnce() -> std::io::Result<Vec<u8>>,
-) -> std::result::Result<FileRecord, SkippedFile> {
-    let content = read_file().map_err(|error| {
-        SkippedFile::with_message(
-            file.path.clone(),
-            "materialize",
-            "read_error",
-            error.to_string(),
-        )
-    })?;
-    Ok(file_record_for_content(file, &content))
-}
-
 fn materialized_file_for_catalog(
     file: &FileCatalogRecord,
     read_file: impl FnOnce() -> std::io::Result<Vec<u8>>,
@@ -593,7 +577,7 @@ fn file_record_for_content(file: &FileCatalogRecord, content: &[u8]) -> FileReco
     }
 }
 
-fn line_offsets_json_for_content(content: &[u8]) -> String {
+pub(crate) fn line_offsets_json_for_content(content: &[u8]) -> String {
     let mut offsets = vec![0_u64];
     for (idx, byte) in content.iter().enumerate() {
         if *byte == b'\n' && idx + 1 < content.len() {
@@ -674,7 +658,7 @@ mod tests {
             mode: 0,
         };
 
-        let record = file_record_for_catalog(&file, || Err(io::Error::from_raw_os_error(1)));
+        let record = materialized_file_for_catalog(&file, || Err(io::Error::from_raw_os_error(1)));
 
         let skipped = record.unwrap_err();
         assert_eq!(skipped.path, "nul");
@@ -728,6 +712,13 @@ mod tests {
             materialized.index_data[1].unique_grams,
             vec![*b"zz\n", *b"zzz"]
         );
+    }
+
+    #[test]
+    fn line_offsets_skip_trailing_empty_line() {
+        let offsets = line_offsets_json_for_content(b"one\ntwo\nthree\n");
+
+        assert_eq!(offsets, "[0,4,8]");
     }
 
     #[test]

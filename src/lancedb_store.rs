@@ -876,13 +876,7 @@ fn decode_gram_hex(value: &str) -> Option<[u8; 3]> {
 
 fn line_offsets_json(path: &Path) -> Result<String> {
     let content = std::fs::read(path)?;
-    let mut offsets = vec![0_u64];
-    for (idx, byte) in content.iter().enumerate() {
-        if *byte == b'\n' && idx + 1 < content.len() {
-            offsets.push((idx + 1) as u64);
-        }
-    }
-    Ok(serde_json::to_string(&offsets).unwrap_or_else(|_| "[0]".to_string()))
+    Ok(crate::workspace::line_offsets_json_for_content(&content))
 }
 
 fn snapshots_schema() -> SchemaRef {

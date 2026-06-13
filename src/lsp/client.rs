@@ -119,6 +119,8 @@ impl LspClient {
         match readiness {
             ReadinessStrategy::Immediate => Ok(true),
             ReadinessStrategy::ProgressEnd { timeout_ms } => {
+                // rust-analyzer is often usable even when no final progress
+                // notification arrives, so this readiness signal is advisory.
                 let _ = self
                     .transport
                     .wait_notification("$/progress", Duration::from_millis(*timeout_ms));
