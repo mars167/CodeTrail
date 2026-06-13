@@ -2,7 +2,11 @@ use serde_json::{json, Value};
 
 use crate::{
     cli::{Cli, Command, HooksCommand, IndexCommand, OutputFormat, QueryCommand},
-    completions, graph, index, output, saved_query, scip_index, search, syntax,
+    completions, graph, index, output,
+    query_input::compatible_input_needs_expansion,
+    saved_query, scip_index, search,
+    search_pattern::SearchPatternMode,
+    syntax,
     workspace::{ScanOptions, Workspace},
     AppResult,
 };
@@ -13,6 +17,12 @@ pub fn run(cli: Cli) -> AppResult<i32> {
     verbose.log(format!("path={}", cli.path));
 
     let scan_opts = ScanOptions {
+        dirs: cli.dir.clone(),
+        extensions: cli.ext.clone(),
+        file_patterns: cli.file_pattern.clone(),
+        file_mode: cli.file_mode,
+        case_sensitive: cli.case_sensitive,
+        input_mode: cli.input_mode,
         include: cli.include.clone(),
         exclude: cli.exclude.clone(),
         hidden: cli.hidden,
@@ -44,14 +54,14 @@ pub fn run(cli: Cli) -> AppResult<i32> {
     let value = match &cli.command {
         Command::Find { text, mode } => {
             let query_output =
-                search::find(&workspace, &scan_opts, text, mode, cli.context, false)?;
+                search::find(&workspace, &scan_opts, text, (*mode).into(), cli.context, false)?;
             exit_code = output::no_match_exit(&query_output.results);
             page_response(
                 output::response_with_index(
                     "find",
                     "find",
                     scoped_query(
-                        json!({ "pattern": text, "mode": mode, "context": cli.context }),
+                        json!({ "pattern": text, "mode": mode.as_str(), "caseSensitive": scan_opts.case_sensitive, "context": cli.context }),
                         &scan_opts,
                     ),
                     &workspace.snapshot_id,
@@ -71,14 +81,15 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             context,
         } => {
             let context = context.unwrap_or(cli.context);
-            let query_output = search::find(&workspace, &scan_opts, pattern, mode, context, false)?;
+            let query_output =
+                search::find(&workspace, &scan_opts, pattern, (*mode).into(), context, false)?;
             exit_code = output::no_match_exit(&query_output.results);
             page_response(
                 output::response_with_index(
                     "grep",
                     "find",
                     scoped_query(
-                        json!({ "pattern": pattern, "mode": mode, "context": context }),
+                        json!({ "pattern": pattern, "mode": mode.as_str(), "caseSensitive": scan_opts.case_sensitive, "context": context }),
                         &scan_opts,
                     ),
                     &workspace.snapshot_id,
@@ -92,15 +103,15 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 query_output,
             )
         }
-        Command::Files { pattern } => {
-            let query_output = search::files(&workspace, &scan_opts, pattern, false)?;
+        Command::Files { pattern, mode } => {
+            let query_output = search::files(&workspace, &scan_opts, pattern, *mode)?;
             exit_code = output::no_match_exit(&query_output.results);
             page_response(
                 output::response_with_index(
                     "files",
                     "files",
                     scoped_query(
-                        json!({ "pattern": pattern, "mode": "path_substring" }),
+                        json!({ "pattern": pattern, "mode": path_mode_label("files", *mode), "caseSensitive": scan_opts.case_sensitive }),
                         &scan_opts,
                     ),
                     &workspace.snapshot_id,
@@ -114,15 +125,15 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 query_output,
             )
         }
-        Command::FindPath { pattern } => {
-            let query_output = search::files(&workspace, &scan_opts, pattern, false)?;
+        Command::FindPath { pattern, mode } => {
+            let query_output = search::files(&workspace, &scan_opts, pattern, *mode)?;
             exit_code = output::no_match_exit(&query_output.results);
             page_response(
                 output::response_with_index(
                     "find-path",
                     "files",
                     scoped_query(
-                        json!({ "pattern": pattern, "mode": "path_substring" }),
+                        json!({ "pattern": pattern, "mode": path_mode_label("find-path", *mode), "caseSensitive": scan_opts.case_sensitive }),
                         &scan_opts,
                     ),
                     &workspace.snapshot_id,
@@ -136,15 +147,15 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 query_output,
             )
         }
-        Command::Glob { pattern } => {
-            let query_output = search::files(&workspace, &scan_opts, pattern, true)?;
+        Command::Glob { pattern, mode } => {
+            let query_output = search::files(&workspace, &scan_opts, pattern, *mode)?;
             exit_code = output::no_match_exit(&query_output.results);
             page_response(
                 output::response_with_index(
                     "glob",
                     "files",
                     scoped_query(
-                        json!({ "pattern": pattern, "mode": "strict_glob" }),
+                        json!({ "pattern": pattern, "mode": path_mode_label("glob", *mode), "caseSensitive": scan_opts.case_sensitive }),
                         &scan_opts,
                     ),
                     &workspace.snapshot_id,
@@ -207,32 +218,36 @@ pub fn run(cli: Cli) -> AppResult<i32> {
         }
         Command::Refs { identifier } => {
             if let Some(precise) = scip_index::refs(&workspace, &scan_opts, identifier)? {
-                return emit_response(
-                    &cli.output,
-                    output::response_with_index(
-                        "refs",
-                        "refs",
-                        scoped_query(
-                            json!({ "identifier": identifier, "producer": "scip" }),
-                            &scan_opts,
+                if has_results(&precise.results)
+                    || !compatible_input_needs_expansion(identifier, scan_opts.input_mode)
+                {
+                    return emit_response(
+                        &cli.output,
+                        output::response_with_index(
+                            "refs",
+                            "refs",
+                            scoped_query(
+                                json!({ "identifier": identifier, "producer": "scip" }),
+                                &scan_opts,
+                            ),
+                            &workspace.snapshot_id,
+                            output::precise_fact(),
+                            output::IndexedResponseParts::new(
+                                precise.index,
+                                precise.results,
+                                scope_warnings.clone(),
+                            ),
                         ),
-                        &workspace.snapshot_id,
-                        output::precise_fact(),
-                        output::IndexedResponseParts::new(
-                            precise.index,
-                            precise.results,
-                            scope_warnings.clone(),
-                        ),
-                    ),
-                    &workspace,
-                    cli.save_query.as_deref(),
-                );
+                        &workspace,
+                        cli.save_query.as_deref(),
+                    );
+                }
             }
             let mut query_output = search::find(
                 &workspace,
                 &scan_opts,
                 identifier,
-                "literal",
+                SearchPatternMode::Literal,
                 cli.context,
                 true,
             )?;
@@ -262,35 +277,42 @@ pub fn run(cli: Cli) -> AppResult<i32> {
         }
         Command::Symbols { query } => {
             if let Some(precise) = scip_index::symbols(&workspace, &scan_opts, query)? {
-                let page = search::page_results(
-                    precise.results,
-                    &scan_opts,
-                    "symbols",
-                    json!({ "query": query, "producer": "scip" }),
-                    &workspace.snapshot_id,
-                )?;
-                return emit_response(
-                    &cli.output,
-                    output::with_page_meta(
-                        output::response_with_index(
-                            "symbols",
-                            "symbols",
-                            scoped_query(json!({ "query": query, "producer": "scip" }), &scan_opts),
-                            &workspace.snapshot_id,
-                            output::precise_fact(),
-                            output::IndexedResponseParts::new(
-                                precise.index,
-                                page.results.clone(),
-                                scope_warnings.clone(),
+                if has_results(&precise.results)
+                    || !compatible_input_needs_expansion(query, scan_opts.input_mode)
+                {
+                    let page = search::page_results(
+                        precise.results,
+                        &scan_opts,
+                        "symbols",
+                        json!({ "query": query, "producer": "scip" }),
+                        &workspace.snapshot_id,
+                    )?;
+                    return emit_response(
+                        &cli.output,
+                        output::with_page_meta(
+                            output::response_with_index(
+                                "symbols",
+                                "symbols",
+                                scoped_query(
+                                    json!({ "query": query, "producer": "scip" }),
+                                    &scan_opts,
+                                ),
+                                &workspace.snapshot_id,
+                                output::precise_fact(),
+                                output::IndexedResponseParts::new(
+                                    precise.index,
+                                    page.results.clone(),
+                                    scope_warnings.clone(),
+                                ),
                             ),
+                            page.truncated,
+                            page.next_cursor,
+                            page.facets,
                         ),
-                        page.truncated,
-                        page.next_cursor,
-                        page.facets,
-                    ),
-                    &workspace,
-                    cli.save_query.as_deref(),
-                );
+                        &workspace,
+                        cli.save_query.as_deref(),
+                    );
+                }
             }
             let (results, warnings) = syntax::symbols(&workspace, &scan_opts, query)?;
             let page = search::page_results(
@@ -330,26 +352,30 @@ pub fn run(cli: Cli) -> AppResult<i32> {
         }
         Command::Defs { identifier } => {
             if let Some(precise) = scip_index::defs(&workspace, &scan_opts, identifier)? {
-                return emit_response(
-                    &cli.output,
-                    output::response_with_index(
-                        "defs",
-                        "defs",
-                        scoped_query(
-                            json!({ "identifier": identifier, "producer": "scip" }),
-                            &scan_opts,
+                if has_results(&precise.results)
+                    || !compatible_input_needs_expansion(identifier, scan_opts.input_mode)
+                {
+                    return emit_response(
+                        &cli.output,
+                        output::response_with_index(
+                            "defs",
+                            "defs",
+                            scoped_query(
+                                json!({ "identifier": identifier, "producer": "scip" }),
+                                &scan_opts,
+                            ),
+                            &workspace.snapshot_id,
+                            output::precise_fact(),
+                            output::IndexedResponseParts::new(
+                                precise.index,
+                                precise.results,
+                                scope_warnings.clone(),
+                            ),
                         ),
-                        &workspace.snapshot_id,
-                        output::precise_fact(),
-                        output::IndexedResponseParts::new(
-                            precise.index,
-                            precise.results,
-                            scope_warnings.clone(),
-                        ),
-                    ),
-                    &workspace,
-                    cli.save_query.as_deref(),
-                );
+                        &workspace,
+                        cli.save_query.as_deref(),
+                    );
+                }
             }
             let (results, warnings) = syntax::defs(&workspace, &scan_opts, identifier)?;
             exit_code = output::no_match_exit(&results);
@@ -837,13 +863,31 @@ fn attach_saved_query(
 }
 
 fn page_response(value: Value, page: search::QueryOutput) -> Value {
-    output::with_budget(
+    let page_value = output::with_budget(
         output::with_guard(
-            output::with_page_meta(value, page.truncated, page.next_cursor, page.facets),
-            page.guard,
+            output::with_page_meta(
+                value,
+                page.truncated,
+                page.next_cursor.clone(),
+                page.facets.clone(),
+            ),
+            page.guard.clone(),
         ),
-        page.budget,
-    )
+        page.budget.clone(),
+    );
+    search::attach_query_diagnostics(page_value, &page)
+}
+
+fn has_results(value: &Value) -> bool {
+    value.as_array().is_some_and(|results| !results.is_empty())
+}
+
+fn path_mode_label(command: &str, mode: SearchPatternMode) -> &'static str {
+    match (command, mode) {
+        ("files" | "find-path", SearchPatternMode::Literal) => "path_substring",
+        ("glob", SearchPatternMode::Glob) => "strict_glob",
+        (_, mode) => mode.as_str(),
+    }
 }
 
 fn command_name(command: &Command) -> &'static str {

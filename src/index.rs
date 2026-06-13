@@ -1029,6 +1029,7 @@ fn scan_options_from_index_scan(scan_options: &IndexScanOptions) -> ScanOptions 
         cursor: None,
         allow_broad: false,
         limit: 0,
+        ..ScanOptions::default()
     }
 }
 

@@ -133,7 +133,7 @@ fn schema_contract_covers_core_commands_and_errors() {
         .clone();
     let json: Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(json["schemaVersion"], "1.0");
-    assert_eq!(json["error"]["code"], "unsupported_search_mode");
+    assert_eq!(json["error"]["code"], "cli_usage_error");
 }
 
 #[test]
@@ -447,12 +447,13 @@ fn refs_text_fallback_uses_identifier_boundaries() {
         .clone();
     let json: Value = serde_json::from_slice(&output).unwrap();
 
-    assert!(json["results"]
+    let match_texts = json["results"]
         .as_array()
         .unwrap()
         .iter()
-        .all(|result| result["matchText"] == "User"));
-    assert_eq!(json["results"].as_array().unwrap().len(), 2);
+        .map(|result| result["matchText"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(match_texts, vec!["User", "user", "User"]);
     assert_eq!(json["results"][0]["symbolName"], "User");
     assert_eq!(json["results"][0]["role"], "definition");
     assert_eq!(json["results"][0]["kind"], "unknown");

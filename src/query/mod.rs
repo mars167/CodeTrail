@@ -12,7 +12,11 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use crate::{
-    graph, output, scip_index, search, syntax,
+    graph, output,
+    query_input::{compatible_input_needs_expansion, InputMode},
+    scip_index, search,
+    search_pattern::SearchPatternMode,
+    syntax,
     workspace::{ScanOptions, Workspace},
 };
 
@@ -23,6 +27,12 @@ use crate::{
 /// Per-query filtering and display options.
 #[derive(Clone, Debug)]
 pub struct QueryOptions {
+    pub dirs: Vec<String>,
+    pub extensions: Vec<String>,
+    pub file_patterns: Vec<String>,
+    pub file_mode: SearchPatternMode,
+    pub case_sensitive: bool,
+    pub input_mode: InputMode,
     /// Path substrings that files must contain to be included.
     pub include: Vec<String>,
     /// Path substrings that exclude files.
@@ -50,6 +60,12 @@ impl Default for QueryOptions {
         Self {
             include: vec![],
             exclude: vec![],
+            dirs: vec![],
+            extensions: vec![],
+            file_patterns: vec![],
+            file_mode: SearchPatternMode::Wildcard,
+            case_sensitive: false,
+            input_mode: InputMode::Compatible,
             lang: vec![],
             changed: false,
             hidden: false,
@@ -65,6 +81,12 @@ impl Default for QueryOptions {
 impl QueryOptions {
     fn to_scan_options(&self) -> ScanOptions {
         ScanOptions {
+            dirs: self.dirs.clone(),
+            extensions: self.extensions.clone(),
+            file_patterns: self.file_patterns.clone(),
+            file_mode: self.file_mode,
+            case_sensitive: self.case_sensitive,
+            input_mode: self.input_mode,
             include: self.include.clone(),
             exclude: self.exclude.clone(),
             lang: self.lang.clone(),
@@ -109,12 +131,18 @@ impl QueryService {
 
     /// Full-text / literal search (delegates to `search::find`).
     pub fn find(&self, text: &str, opts: &QueryOptions) -> Result<Value> {
-        self.text_search("find", text, "literal", opts.context, opts)
+        self.text_search("find", text, SearchPatternMode::Literal, opts.context, opts)
     }
 
     /// Regex search (delegates to `search::find` with mode=regex).
     pub fn grep(&self, pattern: &str, opts: &QueryOptions) -> Result<Value> {
-        self.text_search("grep", pattern, "regex", opts.context, opts)
+        self.text_search(
+            "grep",
+            pattern,
+            SearchPatternMode::Regex,
+            opts.context,
+            opts,
+        )
     }
 
     /// Full-text search with explicit command/mode metadata.
@@ -122,13 +150,18 @@ impl QueryService {
         &self,
         command: &str,
         pattern: &str,
-        mode: &str,
+        mode: SearchPatternMode,
         context: u16,
         opts: &QueryOptions,
     ) -> Result<Value> {
         let scan = opts.to_scan_options();
         let qo = search::find(&self.workspace, &scan, pattern, mode, context, false)?;
-        let query = json!({ "pattern": pattern, "mode": mode, "context": context });
+        let query = json!({
+            "pattern": pattern,
+            "mode": mode.as_str(),
+            "caseSensitive": scan.case_sensitive,
+            "context": context
+        });
         let response = output::response_with_index(
             command,
             "find",
@@ -142,13 +175,23 @@ impl QueryService {
 
     /// Find files whose path contains `pattern` (substring match).
     pub fn files(&self, pattern: &str, opts: &QueryOptions) -> Result<Value> {
+        self.files_with_mode("files", pattern, SearchPatternMode::Literal, opts)
+    }
+
+    pub fn files_with_mode(
+        &self,
+        command: &str,
+        pattern: &str,
+        mode: SearchPatternMode,
+        opts: &QueryOptions,
+    ) -> Result<Value> {
         let scan = opts.to_scan_options();
-        let qo = search::files(&self.workspace, &scan, pattern, false)?;
+        let qo = search::files(&self.workspace, &scan, pattern, mode)?;
         let response = output::response_with_index(
-            "files",
+            command,
             "files",
             scoped_query(
-                json!({ "pattern": pattern, "mode": "path_substring" }),
+                json!({ "pattern": pattern, "mode": path_mode_label(command, mode), "caseSensitive": scan.case_sensitive }),
                 &scan,
             ),
             &self.workspace.snapshot_id,
@@ -160,17 +203,7 @@ impl QueryService {
 
     /// Find files by strict glob pattern.
     pub fn glob(&self, pattern: &str, opts: &QueryOptions) -> Result<Value> {
-        let scan = opts.to_scan_options();
-        let qo = search::files(&self.workspace, &scan, pattern, true)?;
-        let response = output::response_with_index(
-            "glob",
-            "files",
-            scoped_query(json!({ "pattern": pattern, "mode": "strict_glob" }), &scan),
-            &self.workspace.snapshot_id,
-            output::source_fact(),
-            output::IndexedResponseParts::new(qo.index.clone(), qo.results.clone(), Vec::new()),
-        );
-        Ok(self.finalize(page_response(response, qo)))
+        self.files_with_mode("glob", pattern, SearchPatternMode::Glob, opts)
     }
 
     // ------------------------------------------------------------------
@@ -251,17 +284,21 @@ impl QueryService {
 
         // 1. Try SCIP precise index first.
         if let Some(precise) = scip_index::defs(&self.workspace, &scan, identifier)? {
-            return Ok(self.finalize(output::response_with_index(
-                "defs",
-                "defs",
-                scoped_query(
-                    json!({ "identifier": identifier, "producer": "scip" }),
-                    &scan,
-                ),
-                &self.workspace.snapshot_id,
-                output::precise_fact(),
-                output::IndexedResponseParts::new(precise.index, precise.results, Vec::new()),
-            )));
+            if has_results(&precise.results)
+                || !compatible_input_needs_expansion(identifier, scan.input_mode)
+            {
+                return Ok(self.finalize(output::response_with_index(
+                    "defs",
+                    "defs",
+                    scoped_query(
+                        json!({ "identifier": identifier, "producer": "scip" }),
+                        &scan,
+                    ),
+                    &self.workspace.snapshot_id,
+                    output::precise_fact(),
+                    output::IndexedResponseParts::new(precise.index, precise.results, Vec::new()),
+                )));
+            }
         }
 
         // 2. Fall back to tree-sitter parser.
@@ -292,17 +329,21 @@ impl QueryService {
 
         // 1. Try SCIP precise index first.
         if let Some(precise) = scip_index::refs(&self.workspace, &scan, identifier)? {
-            return Ok(self.finalize(output::response_with_index(
-                "refs",
-                "refs",
-                scoped_query(
-                    json!({ "identifier": identifier, "producer": "scip" }),
-                    &scan,
-                ),
-                &self.workspace.snapshot_id,
-                output::precise_fact(),
-                output::IndexedResponseParts::new(precise.index, precise.results, Vec::new()),
-            )));
+            if has_results(&precise.results)
+                || !compatible_input_needs_expansion(identifier, scan.input_mode)
+            {
+                return Ok(self.finalize(output::response_with_index(
+                    "refs",
+                    "refs",
+                    scoped_query(
+                        json!({ "identifier": identifier, "producer": "scip" }),
+                        &scan,
+                    ),
+                    &self.workspace.snapshot_id,
+                    output::precise_fact(),
+                    output::IndexedResponseParts::new(precise.index, precise.results, Vec::new()),
+                )));
+            }
         }
 
         // 2. Fall back to identifier-boundary text search.
@@ -310,7 +351,7 @@ impl QueryService {
             &self.workspace,
             &scan,
             identifier,
-            "literal",
+            SearchPatternMode::Literal,
             opts.context,
             true,
         )?;
@@ -346,27 +387,35 @@ impl QueryService {
 
         // 1. Try SCIP precise index first.
         if let Some(precise) = scip_index::symbols(&self.workspace, &scan, query)? {
-            let page = search::page_results(
-                precise.results,
-                &scan,
-                "symbols",
-                json!({ "query": query, "producer": "scip" }),
-                &self.workspace.snapshot_id,
-            )?;
-            let response = output::response_with_index(
-                "symbols",
-                "symbols",
-                scoped_query(json!({ "query": query, "producer": "scip" }), &scan),
-                &self.workspace.snapshot_id,
-                output::precise_fact(),
-                output::IndexedResponseParts::new(precise.index, page.results.clone(), Vec::new()),
-            );
-            return Ok(self.finalize(output::with_page_meta(
-                response,
-                page.truncated,
-                page.next_cursor,
-                page.facets,
-            )));
+            if has_results(&precise.results)
+                || !compatible_input_needs_expansion(query, scan.input_mode)
+            {
+                let page = search::page_results(
+                    precise.results,
+                    &scan,
+                    "symbols",
+                    json!({ "query": query, "producer": "scip" }),
+                    &self.workspace.snapshot_id,
+                )?;
+                let response = output::response_with_index(
+                    "symbols",
+                    "symbols",
+                    scoped_query(json!({ "query": query, "producer": "scip" }), &scan),
+                    &self.workspace.snapshot_id,
+                    output::precise_fact(),
+                    output::IndexedResponseParts::new(
+                        precise.index,
+                        page.results.clone(),
+                        Vec::new(),
+                    ),
+                );
+                return Ok(self.finalize(output::with_page_meta(
+                    response,
+                    page.truncated,
+                    page.next_cursor,
+                    page.facets,
+                )));
+            }
         }
 
         // 2. Fall back to tree-sitter.
@@ -534,13 +583,31 @@ fn scoped_query(mut query: Value, opts: &ScanOptions) -> Value {
 }
 
 fn page_response(value: Value, page: search::QueryOutput) -> Value {
-    output::with_budget(
+    let page_value = output::with_budget(
         output::with_guard(
-            output::with_page_meta(value, page.truncated, page.next_cursor, page.facets),
-            page.guard,
+            output::with_page_meta(
+                value,
+                page.truncated,
+                page.next_cursor.clone(),
+                page.facets.clone(),
+            ),
+            page.guard.clone(),
         ),
-        page.budget,
-    )
+        page.budget.clone(),
+    );
+    search::attach_query_diagnostics(page_value, &page)
+}
+
+fn has_results(value: &Value) -> bool {
+    value.as_array().is_some_and(|results| !results.is_empty())
+}
+
+fn path_mode_label(command: &str, mode: SearchPatternMode) -> &'static str {
+    match (command, mode) {
+        ("files" | "find-path", SearchPatternMode::Literal) => "path_substring",
+        ("glob", SearchPatternMode::Glob) => "strict_glob",
+        (_, mode) => mode.as_str(),
+    }
 }
 
 fn merge_warnings(mut first: Vec<String>, second: Vec<String>) -> Vec<String> {

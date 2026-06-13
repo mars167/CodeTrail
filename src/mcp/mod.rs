@@ -29,6 +29,8 @@ use serde_json::{json, Value};
 use crate::{
     output,
     query::{QueryOptions, QueryService},
+    query_input::InputMode,
+    search_pattern::SearchPatternMode,
 };
 
 mod protocol;
@@ -460,19 +462,25 @@ impl Server {
         match name {
             "codetrail_find" => {
                 let text = required_str(args, "text")?;
-                self.service.find(text, &opts)
+                let mode = optional_pattern_mode_arg(args, SearchPatternMode::Literal)?;
+                self.service
+                    .text_search("find", text, mode, opts.context, &opts)
             }
             "codetrail_grep" => {
                 let pattern = required_str(args, "pattern")?;
-                self.service.grep(pattern, &opts)
+                let mode = optional_pattern_mode_arg(args, SearchPatternMode::Regex)?;
+                self.service
+                    .text_search("grep", pattern, mode, opts.context, &opts)
             }
             "codetrail_files" => {
                 let pattern = required_str(args, "pattern")?;
-                self.service.files(pattern, &opts)
+                let mode = optional_pattern_mode_arg(args, SearchPatternMode::Literal)?;
+                self.service.files_with_mode("files", pattern, mode, &opts)
             }
             "codetrail_glob" => {
                 let pattern = required_str(args, "pattern")?;
-                self.service.glob(pattern, &opts)
+                let mode = optional_pattern_mode_arg(args, SearchPatternMode::Glob)?;
+                self.service.files_with_mode("glob", pattern, mode, &opts)
             }
             "codetrail_list" => {
                 reject_unsupported_browse_scope(&opts)?;
@@ -551,6 +559,16 @@ fn optional_str<'a>(args: Option<&'a Value>, field: &str) -> Option<&'a str> {
         .and_then(Value::as_str)
 }
 
+fn optional_pattern_mode_arg(
+    args: Option<&Value>,
+    default: SearchPatternMode,
+) -> Result<SearchPatternMode> {
+    let Some(obj) = args.and_then(Value::as_object) else {
+        return Ok(default);
+    };
+    optional_pattern_mode(obj, &["mode"], default)
+}
+
 fn optional_bool(args: Option<&Value>, field: &str) -> Option<bool> {
     args.and_then(Value::as_object)?
         .get(field)
@@ -594,6 +612,20 @@ fn parse_query_options(args: Option<&Value>) -> Result<QueryOptions> {
     };
 
     Ok(QueryOptions {
+        dirs: extract_string_arrays(obj, &["dir", "dirs"]),
+        extensions: extract_string_arrays(obj, &["ext", "extensions"]),
+        file_patterns: extract_string_arrays(obj, &["filePattern", "filePatterns", "file_pattern"]),
+        file_mode: optional_pattern_mode(
+            obj,
+            &["fileMode", "file_mode"],
+            SearchPatternMode::Wildcard,
+        )?,
+        case_sensitive: obj
+            .get("caseSensitive")
+            .or_else(|| obj.get("case_sensitive"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        input_mode: optional_input_mode(obj, &["inputMode", "input_mode"], InputMode::Compatible)?,
         include: extract_string_array(obj, "include"),
         exclude: extract_string_array(obj, "exclude"),
         lang: extract_string_array(obj, "lang"),
@@ -622,14 +654,27 @@ fn parse_query_options(args: Option<&Value>) -> Result<QueryOptions> {
 }
 
 fn extract_string_array(obj: &serde_json::Map<String, Value>, field: &str) -> Vec<String> {
-    obj.get(field)
-        .and_then(|v| v.as_array())
+    let Some(value) = obj.get(field) else {
+        return Vec::new();
+    };
+    if let Some(text) = value.as_str() {
+        return vec![text.to_string()];
+    }
+    value
+        .as_array()
         .map(|arr| {
             arr.iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn extract_string_arrays(obj: &serde_json::Map<String, Value>, fields: &[&str]) -> Vec<String> {
+    fields
+        .iter()
+        .flat_map(|field| extract_string_array(obj, field))
+        .collect()
 }
 
 fn optional_usize_arg(
@@ -669,6 +714,39 @@ fn optional_u16_arg(
         ));
     }
     Ok(number as u16)
+}
+
+fn optional_pattern_mode(
+    obj: &serde_json::Map<String, Value>,
+    fields: &[&str],
+    default: SearchPatternMode,
+) -> Result<SearchPatternMode> {
+    for field in fields {
+        if let Some(value) = obj.get(*field).and_then(Value::as_str) {
+            return SearchPatternMode::parse(value);
+        }
+    }
+    Ok(default)
+}
+
+fn optional_input_mode(
+    obj: &serde_json::Map<String, Value>,
+    fields: &[&str],
+    default: InputMode,
+) -> Result<InputMode> {
+    let Some(value) = fields
+        .iter()
+        .find_map(|field| obj.get(*field).and_then(Value::as_str))
+    else {
+        return Ok(default);
+    };
+    match value {
+        "compatible" => Ok(InputMode::Compatible),
+        "strict" => Ok(InputMode::Strict),
+        other => Err(anyhow::anyhow!(
+            "invalid_mcp_argument: unsupported inputMode {other}"
+        )),
+    }
 }
 
 // ---------------------------------------------------------------------------

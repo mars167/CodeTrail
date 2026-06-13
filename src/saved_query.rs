@@ -11,6 +11,8 @@ use crate::{
     cli::ReplaySnapshot,
     output,
     query::{QueryOptions, QueryService},
+    query_input::InputMode,
+    search_pattern::SearchPatternMode,
     workspace::Workspace,
 };
 
@@ -102,13 +104,24 @@ pub fn replay(workspace: &Workspace, name: &str, mode: &ReplaySnapshot) -> Resul
             service.text_search(
                 command,
                 required_str(query, "pattern")?,
-                mode,
+                SearchPatternMode::parse(mode)?,
                 context,
                 &opts,
             )?
         }
-        "files" | "find-path" => service.files(required_str(query, "pattern")?, &opts)?,
-        "glob" => service.glob(required_str(query, "pattern")?, &opts)?,
+        "files" | "find-path" | "glob" => {
+            let default_mode = if command == "glob" { "glob" } else { "literal" };
+            let mode = query
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or(default_mode);
+            service.files_with_mode(
+                command,
+                required_str(query, "pattern")?,
+                SearchPatternMode::parse(mode)?,
+                &opts,
+            )?
+        }
         "refs" => service.refs(required_str(query, "identifier")?, &opts)?,
         "defs" => service.defs(required_str(query, "identifier")?, &opts)?,
         "symbols" => service.symbols(required_str(query, "query")?, &opts)?,
@@ -195,6 +208,22 @@ fn query_options_from_saved(saved: &Value, snapshot_match: bool) -> Result<Query
         .or_else(|| query.get("scope"))
         .unwrap_or(&Value::Null);
     Ok(QueryOptions {
+        dirs: string_array(scope.get("dirs")),
+        extensions: string_array(scope.get("extensions")),
+        file_patterns: string_array(scope.get("filePatterns")),
+        file_mode: scope
+            .get("fileMode")
+            .and_then(Value::as_str)
+            .map(SearchPatternMode::parse)
+            .transpose()?
+            .unwrap_or(SearchPatternMode::Wildcard),
+        case_sensitive: bool_field(scope, "caseSensitive"),
+        input_mode: scope
+            .get("inputMode")
+            .and_then(Value::as_str)
+            .map(parse_input_mode)
+            .transpose()?
+            .unwrap_or(InputMode::Compatible),
         include: string_array(scope.get("include")),
         exclude: string_array(scope.get("exclude")),
         lang: string_array(scope.get("lang")),
@@ -235,6 +264,14 @@ fn string_array(value: Option<&Value>) -> Vec<String> {
 
 fn bool_field(value: &Value, field: &str) -> bool {
     value.get(field).and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn parse_input_mode(value: &str) -> Result<InputMode> {
+    match value {
+        "compatible" => Ok(InputMode::Compatible),
+        "strict" => Ok(InputMode::Strict),
+        other => Err(anyhow!("unsupported input mode: {other}")),
+    }
 }
 
 fn load_with_path(workspace: &Workspace, name: &str) -> Result<(PathBuf, Value)> {
