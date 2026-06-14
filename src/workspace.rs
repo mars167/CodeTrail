@@ -17,9 +17,22 @@ use crate::{
     search_pattern::{compile_any, normalize_extension, PatternTarget, SearchPatternMode},
 };
 
-/// Maximum file size that CodeTrail will read into memory for indexing or search.
-/// Files larger than this limit are skipped with a `too_large` caveat.
 pub const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoteMode {
+    Auto,
+    Only,
+}
+
+impl RemoteMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Only => "only",
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ScanOptions {
@@ -38,6 +51,8 @@ pub struct ScanOptions {
     pub cursor: Option<String>,
     pub allow_broad: bool,
     pub limit: usize,
+    pub remote_mode: RemoteMode,
+    pub remote_snapshot: Option<String>,
 }
 
 impl Default for ScanOptions {
@@ -58,6 +73,8 @@ impl Default for ScanOptions {
             cursor: None,
             allow_broad: false,
             limit: 100,
+            remote_mode: RemoteMode::Auto,
+            remote_snapshot: None,
         }
     }
 }
