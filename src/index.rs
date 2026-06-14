@@ -26,6 +26,13 @@ use crate::{
 
 const INDEX_SCHEMA_VERSION: u32 = 1;
 
+/// Maximum decompressed size of a single tar entry during `index unpack`.
+const MAX_ENTRY_DECOMPRESSED_BYTES: u64 = 256 * 1024 * 1024; // 256 MiB
+/// Maximum total decompressed size across all tar entries during `index unpack`.
+const MAX_TOTAL_DECOMPRESSED_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
+/// Maximum number of tar entries accepted during `index unpack`.
+const MAX_ARCHIVE_ENTRIES: usize = 1_000;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Manifest {
@@ -1371,15 +1378,51 @@ pub fn unpack(workspace: &Workspace, archive_path: &str) -> Result<Value> {
     let archive_data =
         fs::read(archive_path).with_context(|| format!("failed to read archive {archive_path}"))?;
 
-    // Decompress and parse tar
+    // Decompress and parse tar with bounded memory usage.
+    // All entries are collected first so that checksums can be validated
+    // before any file is written to disk.
     let decoder = GzDecoder::new(&archive_data[..]);
     let mut archive = tar::Archive::new(decoder);
     let mut entries: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
+    let mut total_decompressed: u64 = 0;
     for entry_result in archive.entries()? {
         let mut entry = entry_result?;
         let path = entry.path()?.to_string_lossy().to_string();
+
+        if entries.len() >= MAX_ARCHIVE_ENTRIES {
+            return Err(anyhow!(
+                "archive contains more than {MAX_ARCHIVE_ENTRIES} entries; refusing to unpack"
+            ));
+        }
+
+        let entry_size = entry.header().size()?;
+        if entry_size > MAX_ENTRY_DECOMPRESSED_BYTES {
+            return Err(anyhow!(
+                "archive entry '{path}' declares size {entry_size} bytes which exceeds the \
+                 per-entry limit of {MAX_ENTRY_DECOMPRESSED_BYTES} bytes"
+            ));
+        }
+        total_decompressed = total_decompressed.saturating_add(entry_size);
+        if total_decompressed > MAX_TOTAL_DECOMPRESSED_BYTES {
+            return Err(anyhow!(
+                "archive total decompressed size exceeds the limit of \
+                 {MAX_TOTAL_DECOMPRESSED_BYTES} bytes"
+            ));
+        }
+
         let mut content = Vec::new();
         entry.read_to_end(&mut content)?;
+
+        // Enforce the per-entry cap on the actual decompressed bytes as well,
+        // since the header size field can be untrustworthy in crafted archives.
+        if content.len() as u64 > MAX_ENTRY_DECOMPRESSED_BYTES {
+            return Err(anyhow!(
+                "archive entry '{path}' decompressed to {} bytes which exceeds the per-entry \
+                 limit of {MAX_ENTRY_DECOMPRESSED_BYTES} bytes",
+                content.len()
+            ));
+        }
+
         entries.insert(path, content);
     }
 
@@ -1390,26 +1433,7 @@ pub fn unpack(workspace: &Workspace, archive_path: &str) -> Result<Value> {
     let checksums_str = String::from_utf8(checksums_data.clone())
         .with_context(|| "checksums.txt is not valid UTF-8")?;
     let expected_checksums = parse_checksums(&checksums_str)?;
-
-    for (path, expected_hash) in &expected_checksums {
-        if path == "checksums.txt" {
-            continue;
-        }
-        let content = entries
-            .get(path.as_str())
-            .ok_or_else(|| anyhow!("archive missing entry: {path}"))?;
-        let mut hasher = Sha256::new();
-        hasher.update(content);
-        let actual_hash = format!("{:x}", hasher.finalize());
-        if &actual_hash != expected_hash {
-            return Err(anyhow!(
-                "checksum mismatch for '{}': expected {}, got {}",
-                path,
-                expected_hash,
-                actual_hash
-            ));
-        }
-    }
+    verify_archive_checksums(&entries, &expected_checksums)?;
 
     // Read pack manifest
     let pack_manifest_data = entries
@@ -1460,12 +1484,12 @@ pub fn unpack(workspace: &Workspace, archive_path: &str) -> Result<Value> {
 
     fs::create_dir_all(&remote_dir)?;
 
-    // Extract files to remote dir
+    // Extract files to remote dir with path-traversal guard.
     for (path, content) in &entries {
         if path == "checksums.txt" || path == "manifest.json" {
             continue;
         }
-        let dest = remote_dir.join(path);
+        let dest = safe_join(&remote_dir, path)?;
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -1631,6 +1655,44 @@ fn parse_checksums(checksums_str: &str) -> Result<std::collections::HashMap<Stri
     Ok(map)
 }
 
+fn verify_archive_checksums(
+    entries: &std::collections::HashMap<String, Vec<u8>>,
+    expected_checksums: &std::collections::HashMap<String, String>,
+) -> Result<()> {
+    for path in entries.keys() {
+        if path == "checksums.txt" {
+            continue;
+        }
+        if !expected_checksums.contains_key(path) {
+            return Err(anyhow!(
+                "archive entry '{path}' is not listed in checksums.txt"
+            ));
+        }
+    }
+
+    for (path, expected_hash) in expected_checksums {
+        if path == "checksums.txt" {
+            continue;
+        }
+        let content = entries
+            .get(path.as_str())
+            .ok_or_else(|| anyhow!("archive missing entry: {path}"))?;
+        let mut hasher = Sha256::new();
+        hasher.update(content);
+        let actual_hash = format!("{:x}", hasher.finalize());
+        if &actual_hash != expected_hash {
+            return Err(anyhow!(
+                "checksum mismatch for '{}': expected {}, got {}",
+                path,
+                expected_hash,
+                actual_hash
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn pack_temp_dir(workspace: &Workspace, label: &str) -> Result<PathBuf> {
     let dir = storage_root(workspace).join(format!(
         ".pack-tmp-{label}-{}-{}",
@@ -1647,6 +1709,45 @@ fn remote_root(workspace: &Workspace) -> PathBuf {
 
 fn remote_dir(workspace: &Workspace, snapshot_key: &str) -> PathBuf {
     remote_root(workspace).join(snapshot_key)
+}
+
+/// Join `base` and the relative path `rel` from a tar archive entry,
+/// rejecting any path that would escape `base`.
+///
+/// Rejects: empty paths, absolute paths, `..` components, Windows volume
+/// prefixes, and any result that does not start with `base`.
+fn safe_join(base: &Path, rel: &str) -> Result<PathBuf> {
+    if rel.is_empty() {
+        return Err(anyhow!("archive entry has an empty path"));
+    }
+    let rel_path = Path::new(rel);
+    if rel_path.is_absolute() {
+        return Err(anyhow!("archive entry has an absolute path: {rel}"));
+    }
+    for component in rel_path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                return Err(anyhow!("archive entry contains '..' path component: {rel}"));
+            }
+            std::path::Component::Prefix(_) => {
+                return Err(anyhow!(
+                    "archive entry contains a Windows volume prefix: {rel}"
+                ));
+            }
+            _ => {}
+        }
+    }
+    let dest = base.join(rel_path);
+    // Belt-and-suspenders: verify the joined path is still under base.
+    // `starts_with` works on component boundaries, so a prefix that happens
+    // to share bytes but not a component separator is correctly rejected.
+    if !dest.starts_with(base) {
+        return Err(anyhow!(
+            "archive entry '{}' would escape the destination directory",
+            rel
+        ));
+    }
+    Ok(dest)
 }
 
 fn remote_status(workspace: &Workspace) -> Result<Value> {
@@ -1819,4 +1920,75 @@ fn make_executable(path: &Path) -> Result<()> {
 #[cfg(not(unix))]
 fn make_executable(_path: &Path) -> Result<()> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn base() -> PathBuf {
+        PathBuf::from("/repo/.codetrail/remote/snap1")
+    }
+
+    #[test]
+    fn safe_join_accepts_normal_relative_paths() {
+        assert!(safe_join(&base(), "files.parquet").is_ok());
+        assert!(safe_join(&base(), "text/docs.idx").is_ok());
+        assert!(safe_join(&base(), "text/grams.idx").is_ok());
+        assert!(safe_join(&base(), "scip/occurrences.db").is_ok());
+        assert!(safe_join(&base(), "graph/petgraph.bin").is_ok());
+    }
+
+    #[test]
+    fn safe_join_rejects_parent_dir_component() {
+        let err = safe_join(&base(), "../../escape.txt").unwrap_err();
+        assert!(err.to_string().contains(".."), "error: {err}");
+
+        let err = safe_join(&base(), "../sibling/file.txt").unwrap_err();
+        assert!(err.to_string().contains(".."), "error: {err}");
+
+        let err = safe_join(&base(), "subdir/../../file.txt").unwrap_err();
+        assert!(err.to_string().contains(".."), "error: {err}");
+    }
+
+    #[test]
+    fn safe_join_rejects_absolute_paths() {
+        let err = safe_join(&base(), "/etc/passwd").unwrap_err();
+        assert!(err.to_string().contains("absolute"), "error: {err}");
+    }
+
+    #[test]
+    fn safe_join_rejects_empty_path() {
+        let err = safe_join(&base(), "").unwrap_err();
+        assert!(err.to_string().contains("empty"), "error: {err}");
+    }
+
+    #[test]
+    fn checksum_validation_rejects_unlisted_archive_entries() {
+        let mut entries = std::collections::HashMap::new();
+        entries.insert("checksums.txt".to_string(), Vec::new());
+        entries.insert("manifest.json".to_string(), b"{}".to_vec());
+        entries.insert("text/docs.idx".to_string(), b"unverified".to_vec());
+
+        let mut hasher = Sha256::new();
+        hasher.update(b"{}");
+        let mut expected = std::collections::HashMap::new();
+        expected.insert(
+            "manifest.json".to_string(),
+            format!("{:x}", hasher.finalize()),
+        );
+
+        let err = verify_archive_checksums(&entries, &expected).unwrap_err();
+        assert!(
+            err.to_string().contains("not listed in checksums.txt"),
+            "error: {err}"
+        );
+    }
+
+    #[test]
+    fn safe_join_result_is_under_base() {
+        let dest = safe_join(&base(), "text/docs.idx").unwrap();
+        assert!(dest.starts_with(&base()));
+    }
 }
