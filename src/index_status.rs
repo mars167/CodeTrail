@@ -203,6 +203,7 @@ const fn default_lsp_command(language: &ProjectLanguage) -> &'static str {
         ProjectLanguage::Rust => "rust-analyzer",
         ProjectLanguage::Java => "jdtls",
         ProjectLanguage::TypeScript => "typescript-language-server",
+        ProjectLanguage::Ruby => "ruby-lsp",
     }
 }
 
@@ -212,6 +213,7 @@ const fn lsp_env_key(language: &ProjectLanguage) -> &'static str {
         ProjectLanguage::Rust => "CODETRAIL_LSP_RUST",
         ProjectLanguage::Java => "CODETRAIL_LSP_JAVA",
         ProjectLanguage::TypeScript => "CODETRAIL_LSP_TYPESCRIPT",
+        ProjectLanguage::Ruby => "CODETRAIL_LSP_RUBY",
     }
 }
 

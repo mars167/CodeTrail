@@ -125,6 +125,12 @@ pub fn replay(workspace: &Workspace, name: &str, mode: &ReplaySnapshot) -> Resul
         "refs" => service.refs(required_str(query, "identifier")?, &opts)?,
         "defs" => service.defs(required_str(query, "identifier")?, &opts)?,
         "symbols" => service.symbols(required_str(query, "query")?, &opts)?,
+        "routes" => service.routes(
+            query.get("pattern").and_then(Value::as_str),
+            &string_array(query.get("framework")),
+            &string_array(query.get("method")),
+            &opts,
+        )?,
         "calls" => service.calls(required_str(query, "identifier")?, &opts)?,
         "callers" => service.callers(required_str(query, "identifier")?, &opts)?,
         other => return Err(anyhow!("saved query command is not replayable: {other}")),
@@ -356,6 +362,7 @@ fn is_replayable_command(command: &str) -> bool {
             | "refs"
             | "defs"
             | "symbols"
+            | "routes"
             | "calls"
             | "callers"
     )

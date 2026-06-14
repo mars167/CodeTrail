@@ -13,11 +13,12 @@ pub(in crate::output) fn supports_no_match(command: &str, canonical_command: &st
             | "refs"
             | "defs"
             | "symbols"
+            | "routes"
             | "calls"
             | "callers"
     ) || matches!(
         canonical_command,
-        "find" | "files" | "refs" | "defs" | "symbols" | "calls" | "callers"
+        "find" | "files" | "refs" | "defs" | "symbols" | "routes" | "calls" | "callers"
     )
 }
 

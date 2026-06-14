@@ -159,6 +159,13 @@ pub enum Command {
     Defs {
         identifier: String,
     },
+    Routes {
+        pattern: Option<String>,
+        #[arg(long)]
+        framework: Vec<String>,
+        #[arg(long)]
+        method: Vec<String>,
+    },
     Calls {
         identifier: String,
     },

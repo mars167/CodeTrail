@@ -143,11 +143,12 @@ pub fn list(
     let base = resolve_workspace_dir(workspace, rel_dir)?;
 
     let mut results = Vec::new();
+    let filters = ScopeFilters::compile(opts)?;
     if recursive {
-        collect_tree(workspace, opts, &base, 0, None, &mut results)?;
+        collect_tree(workspace, opts, &filters, &base, 0, None, &mut results)?;
     } else {
         for entry in browse_entries(workspace, opts, &base, Some(1))? {
-            if !path_matches_output_filters(workspace, &entry.path, opts) {
+            if !path_matches_output_filters(workspace, &entry.path, opts, &filters) {
                 continue;
             }
             let Ok(metadata) = fs::metadata(&entry.path) else {
@@ -179,9 +180,11 @@ pub fn tree(
     let rel_dir = dir.unwrap_or(".");
     let base = resolve_workspace_dir(workspace, rel_dir)?;
     let mut results = Vec::new();
+    let filters = ScopeFilters::compile(opts)?;
     collect_tree(
         workspace,
         opts,
+        &filters,
         &base,
         0,
         depth.map(usize::from),
@@ -499,6 +502,7 @@ pub fn line_range_for_node(
 fn collect_tree(
     workspace: &Workspace,
     opts: &ScanOptions,
+    filters: &ScopeFilters,
     base: &Path,
     _level: usize,
     max_depth: Option<usize>,
@@ -512,7 +516,7 @@ fn collect_tree(
         let Ok(metadata) = fs::metadata(&entry.path) else {
             continue;
         };
-        if path_matches_output_filters(workspace, &entry.path, opts) {
+        if path_matches_output_filters(workspace, &entry.path, opts, filters) {
             results.push(json!({
                 "path": workspace.rel_path(&entry.path),
                 "kind": if metadata.is_dir() { "directory" } else { "file" },
@@ -593,8 +597,21 @@ fn should_skip_browse_path(root: &Path, path: &Path, no_ignore: bool) -> bool {
     })
 }
 
-fn path_matches_output_filters(workspace: &Workspace, path: &Path, opts: &ScanOptions) -> bool {
-    matches_filters(&workspace.rel_path(path), &opts.include, &opts.exclude)
+fn path_matches_output_filters(
+    workspace: &Workspace,
+    path: &Path,
+    opts: &ScanOptions,
+    filters: &ScopeFilters,
+) -> bool {
+    let rel = workspace.rel_path(path);
+    if path.is_dir() {
+        return !opts.changed
+            && matches_dirs(&rel, &opts.dirs)
+            && matches_filters(&rel, &opts.include, &opts.exclude);
+    }
+    let language = language_for_path(path);
+    filters.matches(&rel, language, opts)
+        && (!opts.changed || workspace.changed.iter().any(|changed| changed.path == rel))
 }
 
 fn rel_path(root: &Path, path: &Path) -> String {
