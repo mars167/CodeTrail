@@ -130,3 +130,77 @@ fn mcp_find_can_query_selected_remote_snapshot_without_local_source() {
         .iter()
         .any(|caveat| { caveat["code"] == "remote_unverified" }));
 }
+
+#[test]
+fn mcp_find_remote_only_respects_dir_scope_without_local_source() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::create_dir_all(dir.path().join("docs")).unwrap();
+    fs::write(
+        dir.path().join("src/main.rs"),
+        "fn main() {\n    let marker = \"remote-needle\";\n}\n",
+    )
+    .unwrap();
+    fs::write(dir.path().join("docs/guide.md"), "remote-needle in docs\n").unwrap();
+
+    codetrail_json()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let archive_path = dir.path().join("remote.tar.gz");
+    codetrail_json()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "pack", "--output"])
+        .arg(&archive_path)
+        .assert()
+        .success();
+
+    codetrail_json()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "clean"])
+        .assert()
+        .success();
+
+    let unpack_output = codetrail_json()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "unpack"])
+        .arg(&archive_path)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let unpacked = parse_json(unpack_output);
+    let remote_snapshot = unpacked["results"][0]["remote_snapshot_key"]
+        .as_str()
+        .unwrap();
+
+    fs::remove_file(dir.path().join("src/main.rs")).unwrap();
+    fs::remove_file(dir.path().join("docs/guide.md")).unwrap();
+
+    let result = mcp_call(
+        dir.path(),
+        "codetrail_find",
+        json!({
+            "text": "remote-needle",
+            "dir": ["src"],
+            "remoteMode": "only",
+            "remoteSnapshot": remote_snapshot,
+            "allowBroad": true
+        }),
+    );
+
+    assert_eq!(result["results"].as_array().unwrap().len(), 1);
+    assert_eq!(result["results"][0]["path"], "src/main.rs");
+    assert!(result["caveats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|caveat| { caveat["code"] == "remote_only" }));
+}

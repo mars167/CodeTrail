@@ -9,16 +9,31 @@ use anyhow::{anyhow, Context, Result};
 
 use crate::workspace::FileRecord;
 
+const MAX_INDEX_DOCS: usize = 2_000_000;
+const MAX_POSTING_IDS: usize = 2_000_000;
+const MAX_STRING_BYTES: usize = 4096;
+const MAX_CONTENT_RECORDS: usize = MAX_INDEX_DOCS;
+const MAX_CONTENT_BYTES: usize = 10 * 1024 * 1024;
+const MAX_TOTAL_CONTENT_BYTES: usize = 256 * 1024 * 1024;
+
 const DOCS_MAGIC: &[u8; 8] = b"CSDOCS1\0";
 const GRAMS_MAGIC: &[u8; 8] = b"CSGRAM1\0";
 const CONTENT_MAGIC: &[u8; 8] = b"CSCONT1\0";
 
+#[derive(Debug)]
 pub struct ContentRecord {
     pub path: String,
     pub content: String,
 }
 
 pub fn write_docs(path: &Path, records: &[FileRecord]) -> Result<()> {
+    if records.len() > MAX_INDEX_DOCS {
+        return Err(anyhow!(
+            "docs index count {} exceeds maximum {}",
+            records.len(),
+            MAX_INDEX_DOCS
+        ));
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -73,6 +88,13 @@ pub fn write_grams(path: &Path, root: &Path, records: &[FileRecord]) -> Result<(
 }
 
 pub fn write_contents(path: &Path, root: &Path, records: &[FileRecord]) -> Result<()> {
+    if records.len() > MAX_CONTENT_RECORDS {
+        return Err(anyhow!(
+            "content index count {} exceeds maximum {}",
+            records.len(),
+            MAX_CONTENT_RECORDS
+        ));
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -80,9 +102,30 @@ pub fn write_contents(path: &Path, root: &Path, records: &[FileRecord]) -> Resul
         File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
     file.write_all(CONTENT_MAGIC)?;
     write_u32(&mut file, records.len() as u32)?;
+    let mut total_bytes = 0usize;
     for record in records {
-        let bytes = fs::read(root.join(&record.path))
-            .with_context(|| format!("failed to read {}", record.path))?;
+        let path = root.join(&record.path);
+        let metadata =
+            fs::metadata(&path).with_context(|| format!("failed to stat {}", record.path))?;
+        if metadata.len() as usize > MAX_CONTENT_BYTES {
+            return Err(anyhow!(
+                "content length {} for {} exceeds maximum {}",
+                metadata.len(),
+                record.path,
+                MAX_CONTENT_BYTES
+            ));
+        }
+        total_bytes = total_bytes
+            .checked_add(metadata.len() as usize)
+            .ok_or_else(|| anyhow!("content index total length overflows usize"))?;
+        if total_bytes > MAX_TOTAL_CONTENT_BYTES {
+            return Err(anyhow!(
+                "content index total length {} exceeds maximum {}",
+                total_bytes,
+                MAX_TOTAL_CONTENT_BYTES
+            ));
+        }
+        let bytes = fs::read(&path).with_context(|| format!("failed to read {}", record.path))?;
         write_string(&mut file, &record.path)?;
         write_u32(&mut file, bytes.len() as u32)?;
         file.write_all(&bytes)?;
@@ -95,6 +138,13 @@ pub fn read_docs(path: &Path) -> Result<Vec<FileRecord>> {
         File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     read_magic(&mut file, DOCS_MAGIC)?;
     let count = read_u32(&mut file)? as usize;
+    if count > MAX_INDEX_DOCS {
+        return Err(anyhow!(
+            "docs index count {} exceeds maximum {}",
+            count,
+            MAX_INDEX_DOCS
+        ));
+    }
     let mut records = Vec::with_capacity(count);
     for _ in 0..count {
         let path = read_string(&mut file)?;
@@ -119,10 +169,35 @@ pub fn read_contents(path: &Path) -> Result<Vec<ContentRecord>> {
         File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     read_magic(&mut file, CONTENT_MAGIC)?;
     let count = read_u32(&mut file)? as usize;
+    if count > MAX_CONTENT_RECORDS {
+        return Err(anyhow!(
+            "content index count {} exceeds maximum {}",
+            count,
+            MAX_CONTENT_RECORDS
+        ));
+    }
     let mut records = Vec::with_capacity(count);
+    let mut total_bytes = 0usize;
     for _ in 0..count {
         let path = read_string(&mut file)?;
         let len = read_u32(&mut file)? as usize;
+        if len > MAX_CONTENT_BYTES {
+            return Err(anyhow!(
+                "content length {} exceeds maximum {}",
+                len,
+                MAX_CONTENT_BYTES
+            ));
+        }
+        total_bytes = total_bytes
+            .checked_add(len)
+            .ok_or_else(|| anyhow!("content index total length overflows usize"))?;
+        if total_bytes > MAX_TOTAL_CONTENT_BYTES {
+            return Err(anyhow!(
+                "content index total length {} exceeds maximum {}",
+                total_bytes,
+                MAX_TOTAL_CONTENT_BYTES
+            ));
+        }
         let mut bytes = vec![0u8; len];
         file.read_exact(&mut bytes)?;
         let content = String::from_utf8(bytes)?;
@@ -179,6 +254,13 @@ fn read_selected_grams(
         let mut gram = [0u8; 3];
         file.read_exact(&mut gram)?;
         let ids_len = read_u32(&mut file)? as usize;
+        if ids_len > MAX_POSTING_IDS {
+            return Err(anyhow!(
+                "gram posting count {} exceeds maximum {}",
+                ids_len,
+                MAX_POSTING_IDS
+            ));
+        }
         if wanted.contains(&gram) {
             let mut ids = Vec::with_capacity(ids_len);
             for _ in 0..ids_len {
@@ -210,6 +292,13 @@ fn read_magic(file: &mut File, expected: &[u8; 8]) -> Result<()> {
 
 fn read_string(file: &mut File) -> Result<String> {
     let len = read_u32(file)? as usize;
+    if len > MAX_STRING_BYTES {
+        return Err(anyhow!(
+            "string length {} exceeds maximum {}",
+            len,
+            MAX_STRING_BYTES
+        ));
+    }
     let mut bytes = vec![0u8; len];
     file.read_exact(&mut bytes)?;
     Ok(String::from_utf8(bytes)?)
@@ -256,7 +345,7 @@ fn write_u128(file: &mut File, value: u128) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, fs::File, io::Write};
 
     use tempfile::tempdir;
 
@@ -300,5 +389,98 @@ mod tests {
             .unwrap();
         assert!(ids.contains(&0));
         assert!(!ids.contains(&1));
+    }
+
+    #[test]
+    fn contents_round_trip() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "remote body\n").unwrap();
+        let records = vec![FileRecord {
+            path: "a.txt".to_string(),
+            language: "text".to_string(),
+            size: 12,
+            mtime_ms: 1,
+            mode: 0,
+            hash: "blake3:a".to_string(),
+        }];
+
+        let content_path = dir.path().join("content.idx");
+        write_contents(&content_path, dir.path(), &records).unwrap();
+
+        let contents = read_contents(&content_path).unwrap();
+        assert_eq!(contents.len(), 1);
+        assert_eq!(contents[0].path, "a.txt");
+        assert_eq!(contents[0].content, "remote body\n");
+    }
+
+    #[test]
+    fn read_docs_rejects_excessive_count() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("docs.idx");
+        let mut file = File::create(&path).unwrap();
+        file.write_all(DOCS_MAGIC).unwrap();
+        write_u32(&mut file, (MAX_INDEX_DOCS + 1) as u32).unwrap();
+
+        let err = read_docs(&path).unwrap_err();
+        assert!(err.to_string().contains("docs index count"), "error: {err}");
+    }
+
+    #[test]
+    fn read_docs_rejects_excessive_string_length() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("docs.idx");
+        let mut file = File::create(&path).unwrap();
+        file.write_all(DOCS_MAGIC).unwrap();
+        write_u32(&mut file, 1).unwrap();
+        write_u32(&mut file, (MAX_STRING_BYTES + 1) as u32).unwrap();
+
+        let err = read_docs(&path).unwrap_err();
+        assert!(err.to_string().contains("string length"), "error: {err}");
+    }
+
+    #[test]
+    fn read_selected_grams_rejects_excessive_posting_count() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("grams.idx");
+        let mut file = File::create(&path).unwrap();
+        file.write_all(GRAMS_MAGIC).unwrap();
+        write_u32(&mut file, 1).unwrap();
+        file.write_all(b"abc").unwrap();
+        write_u32(&mut file, (MAX_POSTING_IDS + 1) as u32).unwrap();
+
+        let err = candidate_ids(&path, "abc", "literal").unwrap_err();
+        assert!(
+            err.to_string().contains("gram posting count"),
+            "error: {err}"
+        );
+    }
+
+    #[test]
+    fn read_contents_rejects_excessive_count() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("content.idx");
+        let mut file = File::create(&path).unwrap();
+        file.write_all(CONTENT_MAGIC).unwrap();
+        write_u32(&mut file, (MAX_CONTENT_RECORDS + 1) as u32).unwrap();
+
+        let err = read_contents(&path).unwrap_err();
+        assert!(
+            err.to_string().contains("content index count"),
+            "error: {err}"
+        );
+    }
+
+    #[test]
+    fn read_contents_rejects_excessive_content_length() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("content.idx");
+        let mut file = File::create(&path).unwrap();
+        file.write_all(CONTENT_MAGIC).unwrap();
+        write_u32(&mut file, 1).unwrap();
+        write_string(&mut file, "huge.txt").unwrap();
+        write_u32(&mut file, (MAX_CONTENT_BYTES + 1) as u32).unwrap();
+
+        let err = read_contents(&path).unwrap_err();
+        assert!(err.to_string().contains("content length"), "error: {err}");
     }
 }

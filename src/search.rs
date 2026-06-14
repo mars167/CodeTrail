@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     index,
-    search_pattern::{PatternMatcher, PatternTarget, SearchPatternMode},
+    search_pattern::{compile_any, PatternMatcher, PatternTarget, SearchPatternMode},
     workspace::{
         language_for_path, matches_filters, matches_lang, FileCatalogRecord, FileRecord,
         RemoteMode, ScanOptions, Workspace,
@@ -1250,7 +1250,7 @@ fn candidate_file_catalog(
     workspace: &Workspace,
     opts: &ScanOptions,
 ) -> Result<CandidateFileCatalog> {
-    if !opts.changed && !opts.uses_new_scope() {
+    if indexed_candidates_allowed(opts)? {
         if let Some(indexed) = index::indexed_file_records(workspace, opts)? {
             let indexed_source = indexed_candidate_source(&indexed.index);
             let mut records = filter_file_entries(
@@ -1260,7 +1260,7 @@ fn candidate_file_catalog(
                     .map(|record| FileEntry::indexed(record, indexed_source))
                     .collect(),
                 opts,
-            );
+            )?;
             if !indexed.overlay_paths.is_empty() || !indexed.missing_paths.is_empty() {
                 records.extend(live_file_overlay(
                     workspace,
@@ -1295,27 +1295,37 @@ fn candidate_text_files(
     pattern: &str,
     mode: SearchPatternMode,
 ) -> Result<CandidateFiles> {
-    if !opts.changed && !opts.uses_new_scope() {
+    if indexed_candidates_allowed(opts)? {
         if let Some(indexed) = index::indexed_text_records(workspace, opts, pattern, mode.as_str())?
         {
             let indexed_source = indexed_candidate_source(&indexed.index);
             let remote_contents = remote_content_map(&indexed.index)?;
-            if remote_contents.is_none() && remote_content_required(opts, &indexed.index) {
+            let remote_required = remote_content_required(opts, &indexed.index);
+            if remote_contents.is_none() && remote_required {
                 return Err(anyhow!(
                     "remote_snapshot_unavailable: selected remote text snapshot has no content segment"
                 ));
             }
-            let mut records = filter_records(indexed.records, opts)
+            let mut records = filter_records(indexed.records, opts)?
                 .into_iter()
                 .map(|record| {
-                    let body = remote_contents
-                        .as_ref()
-                        .and_then(|contents| contents.get(&record.path).cloned())
-                        .map(TextBody::Snapshot)
-                        .unwrap_or(TextBody::Local);
-                    TextFileEntry::indexed_with_body(record, indexed_source, body)
+                    let body = if let Some(contents) = remote_contents.as_ref() {
+                        match contents.get(&record.path) {
+                            Some(content) => TextBody::Snapshot(content.clone()),
+                            None if remote_required => {
+                                return Err(anyhow!(
+                                    "remote_snapshot_unavailable: selected remote text snapshot is missing content for {}",
+                                    record.path
+                                ));
+                            }
+                            None => TextBody::Local,
+                        }
+                    } else {
+                        TextBody::Local
+                    };
+                    Ok(TextFileEntry::indexed_with_body(record, indexed_source, body))
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>>>()?;
             if !indexed.overlay_paths.is_empty() || !indexed.missing_paths.is_empty() {
                 records.extend(live_text_overlay(
                     workspace,
@@ -1346,7 +1356,20 @@ fn candidate_text_files(
 
 fn remote_content_required(opts: &ScanOptions, index: &Value) -> bool {
     index.get("source").and_then(Value::as_str) == Some("text_index:remote")
-        && (opts.remote_mode == RemoteMode::Only || opts.remote_snapshot.is_some())
+        && explicit_remote_requested(opts)
+}
+
+fn indexed_candidates_allowed(opts: &ScanOptions) -> Result<bool> {
+    if explicit_remote_requested(opts) && opts.changed {
+        return Err(anyhow!(
+            "unsupported_remote_scope: changed scope is not supported with explicit remote snapshots"
+        ));
+    }
+    Ok(!opts.changed && (!opts.uses_new_scope() || explicit_remote_requested(opts)))
+}
+
+fn explicit_remote_requested(opts: &ScanOptions) -> bool {
+    opts.remote_mode == RemoteMode::Only || opts.remote_snapshot.is_some()
 }
 
 fn remote_content_map(index: &Value) -> Result<Option<BTreeMap<String, String>>> {
@@ -1411,40 +1434,71 @@ fn live_text_overlay(
         .collect())
 }
 
-fn filter_records(records: Vec<FileRecord>, opts: &ScanOptions) -> Vec<FileRecord> {
-    records
-        .into_iter()
-        .filter(|record| {
-            !opts
-                .exclude
-                .iter()
-                .any(|pattern| record.path.contains(pattern))
-                && (opts.include.is_empty()
-                    || opts
-                        .include
-                        .iter()
-                        .any(|pattern| record.path.contains(pattern)))
-                && matches_lang(&record.language, &opts.lang)
-        })
-        .collect()
+struct ScopeFilters {
+    extensions: Vec<String>,
+    file_matchers: Vec<PatternMatcher>,
 }
 
-fn filter_file_entries(records: Vec<FileEntry>, opts: &ScanOptions) -> Vec<FileEntry> {
-    records
-        .into_iter()
-        .filter(|record| {
-            !opts
-                .exclude
-                .iter()
-                .any(|pattern| record.path.contains(pattern))
-                && (opts.include.is_empty()
-                    || opts
-                        .include
-                        .iter()
-                        .any(|pattern| record.path.contains(pattern)))
-                && matches_lang(&record.language, &opts.lang)
+impl ScopeFilters {
+    fn compile(opts: &ScanOptions) -> Result<Self> {
+        Ok(Self {
+            extensions: opts.normalized_extensions(),
+            file_matchers: compile_any(
+                &opts.file_patterns,
+                opts.file_mode,
+                opts.case_sensitive,
+                PatternTarget::Path,
+            )?,
         })
-        .collect()
+    }
+
+    fn matches(&self, path: &str, language: &str, opts: &ScanOptions) -> bool {
+        matches_dirs(path, &opts.dirs)
+            && matches_extensions(path, &self.extensions)
+            && matches_path_patterns(path, &self.file_matchers)
+            && matches_filters(path, &opts.include, &opts.exclude)
+            && matches_lang(language, &opts.lang)
+    }
+}
+
+fn matches_dirs(path: &str, dirs: &[String]) -> bool {
+    dirs.is_empty()
+        || dirs.iter().any(|dir| {
+            let dir = dir.trim().trim_start_matches('/').trim_end_matches('/');
+            dir.is_empty() || dir == "." || path == dir || path.starts_with(&format!("{dir}/"))
+        })
+}
+
+fn matches_extensions(path: &str, extensions: &[String]) -> bool {
+    if extensions.is_empty() {
+        return true;
+    }
+    let extension = Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    extensions.iter().any(|expected| expected == &extension)
+}
+
+fn matches_path_patterns(path: &str, matchers: &[PatternMatcher]) -> bool {
+    matchers.is_empty() || matchers.iter().any(|matcher| matcher.is_match(path))
+}
+
+fn filter_records(records: Vec<FileRecord>, opts: &ScanOptions) -> Result<Vec<FileRecord>> {
+    let filters = ScopeFilters::compile(opts)?;
+    Ok(records
+        .into_iter()
+        .filter(|record| filters.matches(&record.path, &record.language, opts))
+        .collect())
+}
+
+fn filter_file_entries(records: Vec<FileEntry>, opts: &ScanOptions) -> Result<Vec<FileEntry>> {
+    let filters = ScopeFilters::compile(opts)?;
+    Ok(records
+        .into_iter()
+        .filter(|record| filters.matches(&record.path, &record.language, opts))
+        .collect())
 }
 
 fn preview_line(content: &str, byte: usize, max_chars: usize) -> (String, bool) {
