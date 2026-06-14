@@ -90,7 +90,106 @@ fn render_index_status_result(result: &Value, out: &mut dyn Write) -> io::Result
     if let Some(reason) = result.get("reason").and_then(Value::as_str) {
         writeln!(out, "Reason: {reason}")?;
     }
+    render_indexed_languages(result, out)?;
+    render_semantic_status(result, out)?;
     Ok(())
+}
+
+fn render_indexed_languages(result: &Value, out: &mut dyn Write) -> io::Result<()> {
+    let Some(languages) = result.get("indexedLanguages").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    let rendered = language_counts(languages, "fileCount");
+    if !rendered.is_empty() {
+        writeln!(out, "Indexed languages: {}", rendered.join(", "))?;
+    }
+    Ok(())
+}
+
+fn render_semantic_status(result: &Value, out: &mut dyn Write) -> io::Result<()> {
+    let Some(status) = result.get("semanticStatus") else {
+        return Ok(());
+    };
+    if let Some(scip_index) = status.get("scipIndex") {
+        let state = scip_index
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let enabled = scip_index
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let usable = scip_index
+            .get("usable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        writeln!(
+            out,
+            "SCIP index: {state} (enabled: {enabled}, usable: {usable})"
+        )?;
+        let languages = scip_index
+            .get("languages")
+            .and_then(Value::as_array)
+            .map(|languages| language_counts(languages, "symbolCount"))
+            .unwrap_or_default();
+        if !languages.is_empty() {
+            writeln!(out, "SCIP languages: {}", languages.join(", "))?;
+        }
+    }
+
+    let Some(servers) = status.get("languageServers").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    if servers.is_empty() {
+        writeln!(out, "Language servers: none required by discovered roots")?;
+        return Ok(());
+    }
+    writeln!(out, "Language servers:")?;
+    for server in servers {
+        let language = server
+            .get("language")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let status = server
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let default_command = server
+            .get("defaultCommand")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let missing = server
+            .get("missingDependencies")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        if missing.is_empty() {
+            writeln!(out, "  {language}: {status} ({default_command})")?;
+        } else {
+            writeln!(
+                out,
+                "  {language}: {status} ({default_command}; missing: {missing})"
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn language_counts(languages: &[Value], count_field: &str) -> Vec<String> {
+    languages
+        .iter()
+        .filter_map(|language| {
+            let name = language.get("language").and_then(Value::as_str)?;
+            let count = language.get(count_field).and_then(Value::as_u64)?;
+            Some(format!("{name}={count}"))
+        })
+        .collect()
 }
 
 fn render_index_build_result(result: &Value, out: &mut dyn Write) -> io::Result<()> {

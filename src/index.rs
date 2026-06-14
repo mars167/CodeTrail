@@ -15,7 +15,9 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    graph, lancedb_store, output,
+    graph,
+    index_status::{indexed_languages, semantic_status},
+    lancedb_store, output,
     scan_diagnostics::SkippedFile,
     snapshot_store, text_index,
     workspace::{
@@ -336,6 +338,8 @@ pub fn status(workspace: &Workspace) -> Result<Value> {
                         "textPath": text_dir(workspace, &snapshot.snapshot_key),
                         "manifest": manifest,
                         "freshness": freshness,
+                        "indexedLanguages": indexed_languages(&records),
+                        "semanticStatus": semantic_status(workspace, &records, &semantic_manifests),
                         "semanticManifests": semantic_manifests,
                     }));
                 }
@@ -349,7 +353,10 @@ pub fn status(workspace: &Workspace) -> Result<Value> {
             "exists": false,
             "fresh": false,
             "path": root,
-            "reason": "index_missing"
+            "reason": "index_missing",
+            "indexedLanguages": [],
+            "semanticStatus": semantic_status(workspace, &[], &semantic_manifests),
+            "semanticManifests": semantic_manifests,
         });
         if !remote.as_array().is_some_and(|a| a.is_empty()) {
             result["remote"] = remote;
@@ -367,6 +374,8 @@ pub fn status(workspace: &Workspace) -> Result<Value> {
     };
     let fresh = freshness_is_clean(&freshness);
     let remote = remote_status(workspace)?;
+    let legacy_records = snapshot_store::read_files_parquet(&snapshot_path.join("files.parquet"))
+        .unwrap_or_default();
     let mut result = json!({
         "exists": true,
         "fresh": fresh,
@@ -375,6 +384,8 @@ pub fn status(workspace: &Workspace) -> Result<Value> {
         "textPath": text_path,
         "manifest": manifest,
         "freshness": freshness,
+        "indexedLanguages": indexed_languages(&legacy_records),
+        "semanticStatus": semantic_status(workspace, &legacy_records, &semantic_manifests),
         "semanticManifests": semantic_manifests,
     });
     if !remote.as_array().is_some_and(|a| a.is_empty()) {

@@ -8,6 +8,7 @@ pub mod config_facts;
 pub mod diff_proof;
 pub mod generation_manifest;
 pub mod index;
+mod index_status;
 pub mod java_provider;
 pub mod lancedb_store;
 pub mod lsp;
