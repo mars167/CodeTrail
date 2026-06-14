@@ -207,7 +207,11 @@ MCP tool result 的 `content[0].text` 使用同一 public JSON 投影。
 - `index build` 默认在文本索引之后 best-effort 运行 LSP 语义阶段，生成 `.codetrail/scip/<snapshot-key>/occurrences.db` 与 `generation.json`。
 - `--no-semantic` 关闭 LSP/SCIP 生成；`index build --staged` 不运行语义阶段。
 - build 结果的 `index.semantic` 摘要包含 `attempted`、`skipped`、`skipReason` 与各语言 `state`/`partialReasons`。
-- `index status` 在存在时返回 `semanticManifests` 数组，展示 per-root 生成状态。
+- `index status` 返回 `indexedLanguages` 和 `semanticStatus`。`indexedLanguages`
+  展示主索引/file catalog 中包含的语言；`semanticStatus.scipIndex` 展示
+  SCIP occurrence DB 是否生成、可用、fresh 以及包含的 SCIP 语言；`semanticStatus.languageServers`
+  展示当前项目 root 所需 LSP provider 是否可解析，缺失时给出 `missingDependencies`。
+  旧的 `semanticManifests` 数组保留，用于展示 per-root 生成状态。
 - LSP 缺失或超时时产生 `semantic_provider_missing` / `semantic_provider_partial` caveat；`defs`/`refs`/`symbols` 继续走 parser/text fallback。
 
 ## Index Skipped Log

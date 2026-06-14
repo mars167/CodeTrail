@@ -2356,6 +2356,83 @@ fn index_status_metadata_does_not_emit_read_next_actions() {
 }
 
 #[test]
+fn index_status_reports_semantic_status_languages_and_missing_servers() {
+    let dir = tempdir().unwrap();
+    let path_dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/example")).unwrap();
+    fs::write(dir.path().join("pom.xml"), "<project />\n").unwrap();
+    fs::write(
+        dir.path().join("src/main/java/example/App.java"),
+        "package example;\npublic class App {}\n",
+    )
+    .unwrap();
+
+    raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .env("PATH", path_dir.path())
+        .env_remove("CODETRAIL_LSP_JAVA")
+        .args(["index", "build", "--no-semantic"])
+        .assert()
+        .success();
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--output")
+        .arg("json")
+        .env("PATH", path_dir.path())
+        .env_remove("CODETRAIL_LSP_JAVA")
+        .args(["index", "status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let status = &json["results"][0];
+
+    assert!(status["indexedLanguages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|language| language["language"] == "java" && language["fileCount"] == 1));
+    assert_eq!(status["semanticStatus"]["scipIndex"]["enabled"], false);
+    assert_eq!(status["semanticStatus"]["scipIndex"]["usable"], false);
+    assert_eq!(
+        status["semanticStatus"]["scipIndex"]["state"],
+        "not_generated"
+    );
+    let java_server = status["semanticStatus"]["languageServers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|server| server["language"] == "java")
+        .expect("java server status");
+    assert_eq!(java_server["status"], "missing");
+    assert_eq!(java_server["missingDependencies"][0], "jdtls");
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--output")
+        .arg("text")
+        .env("PATH", path_dir.path())
+        .env_remove("CODETRAIL_LSP_JAVA")
+        .args(["index", "status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+    assert!(text.contains("Indexed languages:"));
+    assert!(text.contains("java=1"));
+    assert!(text.contains("SCIP index: not_generated (enabled: false, usable: false)"));
+    assert!(text.contains("java: missing (jdtls; missing: jdtls)"));
+}
+
+#[test]
 fn error_envelopes_keep_stable_output_fields() {
     let dir = tempdir().unwrap();
 
