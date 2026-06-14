@@ -285,6 +285,9 @@ pub fn find(
         let content = match file.body {
             TextBody::Snapshot(content) => content,
             TextBody::Local => {
+                if file.record.size > crate::workspace::MAX_FILE_BYTES {
+                    continue;
+                }
                 let path = workspace.abs_path(&file.record.path);
                 match fs::read_to_string(&path) {
                     Ok(content) => content,

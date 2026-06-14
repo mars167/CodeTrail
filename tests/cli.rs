@@ -5,6 +5,169 @@ use serde_json::json;
 use serde_json::Value;
 use tempfile::tempdir;
 
+// ---------------------------------------------------------------------------
+// Helpers shared by security regression tests
+// ---------------------------------------------------------------------------
+
+/// Build a minimal valid pack manifest JSON blob.
+fn pack_manifest_bytes() -> Vec<u8> {
+    serde_json::to_vec_pretty(&json!({
+        "schemaVersion": 1u32,
+        "snapshot_id": "test:abc123",
+        "snapshotKey": "test_abc123",
+        "timestamp": 0u64,
+        "source": "packed_remote",
+        "toolVersion": "0.0.0",
+        "originalRepoRoot": "/tmp/test-repo",
+        "head": null,
+        "dirty": false,
+        "fileCount": 0u32,
+        "scanOptions": {
+            "include": [],
+            "exclude": [],
+            "hidden": false,
+            "noIgnore": false,
+            "lang": [],
+            "changed": false
+        }
+    }))
+    .unwrap()
+}
+
+/// Write a raw (POSIX ustar) tar header block without path validation.
+///
+/// This bypasses the `tar` crate's writer-side safety checks so that tests can
+/// craft archives containing `..` segments or absolute paths.
+fn raw_tar_header(path: &str, content_len: usize) -> [u8; 512] {
+    let mut header = [0u8; 512];
+
+    // name field: bytes 0-99  (truncated, null-terminated by the zero array)
+    let path_bytes = path.as_bytes();
+    let copy_len = path_bytes.len().min(99);
+    header[..copy_len].copy_from_slice(&path_bytes[..copy_len]);
+
+    // mode: "0000644\0"
+    header[100..108].copy_from_slice(b"0000644\0");
+    // uid / gid
+    header[108..116].copy_from_slice(b"0000000\0");
+    header[116..124].copy_from_slice(b"0000000\0");
+    // size (11 octal digits + null)
+    let size_str = format!("{:011o}\0", content_len);
+    header[124..136].copy_from_slice(size_str.as_bytes());
+    // mtime
+    header[136..148].copy_from_slice(b"00000000000\0");
+    // checksum placeholder — spaces
+    header[148..156].copy_from_slice(b"        ");
+    // typeflag: regular file
+    header[156] = b'0';
+    // ustar magic + version
+    header[257..263].copy_from_slice(b"ustar\0");
+    header[263..265].copy_from_slice(b"00");
+
+    // Compute and write checksum
+    let sum: u32 = header.iter().map(|&b| b as u32).sum();
+    let cksum = format!("{:06o}\0 ", sum);
+    header[148..156].copy_from_slice(cksum.as_bytes());
+
+    header
+}
+
+/// Build a `.tar.gz` archive whose paths are written as raw bytes,
+/// bypassing the `tar` crate's writer-side path validation.
+///
+/// `extra_entries` is `(path_in_tar, content)`.  Each entry is also
+/// added to `checksums.txt` so that the `unpack()` checksum validation
+/// passes — letting the path-safety guard trigger instead.
+fn build_raw_tar_gz(extra_entries: &[(&str, &[u8])]) -> Vec<u8> {
+    use flate2::{write::GzEncoder, Compression};
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+
+    let manifest = pack_manifest_bytes();
+
+    let mut checksums = String::new();
+    let mut manifest_hasher = Sha256::new();
+    manifest_hasher.update(&manifest);
+    checksums.push_str(&format!(
+        "{:x}  manifest.json\n",
+        manifest_hasher.finalize()
+    ));
+    for (path, content) in extra_entries {
+        let mut hasher = Sha256::new();
+        hasher.update(content);
+        let hash = format!("{:x}", hasher.finalize());
+        checksums.push_str(&format!("{hash}  {path}\n"));
+    }
+
+    // Assemble raw tar bytes
+    let mut tar_bytes = Vec::new();
+
+    let mut write_entry = |path: &str, data: &[u8]| {
+        tar_bytes.extend_from_slice(&raw_tar_header(path, data.len()));
+        tar_bytes.extend_from_slice(data);
+        let pad = (512 - (data.len() % 512)) % 512;
+        tar_bytes.extend(std::iter::repeat(0u8).take(pad));
+    };
+
+    write_entry("manifest.json", &manifest);
+    for (path, content) in extra_entries {
+        write_entry(path, content);
+    }
+    write_entry("checksums.txt", checksums.as_bytes());
+
+    // Two zero blocks = end-of-archive
+    tar_bytes.extend(std::iter::repeat(0u8).take(1024));
+
+    // Gzip compress
+    let mut gz = Vec::new();
+    {
+        let mut enc = GzEncoder::new(&mut gz, Compression::default());
+        enc.write_all(&tar_bytes).unwrap();
+        enc.finish().unwrap();
+    }
+    gz
+}
+
+/// Build a safe `.tar.gz` archive using the `tar` crate's validated writer.
+/// Suitable for tests that only need well-formed paths (e.g. entry-count limits).
+fn build_safe_tar_gz(extra_entries: &[(&str, &[u8])]) -> Vec<u8> {
+    use flate2::{write::GzEncoder, Compression};
+    use sha2::{Digest, Sha256};
+
+    let manifest = pack_manifest_bytes();
+
+    let mut checksums = String::new();
+    for (path, content) in extra_entries {
+        let mut hasher = Sha256::new();
+        hasher.update(content);
+        let hash = format!("{:x}", hasher.finalize());
+        checksums.push_str(&format!("{hash}  {path}\n"));
+    }
+
+    let mut archive_data = Vec::new();
+    let encoder = GzEncoder::new(&mut archive_data, Compression::default());
+    let mut tar = tar::Builder::new(encoder);
+
+    let append = |tar: &mut tar::Builder<_>, name: &str, data: &[u8]| {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_path(name).expect("set_path");
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append(&header, data).expect("append");
+    };
+
+    append(&mut tar, "manifest.json", &manifest);
+    for (path, content) in extra_entries {
+        append(&mut tar, path, content);
+    }
+    append(&mut tar, "checksums.txt", checksums.as_bytes());
+
+    let enc = tar.into_inner().unwrap();
+    enc.finish().unwrap();
+    archive_data
+}
+
 fn codetrail() -> Command {
     let mut command = raw_codetrail();
     command
@@ -5205,5 +5368,113 @@ fn legacy_parquet_remote_snapshot_is_unverified_without_error() {
     assert_eq!(
         files_json["results"][0]["sourceReason"],
         "indexed_unverified"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Security regression tests – issue #164
+// ---------------------------------------------------------------------------
+
+#[test]
+fn index_unpack_rejects_dotdot_path_traversal() {
+    let dir = tempdir().unwrap();
+
+    let archive_data = build_raw_tar_gz(&[("../../escape-repo.txt", b"pwned")]);
+    let archive_path = dir.path().join("malicious.tar.gz");
+    fs::write(&archive_path, &archive_data).unwrap();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "unpack"])
+        .arg(&archive_path)
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let msg = json["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("..") || msg.contains("escape") || msg.contains("traversal"),
+        "expected path-traversal error, got: {msg}"
+    );
+
+    // Confirm no file was written outside the temp dir
+    assert!(
+        !dir.path().join("escape-repo.txt").exists(),
+        "traversal file must not have been created"
+    );
+    assert!(
+        !dir.path()
+            .parent()
+            .unwrap()
+            .join("escape-repo.txt")
+            .exists(),
+        "traversal file must not have been created in parent"
+    );
+}
+
+#[test]
+fn index_unpack_rejects_absolute_path_in_archive() {
+    let dir = tempdir().unwrap();
+
+    // absolute path: /tmp/injected.txt — written via raw tar bytes to bypass
+    // the tar crate's writer-side path safety check
+    let archive_data = build_raw_tar_gz(&[("/tmp/injected.txt", b"injected")]);
+    let archive_path = dir.path().join("abs-path.tar.gz");
+    fs::write(&archive_path, &archive_data).unwrap();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "unpack"])
+        .arg(&archive_path)
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let msg = json["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("absolute") || msg.contains("injected") || !msg.is_empty(),
+        "expected absolute-path rejection, got: {msg}"
+    );
+}
+
+#[test]
+fn index_unpack_rejects_too_many_entries() {
+    let dir = tempdir().unwrap();
+
+    // Craft an archive with 1001 entries (> MAX_ARCHIVE_ENTRIES = 1000)
+    let content = b"x";
+    let entries: Vec<(String, &[u8])> = (0..1001)
+        .map(|i| (format!("file_{i:04}.bin"), content as &[u8]))
+        .collect();
+    let entry_refs: Vec<(&str, &[u8])> = entries.iter().map(|(p, c)| (p.as_str(), *c)).collect();
+
+    let archive_data = build_safe_tar_gz(&entry_refs);
+    let archive_path = dir.path().join("too-many.tar.gz");
+    fs::write(&archive_path, &archive_data).unwrap();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "unpack"])
+        .arg(&archive_path)
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let msg = json["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("1000") || msg.contains("entries") || msg.contains("more than"),
+        "expected entry-count error, got: {msg}"
     );
 }

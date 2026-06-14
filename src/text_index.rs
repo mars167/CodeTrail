@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 
-use crate::workspace::FileRecord;
+use crate::workspace::{FileRecord, MAX_FILE_BYTES};
 
 const MAX_INDEX_DOCS: usize = 2_000_000;
 const MAX_POSTING_IDS: usize = 2_000_000;
@@ -57,6 +57,9 @@ pub fn write_grams(path: &Path, root: &Path, records: &[FileRecord]) -> Result<(
     }
     let mut gram_index: BTreeMap<[u8; 3], Vec<u32>> = BTreeMap::new();
     for (doc_id, record) in records.iter().enumerate() {
+        if record.size > MAX_FILE_BYTES {
+            continue;
+        }
         let bytes = match fs::read(root.join(&record.path)) {
             Ok(bytes) => bytes,
             Err(_) => continue,
