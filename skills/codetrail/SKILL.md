@@ -37,20 +37,48 @@ Use `--path <dir>` when searching from outside the repository root or when the u
 
 ## Core Workflow
 
-1. Start with the narrowest command that can answer the question:
-   - `codetrail find <literal>`
-   - `codetrail grep <regex>`
-   - `codetrail files <substring>`
-   - `codetrail glob '<pattern>'`
-   - `codetrail defs|refs|symbols <name>`
+Use an index-first workflow for repository investigations. CodeTrail's design
+is to use indexed navigation evidence to shrink the search space, then use
+`read` as the verification surface. Do not let a multi-step investigation
+degrade into broad `grep` plus repeated `read` unless the index is missing,
+stale, unsupported for the language, or the task is explicitly literal-text
+or path-only.
+
+1. For multi-step investigations, check freshness and semantic readiness first:
+   - `codetrail --output json status`
+   - `codetrail --output json index status`
+2. Extract candidate names from the task: symbols, types, functions, methods,
+   routes, config keys, file stems, or domain terms.
+3. Start with the narrowest indexed/navigation command that can answer the
+   question:
+   - `codetrail symbols <name>`
+   - `codetrail defs <name>`
+   - `codetrail refs <name>`
+   - `codetrail routes <pattern>`
    - `codetrail calls <caller-name>`
    - `codetrail callers <callee-name>`
-2. Inspect `reliability`, `index`, `warnings`, `suggestedReads`, and `nextActions`.
+4. Use path commands to scope navigation, not as a replacement for it:
+   - `codetrail files <substring>`
+   - `codetrail glob '<pattern>'`
+   - `codetrail list <dir>`
+   - `codetrail tree <dir>`
+5. Use `find` and `grep` as fallbacks or for literal-text questions:
+   - `codetrail find <literal>`
+   - `codetrail grep <regex>`
+   Record why a content-search fallback was needed.
+6. Inspect `reliability`, `index`, `warnings`, `suggestedReads`, and `nextActions`.
    - Treat `severity=info, category=capability` as an expected capability-level note, not a risk warning.
    - Treat `severity=warning, category=risk` and `severity=error, category=error` as requiring narrowing, verification, or remediation.
-3. Before editing or making a strong claim, verify key ranges with `codetrail read <path[:start-end]>`.
-4. Treat `calls` and `callers` as `inferred_candidate`; inspect the returned ranges before relying on them.
-5. Treat `remote_unverified` as a lead only; verify with local `read`.
+7. Before editing or making a strong claim, verify key ranges with `codetrail read <path[:start-end]>`.
+8. Treat `calls` and `callers` as `inferred_candidate`; inspect the returned ranges before relying on them.
+9. Treat `remote_unverified` as a lead only; verify with local `read`.
+
+For architecture, data-model, refactor, debugging, and review tasks, make at
+least two semantic/navigation attempts before the first content search when
+candidate names are available. Good default pairs are `symbols` + `defs`,
+`defs` + `refs`, `routes` + `refs`, or `defs` + `callers`. If no candidate
+names are known, use a narrow path command to discover names, then return to
+semantic/navigation commands.
 
 ## Command Input Quick Reference
 
@@ -117,6 +145,8 @@ return only:
 - a short answer-oriented summary;
 - path and line-range evidence;
 - caveats about missing, ambiguous, stale, or inferred results;
+- whether the semantic index was checked and which indexed/navigation commands
+  were tried before text search;
 - a concise query trace.
 
 Every evidence location returned by the subagent must include a line number or

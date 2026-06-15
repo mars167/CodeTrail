@@ -39,6 +39,12 @@ The template registers the `codetrail-evidence` subagent. It should be invoked
 for repository investigations that would otherwise consume many turns of search
 and read output in the primary session.
 
+The subagent uses an index-first workflow: check `codetrail index status`, try
+semantic/navigation commands (`symbols`, `defs`, `refs`, `routes`, `calls`,
+`callers`), then verify focused ranges with `read`. Content search (`find` or
+`grep`) is a fallback for literal text, missing/stale/unsupported indexes,
+ambiguous results, or no useful semantic matches.
+
 ## OpenCode
 
 Install the OpenCode template by copying:
@@ -62,3 +68,9 @@ or:
 The template is a `mode: subagent` agent. It should be invoked for repository
 investigations that would otherwise consume many turns of search and read
 output in the primary session.
+
+The subagent uses an index-first workflow: check `codetrail index status`, try
+semantic/navigation commands (`symbols`, `defs`, `refs`, `routes`, `calls`,
+`callers`), then verify focused ranges with `read`. Content search (`find` or
+`grep`) is a fallback for literal text, missing/stale/unsupported indexes,
+ambiguous results, or no useful semantic matches.

@@ -89,14 +89,37 @@ codetrail --output json read src/file.rs:12-40
    读取仓库源码。
 5. subagent 只用 CodeTrail 原语收集证据，并返回紧凑 JSON。
 
+### Index-first v2 调整
+
+后续评测应使用 index-first 版本的 Skill + subagent。这个版本不再把
+`find`/`grep` 和 `defs`/`refs`/`symbols` 放在同一优先级，而是要求多步调查按
+下面顺序执行：
+
+1. 先调用 `codetrail --output json index status`，检查 SCIP freshness 和语言覆盖。
+2. 从任务中抽取候选 symbol、type、function、method、route 或 config 名称。
+3. 优先尝试 `symbols`、`defs`、`refs`、`routes`、`calls`、`callers`。
+4. 用 `files`、`glob`、`list`、`tree` 只做范围收窄或名称发现，然后回到语义命令。
+5. 用 `read` 验证关键范围。
+6. 只有在 literal-text 任务、无候选名称、索引缺失/过期/不支持、无语义命中或结果歧义时，才 fallback 到 `find`/`grep`，并在 subagent JSON 的 `index_usage.text_fallback_reason` 里记录原因。
+
+这个调整的目标是把 CodeTrail 当作 SCIP/LSP 索引优先的导航工具，而不是受控
+`grep`/`read` 包装器。评测报告应新增或单列这些指标：
+
+- `semantic_index_coverage`: 有 trace 的 run 中是否至少使用一次 `symbols`、`defs`、`refs`、`routes`、`calls` 或 `callers`。
+- `semantic_event_share`: semantic/navigation command events 占 CodeTrail events 的比例。
+- `grep_fallback_rate`: 在 semantic/navigation 尝试之前或没有 fallback reason 的 `find`/`grep` 比例。
+- `reliability_weighted_efficiency`: 按 `precise_fact`、`parser_fact`、`source_fact`、`inferred_candidate` 分层加权后的 accepted evidence / 1k non-cache tokens。
+
 推荐在主 Agent 提示中显式写入：
 
 ```text
 Load the codetrail skill, then delegate repository investigation to the
 codetrail-evidence subagent. Do not inspect the agent template file. Do not
 use read, grep, glob, list, LSP, web, CodeGraph, or shell discovery for
-repository evidence. Every final evidence string must be path:line or
-path:start-end.
+repository evidence. The subagent must use an index-first workflow: check
+codetrail index status, try semantic/navigation commands before find/grep,
+and explain any text-search fallback in index_usage.text_fallback_reason.
+Every final evidence string must be path:line or path:start-end.
 ```
 
 证据格式要严格：
