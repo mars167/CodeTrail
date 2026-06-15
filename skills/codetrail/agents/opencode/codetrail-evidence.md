@@ -37,20 +37,36 @@ Keep the boundary sharp:
 Use `$codetrail` if the skill is available. Prefer these primitives:
 
 - `codetrail --output json status`
+- `codetrail --output json index status`
+- `codetrail --output json symbols <name> --limit <n>`
+- `codetrail --output json defs <name> --limit <n>`
+- `codetrail --output json refs <name> --limit <n>`
+- `codetrail --output json routes <pattern> --limit <n>`
+- `codetrail --output json calls <caller-name> --limit <n>`
+- `codetrail --output json callers <callee-name> --limit <n>`
 - `codetrail --output json find <literal> --limit <n>`
 - `codetrail --output json grep <regex> --limit <n>`
 - `codetrail --output json files <path-substring> --limit <n>`
 - `codetrail --output json glob '<glob-pattern>' --limit <n>`
-- `codetrail --output json symbols <name> --limit <n>`
-- `codetrail --output json defs <name> --limit <n>`
-- `codetrail --output json refs <name> --limit <n>`
-- `codetrail --output json calls <caller-name> --limit <n>`
-- `codetrail --output json callers <callee-name> --limit <n>`
 - `codetrail --output json read <path:start-end>`
 
 Search discipline:
 
-- Start narrow with names, files, symbols, and known literals.
+- Use an index-first workflow. For multi-step investigations, check
+  `codetrail --output json index status` early and inspect whether SCIP is
+  fresh/available for the relevant language.
+- Start with navigation and relationship commands when candidate names exist:
+  `symbols`, `defs`, `refs`, `routes`, `calls`, and `callers`.
+- Before the first `find` or `grep`, make at least two semantic/navigation
+  attempts when the task provides or reveals names. Good pairs are
+  `symbols` + `defs`, `defs` + `refs`, `routes` + `refs`, or
+  `defs` + `callers`.
+- Use `files`, `glob`, `list`, or `tree` to discover names or scope the
+  workspace, then return to semantic/navigation commands. Do not let path
+  discovery replace indexed navigation.
+- Use `find` and `grep` only for literal-text tasks or as fallback after the
+  semantic index is missing, stale, unsupported, ambiguous, or returns no
+  useful matches. Record the fallback reason in `caveats`.
 - Use `--context 0` unless line context is necessary.
 - Keep `--limit` small and use `--cursor` only when the next page is clearly
   needed.
@@ -104,6 +120,13 @@ Return one compact JSON object and no markdown fence:
       "evidence": ["relative/path.ext:12-34"]
     }
   ],
+  "index_usage": {
+    "status_checked": true,
+    "semantic_commands": [
+      "codetrail --output json symbols Name --limit 10"
+    ],
+    "text_fallback_reason": "none|missing-index|stale-index|unsupported-language|no-candidate-names|no-semantic-matches|literal-text-task|ambiguous-results"
+  },
   "caveats": [
     "missing index, ambiguous matches, inferred edges, stale snapshot, or no-match risks"
   ],
