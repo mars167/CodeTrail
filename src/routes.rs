@@ -439,6 +439,7 @@ fn python_routes(
         );
     }
 
+    let fastapi_receivers = fastapi_route_receivers(content)?;
     let decorator = Regex::new(
         r#"(?m)@([A-Za-z_][\w.]*)\.(get|post|put|patch|delete|options|head|route|api_route)\s*\(([^)]*)\)\s*(?:\r?\n\s*)+(?:async\s+)?def\s+([A-Za-z_]\w*)"#,
     )?;
@@ -451,11 +452,7 @@ fn python_routes(
         } else {
             found[2].to_ascii_uppercase()
         };
-        let framework = if found[1].contains("router") {
-            "fastapi"
-        } else {
-            "flask"
-        };
+        let framework = python_decorator_framework(&found[1], &fastapi_receivers);
         let path = first_quoted(&found[3]).unwrap_or("");
         push_route(
             file,
@@ -474,6 +471,28 @@ fn python_routes(
         );
     }
     Ok(())
+}
+
+fn fastapi_route_receivers(content: &str) -> Result<Vec<String>> {
+    let assignment =
+        Regex::new(r#"(?m)\b([A-Za-z_]\w*)\s*=\s*(?:[A-Za-z_]\w*\.)?(FastAPI|APIRouter)\s*\("#)?;
+    Ok(assignment
+        .captures_iter(content)
+        .map(|found| found[1].to_string())
+        .collect())
+}
+
+fn python_decorator_framework<'a>(receiver: &str, fastapi_receivers: &'a [String]) -> &'static str {
+    let receiver_tail = receiver.rsplit('.').next().unwrap_or(receiver);
+    if receiver.contains("router")
+        || fastapi_receivers
+            .iter()
+            .any(|candidate| candidate == receiver || candidate == receiver_tail)
+    {
+        "fastapi"
+    } else {
+        "flask"
+    }
 }
 
 fn js_routes(

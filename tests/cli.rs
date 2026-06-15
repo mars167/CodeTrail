@@ -951,8 +951,21 @@ func mount(r Router) {
     fs::write(
         dir.path().join("py/app.py"),
         r#"
+from flask import Flask
+app = Flask(__name__)
 @app.get("/py/users")
 def py_users():
+    pass
+"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("py/fastapi.py"),
+        r#"
+from fastapi import FastAPI
+app = FastAPI()
+@app.get("/py/fastapi")
+def py_fastapi():
     pass
 "#,
     )
@@ -998,6 +1011,7 @@ end
     assert!(route_patterns.contains(&"/go/gorilla"));
     assert!(route_patterns.contains(&"/go/http"));
     assert!(route_patterns.contains(&"/py/users"));
+    assert!(route_patterns.contains(&"/py/fastapi"));
     assert!(route_patterns.contains(&"/js/users"));
     assert!(route_patterns.contains(&"/ruby/users"));
     for framework in ["gin", "chi", "gorilla", "net/http"] {
@@ -1033,6 +1047,25 @@ end
     let filtered_go_json: Value = serde_json::from_slice(&filtered_go).unwrap();
     assert_eq!(filtered_go_json["results"].as_array().unwrap().len(), 1);
     assert_eq!(filtered_go_json["results"][0]["routePattern"], "/go/gin");
+
+    let filtered_fastapi = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["routes", "--framework", "fastapi", "--method", "GET"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let filtered_fastapi_json: Value = serde_json::from_slice(&filtered_fastapi).unwrap();
+    assert_eq!(
+        filtered_fastapi_json["results"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        filtered_fastapi_json["results"][0]["routePattern"],
+        "/py/fastapi"
+    );
 }
 
 #[test]
