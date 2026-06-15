@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use crate::{
     graph, output,
     query_input::{compatible_input_needs_expansion, InputMode, InputPlan},
-    scip_index, search,
+    routes, scip_index, search,
     search_pattern::SearchPatternMode,
     syntax,
     workspace::{RemoteMode, ScanOptions, Workspace},
@@ -464,6 +464,38 @@ impl QueryService {
             page.next_cursor,
             page.facets,
         )))
+    }
+
+    pub fn routes(
+        &self,
+        pattern: Option<&str>,
+        frameworks: &[String],
+        methods: &[String],
+        opts: &QueryOptions,
+    ) -> Result<Value> {
+        let scan = opts.to_scan_options();
+        let output = routes::scan(&self.workspace, &scan, pattern, frameworks, methods)?;
+        let response = output::response_with_index(
+            "routes",
+            "routes",
+            scoped_query(
+                json!({
+                    "pattern": pattern,
+                    "framework": frameworks,
+                    "method": methods,
+                    "producer": "framework_route_scanner"
+                }),
+                &scan,
+            ),
+            &self.workspace.snapshot_id,
+            output::parser_fact(),
+            output::IndexedResponseParts::new(
+                output.index.clone(),
+                output.results.clone(),
+                Vec::new(),
+            ),
+        );
+        Ok(self.finalize(page_response(response, output)))
     }
 
     // ------------------------------------------------------------------

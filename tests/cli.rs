@@ -914,6 +914,316 @@ fn lang_scope_filters_symbols() {
 }
 
 #[test]
+fn routes_scans_mainstream_frameworks_across_five_languages() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/example")).unwrap();
+    fs::create_dir_all(dir.path().join("go")).unwrap();
+    fs::create_dir_all(dir.path().join("py")).unwrap();
+    fs::create_dir_all(dir.path().join("web")).unwrap();
+    fs::create_dir_all(dir.path().join("config")).unwrap();
+    fs::write(
+        dir.path().join("src/main/java/example/UserController.java"),
+        r#"
+@RestController
+@RequestMapping("/api")
+class UserController {
+  @GetMapping("/users")
+  public String listUsers() { return ""; }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("go/routes.go"),
+        r#"
+package main
+import "net/http"
+func mount(r Router) {
+  r.GET("/go/gin", handlers.ListGin)
+  r.Get("/go/chi", handlers.ListChi)
+  r.Method("POST", "/go/chi-method", handlers.PostChi)
+  r.HandleFunc("/go/gorilla", handlers.ListGorilla).Methods("GET")
+  http.HandleFunc("/go/http", handlers.ListHTTP)
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("py/app.py"),
+        r#"
+from flask import Flask
+app = Flask(__name__)
+@app.get("/py/users")
+def py_users():
+    pass
+"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("py/fastapi.py"),
+        r#"
+from fastapi import FastAPI
+app = FastAPI()
+@app.get("/py/fastapi")
+def py_fastapi():
+    pass
+"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("web/routes.js"),
+        r#"
+const router = require("express").Router();
+router.post("/js/users", createUser);
+"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("config/routes.rb"),
+        r#"
+Rails.application.routes.draw do
+  get "/ruby/users", to: "users#index"
+end
+"#,
+    )
+    .unwrap();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["routes"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let routes = json["results"].as_array().unwrap();
+    let route_patterns = routes
+        .iter()
+        .map(|route| route["routePattern"].as_str().unwrap())
+        .collect::<Vec<_>>();
+
+    assert!(route_patterns.contains(&"/api/users"));
+    assert!(route_patterns.contains(&"/go/gin"));
+    assert!(route_patterns.contains(&"/go/chi"));
+    assert!(route_patterns.contains(&"/go/chi-method"));
+    assert!(route_patterns.contains(&"/go/gorilla"));
+    assert!(route_patterns.contains(&"/go/http"));
+    assert!(route_patterns.contains(&"/py/users"));
+    assert!(route_patterns.contains(&"/py/fastapi"));
+    assert!(route_patterns.contains(&"/js/users"));
+    assert!(route_patterns.contains(&"/ruby/users"));
+    for framework in ["gin", "chi", "gorilla", "net/http"] {
+        assert!(
+            routes.iter().any(|route| route["framework"] == framework),
+            "missing Go framework {framework}"
+        );
+    }
+    assert_eq!(json["reliability"]["level"], "parser_fact");
+
+    let filtered = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["routes", "ruby", "--framework", "rails", "--method", "GET"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let filtered_json: Value = serde_json::from_slice(&filtered).unwrap();
+    assert_eq!(filtered_json["results"].as_array().unwrap().len(), 1);
+    assert_eq!(filtered_json["results"][0]["framework"], "rails");
+
+    let filtered_go = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["routes", "--framework", "gin", "--method", "GET"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let filtered_go_json: Value = serde_json::from_slice(&filtered_go).unwrap();
+    assert_eq!(filtered_go_json["results"].as_array().unwrap().len(), 1);
+    assert_eq!(filtered_go_json["results"][0]["routePattern"], "/go/gin");
+
+    let filtered_fastapi = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["routes", "--framework", "fastapi", "--method", "GET"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let filtered_fastapi_json: Value = serde_json::from_slice(&filtered_fastapi).unwrap();
+    assert_eq!(
+        filtered_fastapi_json["results"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        filtered_fastapi_json["results"][0]["routePattern"],
+        "/py/fastapi"
+    );
+}
+
+#[test]
+fn routes_saved_query_replays_scope_and_filters() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("config")).unwrap();
+    fs::write(
+        dir.path().join("config/routes.rb"),
+        "get \"/health\", to: \"health#show\"\n",
+    )
+    .unwrap();
+
+    codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--save-query")
+        .arg("rails-routes")
+        .args(["routes", "health", "--framework", "rails"])
+        .assert()
+        .success();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["query", "replay", "rails-routes"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["command"], "routes");
+    assert_eq!(json["results"][0]["routePattern"], "/health");
+    assert_eq!(json["results"][0]["framework"], "rails");
+}
+
+#[test]
+fn ruby_parser_fallback_extracts_symbols_and_calls() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("app")).unwrap();
+    fs::write(
+        dir.path().join("Gemfile"),
+        "source \"https://rubygems.org\"\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("app/widget.rb"),
+        r#"
+class Widget
+  def run
+    helper()
+  end
+
+  def self.build
+  end
+
+  def helper
+  end
+end
+"#,
+    )
+    .unwrap();
+
+    let symbols = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--lang")
+        .arg("ruby")
+        .args(["symbols", "Widget"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let symbols_json: Value = serde_json::from_slice(&symbols).unwrap();
+    assert_eq!(symbols_json["results"][0]["language"], "ruby");
+    assert_eq!(symbols_json["results"][0]["kind"], "class");
+
+    let callers = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--lang")
+        .arg("ruby")
+        .args(["callers", "helper"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let callers_json: Value = serde_json::from_slice(&callers).unwrap();
+    assert_eq!(callers_json["reliability"]["level"], "inferred_candidate");
+    assert!(callers_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|result| result["enclosingSymbol"] == "run"));
+}
+
+#[test]
+fn browse_scope_filters_list_and_tree_by_language_extension_and_changed() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/app.rb"), "class App; end\n").unwrap();
+    fs::write(dir.path().join("src/app.py"), "class App: pass\n").unwrap();
+
+    let list = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--lang")
+        .arg("ruby")
+        .args(["list", "src"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let list_json: Value = serde_json::from_slice(&list).unwrap();
+    let paths = list_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|result| result["path"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(paths, vec!["src/app.rb"]);
+
+    init_git_repo(dir.path());
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["add", "."])
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["commit", "-m", "initial"])
+        .output()
+        .unwrap();
+    fs::write(dir.path().join("src/app.rb"), "class App\nend\n").unwrap();
+
+    let tree = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--changed")
+        .arg("--ext")
+        .arg("rb")
+        .args(["tree", "src"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let tree_json: Value = serde_json::from_slice(&tree).unwrap();
+    assert_eq!(tree_json["results"].as_array().unwrap().len(), 1);
+    assert_eq!(tree_json["results"][0]["path"], "src/app.rb");
+}
+
+#[test]
 fn changed_scope_searches_only_git_changed_files() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
@@ -2430,6 +2740,60 @@ fn index_status_reports_semantic_status_languages_and_missing_servers() {
     assert!(text.contains("java=1"));
     assert!(text.contains("SCIP index: not_generated (enabled: false, usable: false)"));
     assert!(text.contains("java: missing (jdtls; missing: jdtls)"));
+}
+
+#[test]
+fn index_status_reports_ruby_lsp_missing_with_shopify_default() {
+    let dir = tempdir().unwrap();
+    let path_dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("app/models")).unwrap();
+    fs::write(
+        dir.path().join("Gemfile"),
+        "source \"https://rubygems.org\"\n",
+    )
+    .unwrap();
+    fs::write(dir.path().join("app/models/user.rb"), "class User\nend\n").unwrap();
+
+    raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .env("PATH", path_dir.path())
+        .env_remove("CODETRAIL_LSP_RUBY")
+        .args(["index", "build", "--no-semantic"])
+        .assert()
+        .success();
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--output")
+        .arg("json")
+        .env("PATH", path_dir.path())
+        .env_remove("CODETRAIL_LSP_RUBY")
+        .args(["index", "status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let status = &json["results"][0];
+
+    assert!(status["indexedLanguages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|language| language["language"] == "ruby"));
+    let ruby_server = status["semanticStatus"]["languageServers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|server| server["language"] == "ruby")
+        .expect("ruby server status");
+    assert_eq!(ruby_server["status"], "missing");
+    assert_eq!(ruby_server["defaultCommand"], "ruby-lsp");
+    assert_eq!(ruby_server["envKey"], "CODETRAIL_LSP_RUBY");
+    assert_eq!(ruby_server["missingDependencies"][0], "ruby-lsp");
 }
 
 #[test]

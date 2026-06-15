@@ -17,6 +17,7 @@ mod path_compat;
 pub mod project_graph;
 pub mod query_input;
 pub mod remote;
+pub mod routes;
 pub mod rust_provider;
 pub mod saved_query;
 pub mod scan_diagnostics;

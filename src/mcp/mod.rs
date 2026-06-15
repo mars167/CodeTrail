@@ -307,6 +307,32 @@ fn tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "codetrail_routes".to_string(),
+            description:
+                "Scan framework route declarations and return URL patterns with handler candidates."
+                    .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Optional route path substring to match" },
+                    "framework": { "type": "array", "items": { "type": "string" }, "description": "Framework names to include" },
+                    "method": { "type": "array", "items": { "type": "string" }, "description": "HTTP methods to include" },
+                    "dir": { "type": "array", "items": { "type": "string" }, "description": "Workspace-relative directories to search (OR filter)" },
+                    "ext": { "type": "array", "items": { "type": "string" }, "description": "File extensions to search, with or without a leading dot" },
+                    "filePattern": { "type": "array", "items": { "type": "string" }, "description": "Path patterns applied before route scan" },
+                    "fileMode": { "type": "string", "enum": ["literal", "regex", "wildcard", "glob"], "default": "wildcard", "description": "Pattern mode for filePattern" },
+                    "caseSensitive": { "type": "boolean", "default": false, "description": "Use exact case for route path matching" },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Path substrings to include" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Path substrings to exclude" },
+                    "lang": { "type": "array", "items": { "type": "string" }, "description": "Languages to include" },
+                    "changed": { "type": "boolean", "default": false, "description": "Restrict search to git changed files" },
+                    "cursor": { "type": "string", "description": "Pagination cursor from a previous response" },
+                    "allowBroad": { "type": "boolean", "default": false, "description": "Allow broad queries to return full paginated results" },
+                    "limit": { "type": "integer", "minimum": 0, "default": 100, "description": "Max results" }
+                }
+            }),
+        },
+        ToolDef {
             name: "codetrail_calls".to_string(),
             description:
                 "Find outgoing calls from a given function/symbol. Results are inferred candidates due to limitations in static analysis."
@@ -568,13 +594,11 @@ impl Server {
                 self.service.files_with_mode("glob", pattern, mode, &opts)
             }
             "codetrail_list" => {
-                reject_unsupported_browse_scope(&opts)?;
                 let dir = optional_str(args, "dir");
                 let recursive = optional_bool(args, "recursive").unwrap_or(false);
                 self.service.list(dir, recursive, &opts)
             }
             "codetrail_tree" => {
-                reject_unsupported_browse_scope(&opts)?;
                 let dir = optional_str(args, "dir");
                 let depth = optional_depth(args)?;
                 self.service.tree(dir, depth, &opts)
@@ -594,6 +618,18 @@ impl Server {
             "codetrail_symbols" => {
                 let query = required_str(args, "query")?;
                 self.service.symbols(query, &opts)
+            }
+            "codetrail_routes" => {
+                let pattern = optional_str(args, "pattern");
+                let frameworks = args
+                    .and_then(Value::as_object)
+                    .map(|obj| extract_string_array(obj, "framework"))
+                    .unwrap_or_default();
+                let methods = args
+                    .and_then(Value::as_object)
+                    .map(|obj| extract_string_array(obj, "method"))
+                    .unwrap_or_default();
+                self.service.routes(pattern, &frameworks, &methods, &opts)
             }
             "codetrail_calls" => {
                 let identifier = required_str(args, "identifier")?;
@@ -678,15 +714,6 @@ fn optional_depth(args: Option<&Value>) -> Result<Option<u8>> {
         ));
     }
     Ok(Some(depth as u8))
-}
-
-fn reject_unsupported_browse_scope(opts: &QueryOptions) -> Result<()> {
-    if !opts.lang.is_empty() || opts.changed {
-        return Err(anyhow::anyhow!(
-            "unsupported_mcp_scope: codetrail_list/tree support include/exclude/limit, but not lang or changed scope"
-        ));
-    }
-    Ok(())
 }
 
 /// Parse [`QueryOptions`] from the tool arguments JSON object.
@@ -939,9 +966,10 @@ mod tests {
                 assert!(names.contains(&"codetrail_defs"));
                 assert!(names.contains(&"codetrail_list"));
                 assert!(names.contains(&"codetrail_tree"));
+                assert!(names.contains(&"codetrail_routes"));
                 assert!(names.contains(&"codetrail_status"));
                 // All core CLI-backed tools should be present.
-                assert_eq!(list.tools.len(), 14);
+                assert_eq!(list.tools.len(), 15);
             }
             _ => panic!("expected success response"),
         }
@@ -1170,30 +1198,35 @@ mod tests {
     }
 
     #[test]
-    fn tools_call_list_and_tree_reject_unsupported_scope_and_bad_depth() {
+    fn tools_call_list_and_tree_support_scope_and_reject_bad_depth() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("src")).unwrap();
         fs::write(dir.path().join("src/lib.rs"), "fn helper() {}\n").unwrap();
+        fs::write(dir.path().join("src/app.rb"), "class App\nend\n").unwrap();
         fs::write(dir.path().join("src/readme.txt"), "notes\n").unwrap();
         let server = Server::new(dir.path()).unwrap();
 
-        let lang_result = call_tool(
+        let lang_result = call_tool_json(
             &server,
             "codetrail_list",
-            json!({ "dir": "src", "lang": ["rust"] }),
+            json!({ "dir": "src", "lang": ["ruby"] }),
         );
-        assert!(lang_result.is_error);
-        let lang_error: Value = serde_json::from_str(&lang_result.content[0].text).unwrap();
-        assert!(has_caveat(&lang_error, "unsupported_mcp_scope"));
+        let lang_entries = lang_result["results"].as_array().unwrap();
+        assert_eq!(lang_entries.len(), 1);
+        assert_eq!(lang_entries[0]["path"], "src/app.rb");
 
-        let changed_result = call_tool(
+        let ext_result = call_tool_json(
             &server,
             "codetrail_tree",
-            json!({ "dir": "src", "changed": true }),
+            json!({ "dir": "src", "ext": ["rb"] }),
         );
-        assert!(changed_result.is_error);
-        let changed_error: Value = serde_json::from_str(&changed_result.content[0].text).unwrap();
-        assert!(has_caveat(&changed_error, "unsupported_mcp_scope"));
+        let ext_entries = ext_result["results"].as_array().unwrap();
+        assert!(ext_entries
+            .iter()
+            .any(|entry| entry["path"] == "src/app.rb"));
+        assert!(!ext_entries
+            .iter()
+            .any(|entry| entry["path"] == "src/readme.txt"));
 
         let depth_result = call_tool(
             &server,
@@ -1215,6 +1248,32 @@ mod tests {
                 serde_json::from_str(&invalid_result.content[0].text).unwrap();
             assert!(has_caveat(&invalid_error, "invalid_mcp_argument"));
         }
+    }
+
+    #[test]
+    fn tools_call_routes_scans_framework_routes() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("config")).unwrap();
+        fs::write(
+            dir.path().join("config/routes.rb"),
+            "Rails.application.routes.draw do\n  get \"/health\", to: \"health#show\"\nend\n",
+        )
+        .unwrap();
+        let server = Server::new(dir.path()).unwrap();
+
+        let result = call_tool_json(
+            &server,
+            "codetrail_routes",
+            json!({ "framework": ["rails"], "method": ["GET"] }),
+        );
+        assert!(result.get("ok").is_none());
+        let routes = result["results"].as_array().unwrap();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0]["path"], "config/routes.rb");
+        assert_eq!(routes[0]["framework"], "rails");
+        assert_eq!(routes[0]["method"], "GET");
+        assert_eq!(routes[0]["routePattern"], "/health");
+        assert_eq!(routes[0]["handler"], "health#show");
     }
 
     #[test]

@@ -34,6 +34,29 @@ fn discovers_single_language_go_root_and_owned_sources() {
 }
 
 #[test]
+fn discovers_ruby_root_and_owned_sources() {
+    let dir = tempdir().unwrap();
+    write(
+        &dir.path().join("Gemfile"),
+        "source \"https://rubygems.org\"\n",
+    );
+    write(&dir.path().join("app/models/user.rb"), "class User\nend\n");
+
+    let graph = discover_project_graph(dir.path()).unwrap();
+
+    assert_eq!(graph.roots.len(), 1);
+    assert_eq!(graph.roots[0].id, "ruby:.");
+    assert_eq!(graph.roots[0].kind, ProjectRootKind::RubyGemfile);
+    assert_eq!(graph.source_owners.len(), 1);
+    assert_eq!(graph.source_owners[0].path, "app/models/user.rb");
+    assert_eq!(graph.source_owners[0].root_id, "ruby:.");
+    assert_eq!(
+        graph.source_owners[0].semantic_fact_policy,
+        SemanticFactPolicy::PreciseEligible
+    );
+}
+
+#[test]
 fn discovers_polyglot_multi_root_workspace_with_stable_ids() {
     let dir = tempdir().unwrap();
     write(&dir.path().join("services/api/go.mod"), "module api\n");

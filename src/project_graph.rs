@@ -66,6 +66,7 @@ pub enum ProjectLanguage {
     Rust,
     Java,
     TypeScript,
+    Ruby,
 }
 
 impl ProjectLanguage {
@@ -75,6 +76,7 @@ impl ProjectLanguage {
             ProjectLanguage::Rust => &["rs"],
             ProjectLanguage::Java => &["java"],
             ProjectLanguage::TypeScript => &["ts", "tsx", "js", "jsx", "mjs", "cjs"],
+            ProjectLanguage::Ruby => &["rb", "rake", "gemspec"],
         }
     }
 }
@@ -86,6 +88,7 @@ impl fmt::Display for ProjectLanguage {
             ProjectLanguage::Rust => write!(f, "rust"),
             ProjectLanguage::Java => write!(f, "java"),
             ProjectLanguage::TypeScript => write!(f, "typescript"),
+            ProjectLanguage::Ruby => write!(f, "ruby"),
         }
     }
 }
@@ -100,6 +103,8 @@ pub enum ProjectRootKind {
     JavaGradle,
     TypeScriptConfig,
     TypeScriptPackage,
+    RubyGemfile,
+    RubyGemspec,
 }
 
 impl ProjectRootKind {
@@ -111,6 +116,7 @@ impl ProjectRootKind {
             ProjectRootKind::TypeScriptConfig | ProjectRootKind::TypeScriptPackage => {
                 ProjectLanguage::TypeScript
             }
+            ProjectRootKind::RubyGemfile | ProjectRootKind::RubyGemspec => ProjectLanguage::Ruby,
         }
     }
 
@@ -123,6 +129,8 @@ impl ProjectRootKind {
             ProjectRootKind::JavaGradle => 1,
             ProjectRootKind::TypeScriptConfig => 0,
             ProjectRootKind::TypeScriptPackage => 1,
+            ProjectRootKind::RubyGemfile => 0,
+            ProjectRootKind::RubyGemspec => 1,
         }
     }
 }
@@ -477,6 +485,8 @@ fn root_marker(path: &str) -> Option<(ProjectRootKind, String)> {
         }
         "tsconfig.json" | "jsconfig.json" => ProjectRootKind::TypeScriptConfig,
         "package.json" => ProjectRootKind::TypeScriptPackage,
+        "Gemfile" => ProjectRootKind::RubyGemfile,
+        name if name.ends_with(".gemspec") => ProjectRootKind::RubyGemspec,
         _ => return None,
     };
     Some((kind, parent_dir(path)))
@@ -531,6 +541,7 @@ fn dependency_config_file(path: &str) -> bool {
             | "yarn.lock"
             | "gradle.lockfile"
             | "go.sum"
+            | "Gemfile.lock"
     )
 }
 
@@ -657,6 +668,7 @@ fn dependency_config_language(path: &str) -> Option<ProjectLanguage> {
         "Cargo.lock" => Some(ProjectLanguage::Rust),
         "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock" => Some(ProjectLanguage::TypeScript),
         "gradle.lockfile" => Some(ProjectLanguage::Java),
+        "Gemfile.lock" => Some(ProjectLanguage::Ruby),
         _ => None,
     }
 }
@@ -804,6 +816,7 @@ fn source_language(path: &str) -> Option<ProjectLanguage> {
         ProjectLanguage::Rust,
         ProjectLanguage::Java,
         ProjectLanguage::TypeScript,
+        ProjectLanguage::Ruby,
     ]
     .into_iter()
     .find(|language| language.source_extensions().contains(&ext.as_str()))

@@ -627,6 +627,14 @@ pub fn staged_tree(root: &Path) -> Option<String> {
 }
 
 pub fn language_for_path(path: &Path) -> &'static str {
+    match path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+    {
+        "Gemfile" | "Rakefile" => return "ruby",
+        _ => {}
+    }
     match path.extension().and_then(|ext| ext.to_str()).unwrap_or("") {
         "go" => "go",
         "rs" => "rust",
@@ -634,6 +642,7 @@ pub fn language_for_path(path: &Path) -> &'static str {
         "java" => "java",
         "ts" | "tsx" => "typescript",
         "js" | "jsx" | "mjs" | "cjs" => "javascript",
+        "rb" | "rake" | "gemspec" => "ruby",
         "md" | "markdown" => "markdown",
         "json" => "json",
         "toml" => "toml",

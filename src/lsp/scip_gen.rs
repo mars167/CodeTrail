@@ -619,6 +619,7 @@ fn lsp_language_id(language: &ProjectLanguage) -> &'static str {
         ProjectLanguage::Rust => "rust",
         ProjectLanguage::Java => "java",
         ProjectLanguage::TypeScript => "typescript",
+        ProjectLanguage::Ruby => "ruby",
     }
 }
 

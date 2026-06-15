@@ -60,6 +60,12 @@ pub fn resolve_server(language: &ProjectLanguage) -> Option<ServerSpec> {
             provider_id: "typescript-language-server".to_string(),
             readiness: ReadinessStrategy::Immediate,
         }),
+        ProjectLanguage::Ruby => Some(ServerSpec {
+            program: resolve_binary("ruby-lsp")?,
+            args: Vec::new(),
+            provider_id: "ruby-lsp".to_string(),
+            readiness: ReadinessStrategy::Immediate,
+        }),
     }
 }
 
@@ -77,6 +83,7 @@ fn resolve_from_env(language: &ProjectLanguage) -> Option<ServerSpec> {
         ProjectLanguage::Rust => "CODETRAIL_LSP_RUST",
         ProjectLanguage::Java => "CODETRAIL_LSP_JAVA",
         ProjectLanguage::TypeScript => "CODETRAIL_LSP_TYPESCRIPT",
+        ProjectLanguage::Ruby => "CODETRAIL_LSP_RUBY",
     };
     let value = env::var(key).ok()?;
     let mut parts = shell_words(&value).into_iter();
@@ -275,6 +282,7 @@ mod tests {
             ProjectLanguage::Rust,
             ProjectLanguage::Java,
             ProjectLanguage::TypeScript,
+            ProjectLanguage::Ruby,
         ] {
             let _ = resolve_server(&language);
         }
@@ -291,6 +299,21 @@ mod tests {
             spec.args,
             vec!["--mode".to_string(), "test value".to_string()]
         );
+        match previous {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn ruby_env_override_takes_precedence() {
+        let key = "CODETRAIL_LSP_RUBY";
+        let previous = std::env::var(key).ok();
+        std::env::set_var(key, "\"/tmp/fake ruby-lsp\" --stdio");
+        let spec = resolve_server(&ProjectLanguage::Ruby).expect("ruby env override spec");
+        assert_eq!(spec.provider_id, "env:CODETRAIL_LSP_RUBY");
+        assert_eq!(spec.program, "/tmp/fake ruby-lsp");
+        assert_eq!(spec.args, vec!["--stdio".to_string()]);
         match previous {
             Some(value) => std::env::set_var(key, value),
             None => std::env::remove_var(key),

@@ -55,7 +55,7 @@ pub(crate) fn candidate_language_matrix() -> &'static [LanguageCandidateMatrix] 
     &LANGUAGE_CANDIDATE_MATRIX
 }
 
-static LANGUAGE_CANDIDATE_MATRIX: [LanguageCandidateMatrix; 6] = [
+static LANGUAGE_CANDIDATE_MATRIX: [LanguageCandidateMatrix; 7] = [
     LanguageCandidateMatrix {
         language: "go",
         extracted_kinds: &["definition", "method", "type", "call", "import"],
@@ -120,6 +120,16 @@ static LANGUAGE_CANDIDATE_MATRIX: [LanguageCandidateMatrix; 6] = [
             "decorator generated bindings",
             "import alias rebinding",
             "metaclass generated members",
+        ],
+    },
+    LanguageCandidateMatrix {
+        language: "ruby",
+        extracted_kinds: &["definition", "method", "class", "module", "call"],
+        known_blind_spots: &[
+            "metaprogramming generated methods",
+            "dynamic send/public_send dispatch",
+            "autoload and constant lookup",
+            "Rails convention binding",
         ],
     },
 ];
@@ -728,6 +738,7 @@ fn call_candidate(node: Node, context: &CandidateWalkContext) -> Option<TreeSitt
     let target_node = node
         .child_by_field_name("function")
         .or_else(|| node.child_by_field_name("name"))
+        .or_else(|| node.child_by_field_name("method"))
         .or_else(|| first_named_child(node))?;
     let target = target_node
         .utf8_text(context.source)
@@ -888,6 +899,7 @@ fn parser_language(path: &Path) -> Option<Language> {
         "java" => Some(tree_sitter_java::LANGUAGE.into()),
         "typescript" => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
         "javascript" => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
+        "ruby" => Some(tree_sitter_ruby::LANGUAGE.into()),
         _ => None,
     }
 }
@@ -896,6 +908,7 @@ fn symbol_kind(kind: &str) -> Option<&'static str> {
     match kind {
         "function_item" | "function_definition" | "function_declaration" => Some("function"),
         "method_definition" | "method_declaration" => Some("function"),
+        "method" | "singleton_method" => Some("function"),
         "method_elem" => Some("function"),
         "struct_item" | "type_declaration" => Some("struct"),
         "enum_item" | "enum_declaration" => Some("enum"),
@@ -905,7 +918,8 @@ fn symbol_kind(kind: &str) -> Option<&'static str> {
         "interface_declaration" => Some("interface"),
         "record_declaration" => Some("record"),
         "annotation_type_declaration" => Some("annotation"),
-        "class_definition" | "class_declaration" => Some("class"),
+        "class_definition" | "class_declaration" | "class" => Some("class"),
+        "module" => Some("module"),
         "lexical_declaration" | "var_declaration" | "const_declaration" => Some("variable"),
         _ => None,
     }
@@ -919,6 +933,8 @@ fn is_enclosing_symbol_node(kind: &str) -> bool {
             | "function_declaration"
             | "method_definition"
             | "method_declaration"
+            | "method"
+            | "singleton_method"
             | "method_elem"
             | "constructor_declaration"
             | "compact_constructor_declaration"
@@ -929,10 +945,13 @@ fn candidate_kind_for_symbol(node: Node, language: &str) -> &'static str {
     match node.kind() {
         "method_definition"
         | "method_declaration"
+        | "method"
+        | "singleton_method"
         | "constructor_declaration"
         | "compact_constructor_declaration"
         | "method_elem" => "method",
-        "class_definition" | "class_declaration" => "class",
+        "class_definition" | "class_declaration" | "class" => "class",
+        "module" => "module",
         "struct_item"
         | "enum_item"
         | "enum_declaration"

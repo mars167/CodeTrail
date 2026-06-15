@@ -4,7 +4,7 @@ use crate::{
     cli::{Cli, Command, HooksCommand, IndexCommand, OutputFormat, QueryCommand},
     completions, graph, index, output,
     query_input::{compatible_input_needs_expansion, InputPlan},
-    saved_query, scip_index, search,
+    routes, saved_query, scip_index, search,
     search_pattern::SearchPatternMode,
     syntax,
     workspace::{ScanOptions, Workspace},
@@ -412,6 +412,43 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                         scope_warnings.clone(),
                     ),
                 ),
+            )
+        }
+        Command::Routes {
+            pattern,
+            framework,
+            method,
+        } => {
+            let query_output = routes::scan(
+                &workspace,
+                &scan_opts,
+                pattern.as_deref(),
+                framework,
+                method,
+            )?;
+            exit_code = output::no_match_exit(&query_output.results);
+            page_response(
+                output::response_with_index(
+                    "routes",
+                    "routes",
+                    scoped_query(
+                        json!({
+                            "pattern": pattern,
+                            "framework": framework,
+                            "method": method,
+                            "producer": "framework_route_scanner"
+                        }),
+                        &scan_opts,
+                    ),
+                    &workspace.snapshot_id,
+                    output::parser_fact(),
+                    output::IndexedResponseParts::new(
+                        query_output.index.clone(),
+                        query_output.results.clone(),
+                        scope_warnings.clone(),
+                    ),
+                ),
+                query_output,
             )
         }
         Command::Calls { identifier } => {
@@ -928,6 +965,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Refs { .. } => "refs",
         Command::Symbols { .. } => "symbols",
         Command::Defs { .. } => "defs",
+        Command::Routes { .. } => "routes",
         Command::Calls { .. } => "calls",
         Command::Callers { .. } => "callers",
         Command::Changed => "changed",
