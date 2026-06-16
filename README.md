@@ -21,7 +21,7 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/mars167/CodeTrail/main/install.ps1 | iex
 ```
 
-The installer downloads the latest GitHub Release assets for your OS, verifies `SHA256SUMS`, and installs `codetrail`. On macOS/Linux, it is installed by default to `~/.local/bin`. On Windows, it is installed to `%LOCALAPPDATA%\Programs\codetrail\bin` and added to your user `PATH`.
+The installer downloads the latest GitHub Release assets for your OS, verifies `SHA256SUMS`, and installs `codetrail`. Release binaries are published for macOS amd64/arm64, Linux amd64/arm64, and Windows amd64/arm64. On macOS/Linux, it is installed by default to `~/.local/bin`. On Windows, it is installed to `%LOCALAPPDATA%\Programs\codetrail\bin` and added to your user `PATH`.
 
 Install a specific version:
 

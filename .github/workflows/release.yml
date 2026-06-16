@@ -28,6 +28,10 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact: codetrail-linux-amd64
             smoke: true
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact: codetrail-linux-arm64
+            smoke: true
           - os: macos-15-intel
             target: x86_64-apple-darwin
             artifact: codetrail-darwin-amd64
@@ -172,6 +176,7 @@ jobs:
             codetrail-darwin-amd64.tar.gz
             codetrail-darwin-arm64.tar.gz
             codetrail-linux-amd64.tar.gz
+            codetrail-linux-arm64.tar.gz
             codetrail-windows-amd64.exe.zip
             codetrail-windows-arm64.exe.zip
           )
@@ -189,10 +194,18 @@ jobs:
           set -euo pipefail
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+            if [[ "$RELEASE_TAG" == *-* ]]; then
+              gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --prerelease
+            fi
           else
+            release_flags=()
+            if [[ "$RELEASE_TAG" == *-* ]]; then
+              release_flags=(--prerelease)
+            fi
             gh release create "$RELEASE_TAG" dist/* \
               --repo "$GITHUB_REPOSITORY" \
               --title "$RELEASE_TAG" \
+              "${release_flags[@]}" \
               --notes "Automated release for ${RELEASE_TAG}."
           fi
 

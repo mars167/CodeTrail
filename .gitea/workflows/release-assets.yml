@@ -74,6 +74,7 @@ jobs:
             codetrail-darwin-amd64.tar.gz
             codetrail-darwin-arm64.tar.gz
             codetrail-linux-amd64.tar.gz
+            codetrail-linux-arm64.tar.gz
             codetrail-windows-amd64.exe.zip
             codetrail-windows-arm64.exe.zip
             SHA256SUMS
