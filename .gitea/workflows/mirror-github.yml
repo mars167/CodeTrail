@@ -46,7 +46,7 @@ jobs:
           case "$ref" in
             refs/heads/*)
               branch="${ref#refs/heads/}"
-              git fetch --no-tags --depth=1 origin "+refs/heads/${branch}:refs/remotes/origin/${branch}"
+              git fetch --no-tags origin "+refs/heads/${branch}:refs/remotes/origin/${branch}"
               git checkout --detach FETCH_HEAD
               if [ -n "$sha" ] && [ "$(git rev-parse HEAD)" != "$sha" ]; then
                 echo "Fetched branch head does not match event SHA." >&2
@@ -56,7 +56,7 @@ jobs:
               ;;
             refs/tags/*)
               tag="${ref#refs/tags/}"
-              git fetch --depth=1 origin "+refs/tags/${tag}:refs/tags/${tag}"
+              git fetch origin "+refs/tags/${tag}:refs/tags/${tag}"
               git checkout --detach "refs/tags/${tag}"
               ;;
             *)
