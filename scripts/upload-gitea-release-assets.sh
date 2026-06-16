@@ -24,6 +24,10 @@ GITEA_URL="${GITEA_URL%/}"
 api_base="${GITEA_URL}/api/v1"
 auth_header="Authorization: token ${GITEA_TOKEN}"
 target_sha="${TARGET_SHA:-}"
+prerelease=false
+case "$RELEASE_TAG" in
+  *-*) prerelease=true ;;
+esac
 curl_gitea_args=()
 if [ "${GITEA_INSECURE_TLS:-0}" = "1" ]; then
   curl_gitea_args+=(--insecure)
@@ -41,12 +45,13 @@ if [ "$status" = "404" ]; then
   jq -n \
     --arg tag "$RELEASE_TAG" \
     --arg target "$target_sha" \
+    --argjson prerelease "$prerelease" \
     '{
       tag_name: $tag,
       name: $tag,
       body: ("Automated release for " + $tag + "."),
       draft: false,
-      prerelease: false
+      prerelease: $prerelease
     } + (if $target == "" then {} else {target_commitish: $target} end)' \
     > "$payload"
   status="$(
@@ -87,6 +92,25 @@ if [ -n "$target_sha" ]; then
       cat "$release_json"
       exit 1
     fi
+  fi
+fi
+
+current_prerelease="$(jq -r '.prerelease // false' "$release_json")"
+if [ "$current_prerelease" != "$prerelease" ]; then
+  payload="$(mktemp)"
+  jq -n --argjson prerelease "$prerelease" '{prerelease: $prerelease}' > "$payload"
+  status="$(
+    curl "${curl_gitea_args[@]}" -sS -o "$release_json" -w '%{http_code}' \
+      -X PATCH \
+      -H "$auth_header" \
+      -H "Content-Type: application/json" \
+      -d @"$payload" \
+      "${api_base}/repos/${GITEA_REPOSITORY}/releases/${release_id}"
+  )"
+  rm -f "$payload"
+  if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+    cat "$release_json"
+    exit 1
   fi
 fi
 

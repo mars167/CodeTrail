@@ -26,6 +26,7 @@ assert_asset() {
 assert_asset Darwin x86_64 codetrail-darwin-amd64.tar.gz
 assert_asset Darwin arm64 codetrail-darwin-arm64.tar.gz
 assert_asset Linux x86_64 codetrail-linux-amd64.tar.gz
+assert_asset Linux aarch64 codetrail-linux-arm64.tar.gz
 
 if command -v pwsh >/dev/null 2>&1; then
   pwsh -NoLogo -NoProfile -NonInteractive -Command "\$ErrorActionPreference = 'Stop'; \$null = [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw '$repo_root/install.ps1'), [ref]\$null)"

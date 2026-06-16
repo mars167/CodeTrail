@@ -21,7 +21,7 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/mars167/CodeTrail/main/install.ps1 | iex
 ```
 
-安装器会根据当前系统下载最新 GitHub Release 资产，校验 `SHA256SUMS`，并安装 `codetrail`。macOS/Linux 默认安装到 `~/.local/bin`，Windows 默认安装到 `%LOCALAPPDATA%\Programs\codetrail\bin` 并写入用户 `PATH`。
+安装器会根据当前系统下载最新 GitHub Release 资产，校验 `SHA256SUMS`，并安装 `codetrail`。Release 二进制覆盖 macOS amd64/arm64、Linux amd64/arm64 和 Windows amd64/arm64。macOS/Linux 默认安装到 `~/.local/bin`，Windows 默认安装到 `%LOCALAPPDATA%\Programs\codetrail\bin` 并写入用户 `PATH`。
 
 安装指定版本：
 

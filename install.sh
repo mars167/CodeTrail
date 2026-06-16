@@ -110,12 +110,8 @@ case "$arch_name" in
 esac
 
 case "${os}-${arch}" in
-  darwin-amd64|darwin-arm64|linux-amd64)
+  darwin-amd64|darwin-arm64|linux-amd64|linux-arm64)
     asset="codetrail-${os}-${arch}.tar.gz"
-    ;;
-  linux-arm64)
-    echo "No Linux ARM64 release asset is currently published." >&2
-    exit 1
     ;;
   *)
     echo "Unsupported platform: ${os}-${arch}" >&2
