@@ -1069,6 +1069,80 @@ end
 }
 
 #[test]
+fn routes_handles_utf8_near_java_annotation_window() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/example")).unwrap();
+    let padding = "a".repeat(699);
+    fs::write(
+        dir.path().join("src/main/java/example/DemoController.java"),
+        format!(
+            r#"
+@RestController
+@RequestMapping("/demo")
+class DemoController {{
+  @GetMapping("/window")
+  /* {padding}窗 marker */
+  public String window() {{ return ""; }}
+}}
+"#
+        ),
+    )
+    .unwrap();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["routes", "--framework", "spring", "--method", "GET"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["results"][0]["routePattern"], "/demo/window");
+    assert_eq!(json["results"][0]["reliability"], "parser_fact");
+}
+
+#[test]
+fn routes_skips_public_java_class_request_mapping() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/example")).unwrap();
+    fs::write(
+        dir.path()
+            .join("src/main/java/example/AdminController.java"),
+        r#"
+@RestController
+@RequestMapping("/admin")
+public class AdminController {
+  @GetMapping("/users")
+  public String users() { return ""; }
+}
+"#,
+    )
+    .unwrap();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["routes", "--framework", "spring"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let route_patterns = json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|route| route["routePattern"].as_str().unwrap())
+        .collect::<Vec<_>>();
+
+    assert_eq!(route_patterns, vec!["/admin/users"]);
+}
+
+#[test]
 fn routes_saved_query_replays_scope_and_filters() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("config")).unwrap();

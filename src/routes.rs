@@ -683,11 +683,17 @@ fn nest_controller_prefix(content: &str) -> Result<String> {
 }
 
 fn annotation_targets_class(content: &str, start: usize) -> bool {
-    let tail = &content[start..content.len().min(start + 500)];
-    let class_at = tail.find("class ");
-    let method_at = Regex::new(r"\b(public|private|protected)\b")
-        .ok()
-        .and_then(|method| method.find(tail).map(|m| m.start()));
+    let Some(tail) = utf8_window(content, start, 500) else {
+        return false;
+    };
+    let class_at =
+        Regex::new(r"\b(?:(?:public|private|protected|abstract|final|static)\s+)*class\b")
+            .ok()
+            .and_then(|class| class.find(tail).map(|m| m.start()));
+    let method_at =
+        Regex::new(r"\b(?:public|private|protected)\s+(?:static\s+)?[^;{=]*?\s+[A-Za-z_]\w*\s*\(")
+            .ok()
+            .and_then(|method| method.find(tail).map(|m| m.start()));
     class_at.is_some() && (method_at.is_none() || class_at < method_at)
 }
 
@@ -705,7 +711,7 @@ fn request_method(args: &str) -> Option<String> {
 }
 
 fn method_name_after(content: &str, start: usize) -> Option<String> {
-    let tail = &content[start..content.len().min(start + 700)];
+    let tail = utf8_window(content, start, 700)?;
     let method = Regex::new(
         r"\b(?:public|private|protected)\s+(?:static\s+)?[^;{=]*?\s+([A-Za-z_]\w*)\s*\(",
     )
@@ -716,11 +722,22 @@ fn method_name_after(content: &str, start: usize) -> Option<String> {
 }
 
 fn js_method_name_after(content: &str, start: usize) -> Option<String> {
-    let tail = &content[start..content.len().min(start + 500)];
+    let tail = utf8_window(content, start, 500)?;
     let method = Regex::new(r"\b(?:async\s+)?([A-Za-z_$][\w$]*)\s*\(").ok()?;
     method
         .captures(tail)
         .and_then(|found| found.get(1).map(|m| m.as_str().to_string()))
+}
+
+fn utf8_window(content: &str, start: usize, max_len: usize) -> Option<&str> {
+    if start > content.len() || !content.is_char_boundary(start) {
+        return None;
+    }
+    let mut end = content.len().min(start.saturating_add(max_len));
+    while end > start && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(&content[start..end])
 }
 
 fn python_handler(expr: &str) -> Option<String> {
