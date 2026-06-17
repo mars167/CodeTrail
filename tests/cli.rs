@@ -1072,8 +1072,6 @@ end
 fn routes_scans_vapor_swift_routes() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("Sources/App")).unwrap();
-    fs::create_dir_all(dir.path().join("ios/App.xcodeproj")).unwrap();
-    fs::create_dir_all(dir.path().join("ios/Sources")).unwrap();
     fs::write(
         dir.path().join("Package.swift"),
         "// swift-tools-version: 6.0\n",
