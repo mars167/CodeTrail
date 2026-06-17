@@ -218,12 +218,12 @@ fn tool_definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "codetrail_read".to_string(),
             description:
-                "Read file contents, optionally with a line-range like `path:1-10`. Returns the file content with metadata."
+                "Read file contents. Pass `path` to read a whole small file in one call; use `path:1-10` for large files or focused verification. Returns content with metadata."
                     .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "target": { "type": "string", "description": "File path with optional `:start-end` line range" }
+                    "target": { "type": "string", "description": "File path, optionally with `:start-end`; omit the range for whole-file reads when the file is small" }
                 },
                 "required": ["target"]
             }),

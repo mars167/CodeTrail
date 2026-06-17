@@ -79,7 +79,8 @@ pub fn source_fact() -> Reliability {
         level: "source_fact",
         source: "text_path_git_filesystem",
         exact: true,
-        llm_instruction: "这些结果是可验证源码事实。修改前仍应使用 codetrail read 读取精确范围。",
+        llm_instruction:
+            "这些结果是可验证源码事实。小文件或同文件多处命中应优先用 codetrail read <path> 一次读完；大文件再读取精确范围。",
     }
 }
 
@@ -108,7 +109,8 @@ pub fn precise_fact() -> Reliability {
         level: "precise_fact",
         source: "scip_occurrence_index",
         exact: true,
-        llm_instruction: "这些结果来自 precise code intelligence index。修改前仍应使用 codetrail read 验证源码范围。",
+        llm_instruction:
+            "这些结果来自 precise code intelligence index。小文件可用 codetrail read <path> 一次验证上下文；大文件再读取源码范围。",
     }
 }
 

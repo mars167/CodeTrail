@@ -56,6 +56,7 @@ Use `$codetrail` if the skill is available. Prefer these primitives:
 - `codetrail --output json grep <regex> --limit <n>`
 - `codetrail --output json files <path-substring> --limit <n>`
 - `codetrail --output json glob '<glob-pattern>' --limit <n>`
+- `codetrail --output json read <path>`
 - `codetrail --output json read <path:start-end>`
 
 Search discipline:
@@ -80,7 +81,15 @@ Search discipline:
   needed.
 - Use `read <path>`, `read <path:line>`, or `read <path:start-end>`; line
   numbers are 1-based.
-- Verify every important claim with `codetrail read <path:start-end>`.
+- Prefer one `codetrail read <path>` when the file is small enough to fit the
+  output budget, when `suggestedReads` points at the file path, or when several
+  needed ranges are in the same file. Do not page a small file through adjacent
+  ranges.
+- Use `codetrail read <path:start-end>` for known-large files, truncated
+  whole-file reads, or a single narrow verification.
+- Verify every important claim with `codetrail read <path>` or
+  `codetrail read <path:start-end>`, then cite the exact verified line range in
+  your output.
 - Treat `calls` and `callers` as candidates until verified with `read`.
 - Navigation and relationship commands default to compatible input; use simple
   names, qualified names, signature display names, or snake/kebab style keys as
@@ -100,6 +109,8 @@ Hard output contract:
   primary agent to cite, must match `path:start-end` or `path:line`.
 - Never put file-only paths such as `src/lib.rs` in `evidence`,
   `important_files`, or relationship evidence arrays.
+- File-only `codetrail read <path>` is allowed during collection to save tool
+  calls; it does not relax the output requirement for line-specific evidence.
 - If you only have a file-level lead, verify a focused range with
   `codetrail read` before citing it, or move the lead to `caveats`.
 - Before returning, scan your JSON and remove or fix every source location that

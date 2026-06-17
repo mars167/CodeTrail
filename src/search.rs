@@ -19,7 +19,7 @@ use crate::{
     },
 };
 
-const MAX_FULL_READ_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_FULL_READ_BYTES: usize = 64 * 1024;
 const MAX_PREVIEW_CHARS: usize = 240;
 const BROAD_SAMPLE_LIMIT: usize = 5;
 const SMALL_WORKSPACE_FILE_LIMIT: usize = 20;

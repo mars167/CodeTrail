@@ -792,7 +792,7 @@ mod tests {
         let argv = result["results"][0]["readCommandArgv"].as_array().unwrap();
         assert_eq!(argv[1], "--path");
         assert_eq!(argv[3], "read");
-        assert_eq!(argv[4], "src dir/a b.rs:1");
+        assert_eq!(argv[4], "src dir/a b.rs");
     }
 
     // -- grep -----------------------------------------------------------
