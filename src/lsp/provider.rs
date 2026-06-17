@@ -192,6 +192,7 @@ fn language_from_id(language_id: &str) -> ProjectLanguage {
         "java" => ProjectLanguage::Java,
         "typescript" | "javascript" => ProjectLanguage::TypeScript,
         "ruby" => ProjectLanguage::Ruby,
+        "swift" => ProjectLanguage::Swift,
         _ => ProjectLanguage::Rust,
     }
 }

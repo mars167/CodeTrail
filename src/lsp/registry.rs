@@ -66,6 +66,12 @@ pub fn resolve_server(language: &ProjectLanguage) -> Option<ServerSpec> {
             provider_id: "ruby-lsp".to_string(),
             readiness: ReadinessStrategy::Immediate,
         }),
+        ProjectLanguage::Swift => Some(ServerSpec {
+            program: resolve_binary("sourcekit-lsp")?,
+            args: Vec::new(),
+            provider_id: "sourcekit-lsp".to_string(),
+            readiness: ReadinessStrategy::Immediate,
+        }),
     }
 }
 
@@ -84,6 +90,7 @@ fn resolve_from_env(language: &ProjectLanguage) -> Option<ServerSpec> {
         ProjectLanguage::Java => "CODETRAIL_LSP_JAVA",
         ProjectLanguage::TypeScript => "CODETRAIL_LSP_TYPESCRIPT",
         ProjectLanguage::Ruby => "CODETRAIL_LSP_RUBY",
+        ProjectLanguage::Swift => "CODETRAIL_LSP_SWIFT",
     };
     let value = env::var(key).ok()?;
     let mut parts = shell_words(&value).into_iter();
@@ -283,6 +290,7 @@ mod tests {
             ProjectLanguage::Java,
             ProjectLanguage::TypeScript,
             ProjectLanguage::Ruby,
+            ProjectLanguage::Swift,
         ] {
             let _ = resolve_server(&language);
         }

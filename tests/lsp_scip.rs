@@ -36,6 +36,21 @@ fn setup_go_fixture(dir: &std::path::Path) {
     fs::write(dir.join("needle.go"), "package main\n\nfunc Needle() {}\n").unwrap();
 }
 
+fn setup_swift_fixture(dir: &std::path::Path) {
+    fs::write(dir.join("Package.swift"), "// swift-tools-version: 6.0\n").unwrap();
+    fs::create_dir_all(dir.join("Sources/App")).unwrap();
+    fs::write(
+        dir.join("Sources/App/Main.swift"),
+        "public func main() {\n    Needle()\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join("Sources/App/Needle.swift"),
+        "public func Needle() {}\n",
+    )
+    .unwrap();
+}
+
 struct EnvVarGuard {
     key: &'static str,
     value: Option<std::ffi::OsString>,
@@ -373,6 +388,143 @@ fn defs_use_precise_fact_after_lsp_index_build() {
             .unwrap_or(true),
         "expected precise defs for Needle: {response}"
     );
+}
+
+#[test]
+fn swift_lsp_build_uses_sourcekit_env_override_for_precise_defs() {
+    let dir = tempdir().unwrap();
+    setup_swift_fixture(dir.path());
+
+    let server = fake_lsp_server_path();
+    if !server.exists() {
+        return;
+    }
+    std::env::set_var("CODETRAIL_LSP_SWIFT", format!("{} serve", server.display()));
+    std::env::set_var("CODETRAIL_SEMANTIC_BUDGET_MS", "10000");
+
+    let workspace = Workspace::discover(dir.path()).unwrap();
+    let scan = ScanOptions {
+        include: vec![],
+        exclude: vec![],
+        hidden: false,
+        no_ignore: false,
+        lang: vec![],
+        changed: false,
+        cursor: None,
+        allow_broad: true,
+        limit: 0,
+        ..ScanOptions::default()
+    };
+    index::build(
+        &workspace,
+        &scan,
+        false,
+        false,
+        true,
+        true,
+        VerboseLogger::new(0),
+    )
+    .unwrap();
+
+    let service = QueryService::new(dir.path()).unwrap();
+    let response = service.defs("Needle", &QueryOptions::default()).unwrap();
+    assert_eq!(response["reliability"]["level"], "precise_fact");
+    assert!(response["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|result| {
+            result["language"] == "swift" && result["path"] == "Sources/App/Needle.swift"
+        }));
+}
+
+#[test]
+fn swift_generate_scip_emits_importable_json() {
+    let dir = tempdir().unwrap();
+    setup_swift_fixture(dir.path());
+
+    let server = fake_lsp_server_path();
+    if !server.exists() {
+        return;
+    }
+    let _swift_guard = EnvVarGuard::set(
+        "CODETRAIL_LSP_SWIFT",
+        &format!("{} serve", server.display()),
+    );
+    let _budget_guard = EnvVarGuard::set("CODETRAIL_SEMANTIC_BUDGET_MS", "10000");
+    let output_path = dir.path().join("swift.scip.json");
+
+    let generate = Command::new(cargo_bin("codetrail"))
+        .args([
+            "--path",
+            dir.path().to_str().unwrap(),
+            "--output",
+            "json",
+            "index",
+            "generate-scip",
+            "--lang",
+            "swift",
+            "--output",
+            output_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        generate.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&generate.stderr)
+    );
+    let scip_json: Value = serde_json::from_slice(&fs::read(&output_path).unwrap()).unwrap();
+    assert!(scip_json["documents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|doc| {
+            doc["language"] == "swift" && doc["relativePath"] == "Sources/App/Needle.swift"
+        }));
+
+    let import = Command::new(cargo_bin("codetrail"))
+        .args([
+            "--path",
+            dir.path().to_str().unwrap(),
+            "--output",
+            "json",
+            "index",
+            "import-scip",
+            output_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        import.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&import.stderr)
+    );
+
+    let defs = Command::new(cargo_bin("codetrail"))
+        .args([
+            "--path",
+            dir.path().to_str().unwrap(),
+            "--output",
+            "json",
+            "defs",
+            "Needle",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        defs.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&defs.stderr)
+    );
+    let defs_json: Value = serde_json::from_slice(&defs.stdout).unwrap();
+    assert!(defs_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|result| {
+            result["language"] == "swift" && result["path"] == "Sources/App/Needle.swift"
+        }));
 }
 
 #[test]

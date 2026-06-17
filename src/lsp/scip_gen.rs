@@ -15,10 +15,12 @@ use crate::{
     index,
     output::VerboseLogger,
     project_graph::{
-        discover_project_graph, ProjectGraph, ProjectLanguage, ProjectRoot, SemanticFactPolicy,
+        discover_project_graph, ProjectGraph, ProjectLanguage, ProjectRoot, ProjectRootKind,
+        SemanticFactPolicy,
     },
     scip,
     scip_index::native_db_path,
+    scip_proto::proto,
     semantic_facts::{
         write_scip_index, FactReliability, InternalRange, OccurrenceRole, ProviderProof,
         ProviderRange, RangeEncoding, SemanticOccurrence, SemanticSymbol, SymbolDescriptor,
@@ -114,6 +116,11 @@ pub fn generate_best_effort(
     let mut language_reports = Vec::new();
     let mut manifests = Vec::new();
 
+    for (root, files, report) in skipped_lsp_roots(workspace, &graph, None) {
+        language_reports.push(report.clone());
+        manifests.push(build_manifest(workspace, root, &report, &files, records));
+    }
+
     let groups = lsp_work_groups(workspace, &graph);
     for ((language, lsp_root_path), roots) in groups {
         if Instant::now() >= deadline {
@@ -176,6 +183,66 @@ pub fn generate_best_effort(
     })
 }
 
+pub fn generate_index_for_language(
+    workspace: &Workspace,
+    records: &[FileRecord],
+    language: ProjectLanguage,
+    verbose: VerboseLogger,
+) -> Result<(proto::Index, SemanticBuildReport)> {
+    let graph = project_graph_or_empty(workspace);
+    let budget_ms = semantic_budget_ms(&graph);
+    let deadline = Instant::now() + Duration::from_millis(budget_ms);
+    verbose.log(format!(
+        "semantic: generating SCIP via LSP language={} budget={}ms",
+        language, budget_ms
+    ));
+
+    let file_contents = load_file_contents(workspace, records);
+    let mut all_occurrences = Vec::new();
+    let mut language_reports = Vec::new();
+
+    for (_, _, report) in skipped_lsp_roots(workspace, &graph, Some(&language)) {
+        language_reports.push(report);
+    }
+
+    let groups = lsp_work_groups(workspace, &graph);
+    for ((group_language, lsp_root_path), roots) in groups {
+        if group_language != language {
+            continue;
+        }
+        if Instant::now() >= deadline {
+            verbose.log("semantic: wall-clock budget exhausted");
+            break;
+        }
+        let reports = index_lsp_group(
+            LspGroupRequest {
+                workspace,
+                language: group_language,
+                lsp_root_path: &lsp_root_path,
+                roots: &roots,
+                file_contents: &file_contents,
+                deadline,
+                verbose,
+            },
+            &mut all_occurrences,
+        );
+        for (_, _, report) in reports {
+            language_reports.push(report);
+        }
+    }
+
+    let scip_index = write_scip_index(&all_occurrences, &workspace.root.to_string_lossy())?;
+    Ok((
+        scip_index,
+        SemanticBuildReport {
+            attempted: true,
+            skipped: false,
+            skip_reason: None,
+            languages: language_reports,
+        },
+    ))
+}
+
 fn semantic_budget_ms(graph: &ProjectGraph) -> u64 {
     if let Some(value) = std::env::var("CODETRAIL_SEMANTIC_BUDGET_MS")
         .ok()
@@ -185,6 +252,19 @@ fn semantic_budget_ms(graph: &ProjectGraph) -> u64 {
     }
 
     adaptive_semantic_budget_ms(graph)
+}
+
+fn project_graph_or_empty(workspace: &Workspace) -> ProjectGraph {
+    discover_project_graph(&workspace.root).unwrap_or_else(|_| ProjectGraph {
+        schema_version: ProjectGraph::CURRENT_SCHEMA_VERSION,
+        roots: Vec::new(),
+        source_owners: Vec::new(),
+        generated_sources: Vec::new(),
+        config_edges: Vec::new(),
+        environment_edges: Vec::new(),
+        dependency_edges: Vec::new(),
+        caveats: Vec::new(),
+    })
 }
 
 fn adaptive_semantic_budget_ms(graph: &ProjectGraph) -> u64 {
@@ -285,6 +365,9 @@ struct RootIndexRequest<'a> {
 fn lsp_work_groups<'a>(workspace: &Workspace, graph: &'a ProjectGraph) -> LspWorkGroups<'a> {
     let mut groups = BTreeMap::new();
     for root in &graph.roots {
+        if !lsp_root_ready(workspace, root) {
+            continue;
+        }
         let files = source_files_for_root(graph, root);
         if files.is_empty() {
             continue;
@@ -295,6 +378,50 @@ fn lsp_work_groups<'a>(workspace: &Workspace, graph: &'a ProjectGraph) -> LspWor
             .push((root, files));
     }
     groups
+}
+
+fn skipped_lsp_roots<'a>(
+    workspace: &Workspace,
+    graph: &'a ProjectGraph,
+    language_filter: Option<&ProjectLanguage>,
+) -> Vec<(&'a ProjectRoot, Vec<String>, SemanticLanguageReport)> {
+    graph
+        .roots
+        .iter()
+        .filter(|root| language_filter.is_none_or(|language| &root.language == language))
+        .filter(|root| !lsp_root_ready(workspace, root))
+        .map(|root| {
+            (
+                root,
+                source_files_for_root(graph, root),
+                semantic_report(
+                    root,
+                    Some("sourcekit-lsp"),
+                    "partial",
+                    0,
+                    vec![
+                        "semantic_provider_missing_config: buildServer.json_or_compile_commands.json"
+                            .to_string(),
+                    ],
+                ),
+            )
+        })
+        .collect()
+}
+
+fn lsp_root_ready(workspace: &Workspace, root: &ProjectRoot) -> bool {
+    match root.kind {
+        ProjectRootKind::SwiftXcodeProject | ProjectRootKind::SwiftXcodeWorkspace => {
+            let root_path = if root.path == "." {
+                workspace.root.clone()
+            } else {
+                workspace.root.join(&root.path)
+            };
+            root_path.join("buildServer.json").exists()
+                || root_path.join("compile_commands.json").exists()
+        }
+        _ => true,
+    }
 }
 
 fn lsp_workspace_root(workspace: &Workspace, root: &ProjectRoot) -> PathBuf {
@@ -620,6 +747,7 @@ fn lsp_language_id(language: &ProjectLanguage) -> &'static str {
         ProjectLanguage::Java => "java",
         ProjectLanguage::TypeScript => "typescript",
         ProjectLanguage::Ruby => "ruby",
+        ProjectLanguage::Swift => "swift",
     }
 }
 

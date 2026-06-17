@@ -9,7 +9,9 @@ use crate::{
     generation_manifest::{GenerationManifest, ManifestState},
     index::scip_root,
     lsp::registry::{resolve_binary, resolve_server},
-    project_graph::{discover_project_graph, ProjectLanguage, ProjectRoot},
+    project_graph::{
+        discover_project_graph, ProjectGraph, ProjectLanguage, ProjectRoot, ProjectRootKind,
+    },
     scip,
     workspace::{FileRecord, Workspace},
 };
@@ -39,7 +41,7 @@ pub(crate) fn semantic_status(
 
     let graph = discover_project_graph(&workspace.root);
     let (roots, language_servers, graph_error) = match graph {
-        Ok(graph) => semantic_roots_and_servers(&graph.roots, manifests),
+        Ok(graph) => semantic_roots_and_servers(workspace, &graph, manifests),
         Err(error) => (
             Vec::new(),
             Vec::new(),
@@ -100,7 +102,8 @@ fn scip_language_summary(db_path: &Path) -> (Value, usize, Option<String>) {
 }
 
 fn semantic_roots_and_servers(
-    roots: &[ProjectRoot],
+    workspace: &Workspace,
+    graph: &ProjectGraph,
     manifests: &[GenerationManifest],
 ) -> (Vec<Value>, Vec<Value>, Option<String>) {
     let mut manifest_by_root = BTreeMap::<&str, &GenerationManifest>::new();
@@ -108,11 +111,12 @@ fn semantic_roots_and_servers(
         manifest_by_root.insert(&manifest.root_id, manifest);
     }
 
-    let root_values = roots
+    let root_values = graph
+        .roots
         .iter()
         .map(|root| {
             let manifest = manifest_by_root.get(root.id.as_str()).copied();
-            json!({
+            let mut value = json!({
                 "rootId": root.id,
                 "path": root.path,
                 "language": root.language.to_string(),
@@ -126,12 +130,16 @@ fn semantic_roots_and_servers(
                 "partialReasons": manifest
                     .map(|manifest| manifest.partial_reasons.clone())
                     .unwrap_or_default(),
-            })
+            });
+            if let Some(config) = swift_config_status(workspace, root) {
+                value["swiftConfig"] = config;
+            }
+            value
         })
         .collect::<Vec<_>>();
 
     let mut languages = BTreeSet::<ProjectLanguage>::new();
-    for root in roots {
+    for root in &graph.roots {
         languages.insert(root.language.clone());
     }
     let language_servers = languages
@@ -140,6 +148,48 @@ fn semantic_roots_and_servers(
         .collect::<Vec<_>>();
 
     (root_values, language_servers, None)
+}
+
+fn swift_config_status(workspace: &Workspace, root: &ProjectRoot) -> Option<Value> {
+    if root.language != ProjectLanguage::Swift {
+        return None;
+    }
+    match root.kind {
+        ProjectRootKind::SwiftPackage => Some(json!({
+            "kind": "swiftpm",
+            "ready": true,
+            "status": "configured",
+            "message": "SwiftPM root is SourceKit-LSP eligible"
+        })),
+        ProjectRootKind::SwiftXcodeProject | ProjectRootKind::SwiftXcodeWorkspace => {
+            let root_path = if root.path == "." {
+                workspace.root.clone()
+            } else {
+                workspace.root.join(&root.path)
+            };
+            let build_server = root_path.join("buildServer.json").exists();
+            let compile_commands = root_path.join("compile_commands.json").exists();
+            let ready = build_server || compile_commands;
+            Some(json!({
+                "kind": "xcode",
+                "ready": ready,
+                "status": if ready { "configured" } else { "missing_config" },
+                "buildServerJson": build_server,
+                "compileCommandsJson": compile_commands,
+                "missing": if ready {
+                    Vec::<String>::new()
+                } else {
+                    vec!["buildServer.json".to_string(), "compile_commands.json".to_string()]
+                },
+                "message": if ready {
+                    "Xcode root has SourceKit-LSP build configuration"
+                } else {
+                    "Create buildServer.json or compile_commands.json to enable precise SourceKit-LSP facts"
+                }
+            }))
+        }
+        _ => None,
+    }
 }
 
 fn language_server_status(language: &ProjectLanguage) -> Value {
@@ -204,6 +254,7 @@ const fn default_lsp_command(language: &ProjectLanguage) -> &'static str {
         ProjectLanguage::Java => "jdtls",
         ProjectLanguage::TypeScript => "typescript-language-server",
         ProjectLanguage::Ruby => "ruby-lsp",
+        ProjectLanguage::Swift => "sourcekit-lsp",
     }
 }
 
@@ -214,6 +265,7 @@ const fn lsp_env_key(language: &ProjectLanguage) -> &'static str {
         ProjectLanguage::Java => "CODETRAIL_LSP_JAVA",
         ProjectLanguage::TypeScript => "CODETRAIL_LSP_TYPESCRIPT",
         ProjectLanguage::Ruby => "CODETRAIL_LSP_RUBY",
+        ProjectLanguage::Swift => "CODETRAIL_LSP_SWIFT",
     }
 }
 

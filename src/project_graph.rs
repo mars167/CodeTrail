@@ -67,6 +67,7 @@ pub enum ProjectLanguage {
     Java,
     TypeScript,
     Ruby,
+    Swift,
 }
 
 impl ProjectLanguage {
@@ -77,6 +78,7 @@ impl ProjectLanguage {
             ProjectLanguage::Java => &["java"],
             ProjectLanguage::TypeScript => &["ts", "tsx", "js", "jsx", "mjs", "cjs"],
             ProjectLanguage::Ruby => &["rb", "rake", "gemspec"],
+            ProjectLanguage::Swift => &["swift"],
         }
     }
 }
@@ -89,6 +91,7 @@ impl fmt::Display for ProjectLanguage {
             ProjectLanguage::Java => write!(f, "java"),
             ProjectLanguage::TypeScript => write!(f, "typescript"),
             ProjectLanguage::Ruby => write!(f, "ruby"),
+            ProjectLanguage::Swift => write!(f, "swift"),
         }
     }
 }
@@ -105,6 +108,9 @@ pub enum ProjectRootKind {
     TypeScriptPackage,
     RubyGemfile,
     RubyGemspec,
+    SwiftPackage,
+    SwiftXcodeWorkspace,
+    SwiftXcodeProject,
 }
 
 impl ProjectRootKind {
@@ -117,6 +123,9 @@ impl ProjectRootKind {
                 ProjectLanguage::TypeScript
             }
             ProjectRootKind::RubyGemfile | ProjectRootKind::RubyGemspec => ProjectLanguage::Ruby,
+            ProjectRootKind::SwiftPackage
+            | ProjectRootKind::SwiftXcodeWorkspace
+            | ProjectRootKind::SwiftXcodeProject => ProjectLanguage::Swift,
         }
     }
 
@@ -131,6 +140,9 @@ impl ProjectRootKind {
             ProjectRootKind::TypeScriptPackage => 1,
             ProjectRootKind::RubyGemfile => 0,
             ProjectRootKind::RubyGemspec => 1,
+            ProjectRootKind::SwiftPackage => 0,
+            ProjectRootKind::SwiftXcodeWorkspace => 1,
+            ProjectRootKind::SwiftXcodeProject => 2,
         }
     }
 }
@@ -474,6 +486,9 @@ fn discover_edges(
 }
 
 fn root_marker(path: &str) -> Option<(ProjectRootKind, String)> {
+    if let Some(marker) = xcode_root_marker(path) {
+        return Some(marker);
+    }
     let file_name = file_name(path);
     let kind = match file_name {
         "go.mod" => ProjectRootKind::GoModule,
@@ -487,13 +502,32 @@ fn root_marker(path: &str) -> Option<(ProjectRootKind, String)> {
         "package.json" => ProjectRootKind::TypeScriptPackage,
         "Gemfile" => ProjectRootKind::RubyGemfile,
         name if name.ends_with(".gemspec") => ProjectRootKind::RubyGemspec,
+        "Package.swift" => ProjectRootKind::SwiftPackage,
         _ => return None,
     };
     Some((kind, parent_dir(path)))
 }
 
+fn xcode_root_marker(path: &str) -> Option<(ProjectRootKind, String)> {
+    let mut parts = path.rsplitn(2, '/');
+    let file = parts.next()?;
+    let parent = parts.next()?;
+    if file != "project.pbxproj" && file != "contents.xcworkspacedata" {
+        return None;
+    }
+    let bundle_name = file_name(parent);
+    let kind = if bundle_name.ends_with(".xcodeproj") {
+        ProjectRootKind::SwiftXcodeProject
+    } else if bundle_name.ends_with(".xcworkspace") {
+        ProjectRootKind::SwiftXcodeWorkspace
+    } else {
+        return None;
+    };
+    Some((kind, parent_dir(parent)))
+}
+
 fn config_edge_kind(path: &str) -> Option<ConfigEdgeKind> {
-    if root_marker(path).is_some() {
+    if root_marker(path).is_some() || swift_lsp_build_config(path) {
         return Some(ConfigEdgeKind::BuildConfig);
     }
     if dependency_config_file(path) {
@@ -542,6 +576,14 @@ fn dependency_config_file(path: &str) -> bool {
             | "gradle.lockfile"
             | "go.sum"
             | "Gemfile.lock"
+            | "Package.resolved"
+    )
+}
+
+fn swift_lsp_build_config(path: &str) -> bool {
+    matches!(
+        file_name(path),
+        "buildServer.json" | "compile_commands.json"
     )
 }
 
@@ -590,6 +632,15 @@ fn affected_roots_for_config(
         ConfigEdgeKind::BuildConfig => {
             if let Some(root) = root_for_build_config(path, roots) {
                 (Some(root.id.clone()), vec![root.id.clone()], false)
+            } else if swift_lsp_build_config(path) {
+                let matching = matching_language_roots(path, &ProjectLanguage::Swift, roots);
+                if matching.is_empty() {
+                    (None, Vec::new(), true)
+                } else if matching.len() == 1 {
+                    (Some(matching[0].clone()), matching, false)
+                } else {
+                    (None, matching, false)
+                }
             } else if shared_config_path(path) && !roots.is_empty() {
                 (None, all_root_ids(roots), false)
             } else {
@@ -669,6 +720,7 @@ fn dependency_config_language(path: &str) -> Option<ProjectLanguage> {
         "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock" => Some(ProjectLanguage::TypeScript),
         "gradle.lockfile" => Some(ProjectLanguage::Java),
         "Gemfile.lock" => Some(ProjectLanguage::Ruby),
+        "Package.resolved" => Some(ProjectLanguage::Swift),
         _ => None,
     }
 }
@@ -817,6 +869,7 @@ fn source_language(path: &str) -> Option<ProjectLanguage> {
         ProjectLanguage::Java,
         ProjectLanguage::TypeScript,
         ProjectLanguage::Ruby,
+        ProjectLanguage::Swift,
     ]
     .into_iter()
     .find(|language| language.source_extensions().contains(&ext.as_str()))

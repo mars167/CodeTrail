@@ -12,7 +12,7 @@ flowchart TB
 
   Fresh --> Store["Primary local store\n.codetrail/index.lance"]
   Store --> Text["Text/path candidates"]
-  Build["index build semantic phase"] --> LSP["LSP bridge\ngopls / rust-analyzer / jdtls / tls"]
+  Build["index build semantic phase"] --> LSP["LSP bridge\ngopls / rust-analyzer / jdtls / tls / sourcekit-lsp"]
   LSP --> Occ["SCIP occurrences.db"]
   Fresh --> Parser["Tree-sitter fallback"]
   Fresh --> G["Petgraph call candidates"]
@@ -108,12 +108,15 @@ flowchart LR
 
 ## 语义索引（LSP → SCIP）
 
-`index build` 在文本索引与调用图之后，默认 best-effort 启动各语言 LSP（`gopls`、`rust-analyzer`、`jdtls`、`typescript-language-server`），通过 `documentSymbol` 与采样 `references` 合成 `SemanticOccurrence`，写入 `.codetrail/scip/<snapshot-key>/occurrences.db`。
+`index build` 在文本索引与调用图之后，默认 best-effort 启动各语言 LSP（`gopls`、`rust-analyzer`、`jdtls`、`typescript-language-server`、`ruby-lsp`、`sourcekit-lsp`），通过 `documentSymbol` 与采样 `references` 合成 `SemanticOccurrence`，写入 `.codetrail/scip/<snapshot-key>/occurrences.db`。
 
 - `--no-semantic` 跳过该阶段；`index build --staged` 不运行语义阶段。
 - 任何 LSP 失败只产生 partial/missing manifest 与 caveat，不阻塞 build。
 - 环境变量：`CODETRAIL_LSP_<LANG>` 覆盖 server 命令；`CODETRAIL_SEMANTIC_BUDGET_MS` 控制总墙钟预算（默认 60s）。
 - 若 `occurrences.db` 已与当前 snapshot 和 file hash 对齐，重复 build 会跳过语义阶段。
+- SwiftPM root 直接通过 `sourcekit-lsp` 尝试语义索引；Xcode root 只读取已有
+  `buildServer.json` 或 `compile_commands.json` 状态并在 `index status`
+  中报告，不会自动运行 `xcode-build-server config` 或写入配置文件。
 
 ## Remote
 

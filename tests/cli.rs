@@ -1069,6 +1069,55 @@ end
 }
 
 #[test]
+fn routes_scans_vapor_swift_routes() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("Sources/App")).unwrap();
+    fs::create_dir_all(dir.path().join("ios/App.xcodeproj")).unwrap();
+    fs::create_dir_all(dir.path().join("ios/Sources")).unwrap();
+    fs::write(
+        dir.path().join("Package.swift"),
+        "// swift-tools-version: 6.0\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("Sources/App/routes.swift"),
+        r#"
+import Vapor
+
+func routes(_ app: Application) throws {
+    app.get("swift", "users", use: listUsers)
+    app.post("swift", "users") { req in "ok" }
+    let grouped = app.grouped("api")
+    grouped.delete("users", ":id", use: deleteUser)
+}
+"#,
+    )
+    .unwrap();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["routes", "--framework", "vapor"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let routes = json["results"].as_array().unwrap();
+    let patterns = routes
+        .iter()
+        .map(|route| route["routePattern"].as_str().unwrap())
+        .collect::<Vec<_>>();
+
+    assert!(patterns.contains(&"/swift/users"));
+    assert!(patterns.contains(&"/api/users/:id"));
+    assert!(routes.iter().all(|route| route["language"] == "swift"));
+    assert!(routes.iter().all(|route| route["framework"] == "vapor"));
+    assert_eq!(json["reliability"]["level"], "parser_fact");
+}
+
+#[test]
 fn routes_handles_utf8_near_java_annotation_window() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src/main/java/example")).unwrap();
@@ -1295,6 +1344,108 @@ fn browse_scope_filters_list_and_tree_by_language_extension_and_changed() {
     let tree_json: Value = serde_json::from_slice(&tree).unwrap();
     assert_eq!(tree_json["results"].as_array().unwrap().len(), 1);
     assert_eq!(tree_json["results"][0]["path"], "src/app.rb");
+}
+
+#[test]
+fn swift_language_mapping_is_visible_to_files_list_read_and_index_status() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("Sources/App")).unwrap();
+    fs::create_dir_all(dir.path().join("ios/App.xcodeproj")).unwrap();
+    fs::create_dir_all(dir.path().join("ios/Sources")).unwrap();
+    fs::write(
+        dir.path().join("Package.swift"),
+        "// swift-tools-version: 6.0\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("Sources/App/App.swift"),
+        "public struct App { public func run() {} }\n",
+    )
+    .unwrap();
+    fs::write(dir.path().join("ios/App.xcodeproj/project.pbxproj"), "{}\n").unwrap();
+    fs::write(
+        dir.path().join("ios/Sources/ViewController.swift"),
+        "final class ViewController {}\n",
+    )
+    .unwrap();
+
+    let files = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--lang")
+        .arg("swift")
+        .args(["files", "App.swift"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let files_json: Value = serde_json::from_slice(&files).unwrap();
+    assert_eq!(files_json["results"][0]["path"], "Sources/App/App.swift");
+    assert_eq!(files_json["results"][0]["language"], "swift");
+
+    let read = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["read", "Sources/App/App.swift:1"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let read_json: Value = serde_json::from_slice(&read).unwrap();
+    assert_eq!(read_json["results"][0]["language"], "swift");
+
+    raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build", "--no-semantic"])
+        .assert()
+        .success();
+
+    let status = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--output")
+        .arg("json")
+        .env("PATH", tempdir().unwrap().path())
+        .env_remove("CODETRAIL_LSP_SWIFT")
+        .args(["index", "status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let status_json: Value = serde_json::from_slice(&status).unwrap();
+    let status = &status_json["results"][0];
+    assert!(status["indexedLanguages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|language| language["language"] == "swift"
+            && language["fileCount"].as_u64().unwrap_or(0) >= 1));
+    let swift_server = status["semanticStatus"]["languageServers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|server| server["language"] == "swift")
+        .expect("swift server status");
+    assert_eq!(swift_server["status"], "missing");
+    assert_eq!(swift_server["defaultCommand"], "sourcekit-lsp");
+    assert_eq!(swift_server["envKey"], "CODETRAIL_LSP_SWIFT");
+
+    let roots = status["semanticStatus"]["roots"].as_array().unwrap();
+    let swiftpm_root = roots
+        .iter()
+        .find(|root| root["kind"] == "swift_package")
+        .expect("swift package root");
+    assert_eq!(swiftpm_root["swiftConfig"]["status"], "configured");
+    let xcode_root = roots
+        .iter()
+        .find(|root| root["kind"] == "swift_xcode_project")
+        .expect("xcode root");
+    assert_eq!(xcode_root["swiftConfig"]["ready"], false);
+    assert_eq!(xcode_root["swiftConfig"]["status"], "missing_config");
 }
 
 #[test]
@@ -4566,6 +4717,86 @@ fn parser_fallback_supports_java_methods_and_callers() {
     assert_eq!(callers_json["results"][0]["target"], "run");
     assert_eq!(callers_json["results"][0]["enclosingSymbol"], "start");
     assert_eq!(callers_json["results"][0]["language"], "java");
+}
+
+#[test]
+fn parser_fallback_supports_swift_symbols_defs_and_callers() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("Sources/App")).unwrap();
+    fs::write(
+        dir.path().join("Package.swift"),
+        "// swift-tools-version: 6.0\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("Sources/App/App.swift"),
+        r#"
+import Vapor
+
+protocol Runnable {
+    func run()
+}
+
+struct Worker: Runnable {
+    func run() {
+        helper()
+        UserController()
+    }
+}
+
+final class UserController {
+    init() {}
+}
+
+func helper() {}
+"#,
+    )
+    .unwrap();
+
+    let symbols = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["symbols", "Worker"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let symbols_json: Value = serde_json::from_slice(&symbols).unwrap();
+    assert_eq!(symbols_json["reliability"]["level"], "parser_fact");
+    assert_eq!(symbols_json["results"][0]["language"], "swift");
+    assert_eq!(symbols_json["results"][0]["symbolName"], "Worker");
+
+    let defs = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "helper"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let defs_json: Value = serde_json::from_slice(&defs).unwrap();
+    assert_eq!(defs_json["results"][0]["language"], "swift");
+    assert_eq!(defs_json["results"][0]["name"], "helper");
+    assert_eq!(defs_json["results"][0]["kind"], "function");
+
+    let callers = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["callers", "helper"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let callers_json: Value = serde_json::from_slice(&callers).unwrap();
+    assert_eq!(callers_json["reliability"]["level"], "inferred_candidate");
+    assert!(callers_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|result| result["language"] == "swift" && result["enclosingSymbol"] == "run"));
 }
 
 #[test]

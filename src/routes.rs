@@ -27,6 +27,7 @@ pub fn scan(
             "typescript".to_string(),
             "javascript".to_string(),
             "ruby".to_string(),
+            "swift".to_string(),
         ];
     }
     let files = workspace.scan_files(&scan_opts)?;
@@ -144,6 +145,7 @@ fn collect_file_routes(
         "python" => python_routes(file, content, filter, results)?,
         "typescript" | "javascript" => js_routes(file, content, filter, results)?,
         "ruby" => ruby_routes(file, content, filter, results)?,
+        "swift" => swift_routes(file, content, filter, results)?,
         _ => {}
     }
     Ok(())
@@ -633,6 +635,101 @@ fn ruby_routes(
     Ok(())
 }
 
+fn swift_routes(
+    file: &FileRecord,
+    content: &str,
+    filter: &RouteFilter,
+    results: &mut Vec<Value>,
+) -> Result<()> {
+    let prefixes = swift_route_prefixes(content)?;
+    let route = Regex::new(r#"\b([A-Za-z_]\w*)\.(get|post|put|patch|delete)\s*\("#)?;
+    for found in route.captures_iter(content) {
+        let Some(whole) = found.get(0) else {
+            continue;
+        };
+        let receiver = &found[1];
+        let Some(prefix) = prefixes.get(receiver) else {
+            continue;
+        };
+        let open = whole.end().saturating_sub(1);
+        let close = matching_paren(content, open).unwrap_or(whole.end());
+        let args = if close > open + 1 {
+            &content[open + 1..close.saturating_sub(1)]
+        } else {
+            ""
+        };
+        let path = swift_route_path(prefix, args);
+        let method = found[2].to_ascii_uppercase();
+        let handler = swift_route_handler(args, &content[close..]);
+        push_route(
+            file,
+            content,
+            filter,
+            RouteMatch {
+                framework: "vapor",
+                method: &method,
+                path: &path,
+                handler,
+                handler_kind: "function",
+                start: whole.start(),
+                end: close,
+            },
+            results,
+        );
+    }
+    Ok(())
+}
+
+fn swift_route_prefixes(content: &str) -> Result<std::collections::BTreeMap<String, String>> {
+    let mut prefixes = std::collections::BTreeMap::from([
+        ("app".to_string(), String::new()),
+        ("routes".to_string(), String::new()),
+        ("router".to_string(), String::new()),
+    ]);
+    let grouped = Regex::new(
+        r#"\b(?:let|var)\s+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\.grouped\s*\(([^)]*)\)"#,
+    )?;
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for found in grouped.captures_iter(content) {
+            let name = found[1].to_string();
+            if prefixes.contains_key(&name) {
+                continue;
+            }
+            let Some(parent) = prefixes.get(&found[2]) else {
+                continue;
+            };
+            let prefix = swift_route_path(parent, &found[3]);
+            prefixes.insert(name, prefix);
+            changed = true;
+        }
+    }
+    Ok(prefixes)
+}
+
+fn swift_route_path(prefix: &str, args: &str) -> String {
+    let mut path = prefix.to_string();
+    for segment in quoted_segments(args) {
+        path = join_path(&path, segment);
+    }
+    path
+}
+
+fn swift_route_handler(args: &str, tail: &str) -> Option<String> {
+    let use_handler = Regex::new(r#"\buse\s*:\s*([A-Za-z_]\w*)"#)
+        .ok()
+        .and_then(|pattern| pattern.captures(args).map(|found| found[1].to_string()));
+    if use_handler.is_some() {
+        return use_handler;
+    }
+    if tail.trim_start().starts_with('{') {
+        Some("<inline>".to_string())
+    } else {
+        None
+    }
+}
+
 fn push_ruby_line(
     file: &FileRecord,
     content: &str,
@@ -777,6 +874,25 @@ fn first_quoted(input: &str) -> Option<&str> {
         return None;
     }
     None
+}
+
+fn quoted_segments(input: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut chars = input.char_indices();
+    while let Some((idx, ch)) = chars.next() {
+        if ch != '\'' && ch != '"' {
+            continue;
+        }
+        let quote = ch;
+        let start = idx + ch.len_utf8();
+        for (end, next) in chars.by_ref() {
+            if next == quote {
+                segments.push(&input[start..end]);
+                break;
+            }
+        }
+    }
+    segments
 }
 
 fn join_path(prefix: &str, path: &str) -> String {

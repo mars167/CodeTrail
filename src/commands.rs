@@ -761,21 +761,41 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 lang,
                 output: out_path,
             } => {
-                if lang != "go" {
-                    anyhow::bail!("SCIP generation is currently only supported for Go (--lang go)");
-                }
                 let out = out_path.as_deref().unwrap_or("index.scip.json");
-                crate::scip_indexer::generate_go_scip(
-                    std::path::Path::new(&cli.path),
-                    std::path::Path::new(out),
-                )?;
+                let result = match lang.as_str() {
+                    "go" => {
+                        crate::scip_indexer::generate_go_scip(
+                            std::path::Path::new(&cli.path),
+                            std::path::Path::new(out),
+                        )?;
+                        json!({"status": "generated", "output": out})
+                    }
+                    "swift" => {
+                        let summary = crate::scip_indexer::generate_swift_scip(
+                            std::path::Path::new(&cli.path),
+                            std::path::Path::new(out),
+                            verbose,
+                        )?;
+                        json!({
+                            "status": "generated",
+                            "output": out,
+                            "documentCount": summary.document_count,
+                            "occurrenceCount": summary.occurrence_count,
+                            "symbolCount": summary.symbol_count,
+                            "semantic": crate::lsp::scip_gen::semantic_summary_json(&summary.semantic_report)
+                        })
+                    }
+                    _ => anyhow::bail!(
+                        "SCIP generation is currently supported for Go and Swift (--lang go|swift)"
+                    ),
+                };
                 output::response(
                     "index generate-scip",
                     "index generate-scip",
                     json!({"lang": lang, "output": out}),
                     &workspace.snapshot_id,
                     output::freshness(),
-                    json!([{"status": "generated", "output": out}]),
+                    json!([result]),
                     Vec::new(),
                 )
             }
