@@ -36,6 +36,7 @@ use super::registry::{file_path_to_uri, resolve_server, uri_to_relative_path, Se
 
 const DEFAULT_SEMANTIC_BUDGET_MS: u64 = 60_000;
 const MAX_REFERENCE_PROBES: usize = 200;
+const MAX_HIGH_FANOUT_REFERENCE_PROBES: usize = 5_000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -762,7 +763,20 @@ fn reference_probe_limit_for_root(root: &ProjectRoot, files: &[String]) -> usize
         return limit;
     }
     if root.language == ProjectLanguage::Java {
-        return MAX_REFERENCE_PROBES.max(files.len().saturating_mul(32).min(5_000));
+        return MAX_REFERENCE_PROBES.max(
+            files
+                .len()
+                .saturating_mul(32)
+                .min(MAX_HIGH_FANOUT_REFERENCE_PROBES),
+        );
+    }
+    if root.language == ProjectLanguage::Swift {
+        return MAX_REFERENCE_PROBES.max(
+            files
+                .len()
+                .saturating_mul(64)
+                .min(MAX_HIGH_FANOUT_REFERENCE_PROBES),
+        );
     }
     MAX_REFERENCE_PROBES
 }

@@ -525,6 +525,31 @@ fn swift_generate_scip_emits_importable_json() {
         .any(|result| {
             result["language"] == "swift" && result["path"] == "Sources/App/Needle.swift"
         }));
+
+    let refs = Command::new(cargo_bin("codetrail"))
+        .args([
+            "--path",
+            dir.path().to_str().unwrap(),
+            "--output",
+            "json",
+            "refs",
+            "Needle",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        refs.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&refs.stderr)
+    );
+    let refs_json: Value = serde_json::from_slice(&refs.stdout).unwrap();
+    assert!(refs_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|result| {
+            result["language"] == "swift" && result["path"] == "Sources/App/Main.swift"
+        }));
 }
 
 #[test]
