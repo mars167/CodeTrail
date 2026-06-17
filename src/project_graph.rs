@@ -515,6 +515,10 @@ fn xcode_root_marker(path: &str) -> Option<(ProjectRootKind, String)> {
     if file != "project.pbxproj" && file != "contents.xcworkspacedata" {
         return None;
     }
+    let marker_dir = parent_dir(parent);
+    if file == "contents.xcworkspacedata" && marker_dir.ends_with(".xcodeproj") {
+        return None;
+    }
     let bundle_name = file_name(parent);
     let kind = if bundle_name.ends_with(".xcodeproj") {
         ProjectRootKind::SwiftXcodeProject
@@ -523,7 +527,7 @@ fn xcode_root_marker(path: &str) -> Option<(ProjectRootKind, String)> {
     } else {
         return None;
     };
-    Some((kind, parent_dir(parent)))
+    Some((kind, marker_dir))
 }
 
 fn config_edge_kind(path: &str) -> Option<ConfigEdgeKind> {

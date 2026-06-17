@@ -72,6 +72,11 @@ fn discovers_swiftpm_and_xcode_roots_with_config_edges() {
         &dir.path().join("ios/App.xcodeproj/project.pbxproj"),
         "// !$*UTF8*$!\n",
     );
+    write(
+        &dir.path()
+            .join("ios/App.xcodeproj/project.xcworkspace/contents.xcworkspacedata"),
+        "<?xml version=\"1.0\"?>\n",
+    );
     write(&dir.path().join("ios/buildServer.json"), "{}\n");
     write(
         &dir.path().join("ios/Sources/ViewController.swift"),
