@@ -624,15 +624,11 @@ fn refs_text_fallback_uses_identifier_boundaries() {
         json["results"][0]["fallbackReason"],
         "precise_scip_index_unavailable"
     );
-    assert!(json["results"][0]["readCommand"]
-        .as_str()
-        .unwrap()
-        .contains("src/main.rs:1"));
+    assert_eq!(json["results"][0]["range"]["start"]["line"], 1);
+    assert_eq!(json["results"][0]["readCommandArgv"][4], "src/main.rs");
     assert_eq!(json["results"][1]["role"], "reference_candidate");
-    assert!(json["results"][1]["readCommand"]
-        .as_str()
-        .unwrap()
-        .contains("src/main.rs:3"));
+    assert_eq!(json["results"][1]["range"]["start"]["line"], 3);
+    assert_eq!(json["results"][1]["readCommandArgv"][4], "src/main.rs");
     let read_json = replay_read_result(&json["results"][1]);
     assert!(read_json["results"][0]["content"]
         .as_str()
@@ -2574,7 +2570,7 @@ fn json_output_includes_read_suggestions_and_next_actions() {
         .unwrap()
         .contains("--path"));
     assert_eq!(json["results"][0]["readCommandArgv"][3], "read");
-    assert_eq!(json["results"][0]["readCommandArgv"][4], "src/main.rs:2");
+    assert_eq!(json["results"][0]["readCommandArgv"][4], "src/main.rs");
     assert_eq!(json["suggestedReads"][0], json["results"][0]["readCommand"]);
     assert_eq!(
         json["nextActions"][0]["command"],
@@ -2582,6 +2578,81 @@ fn json_output_includes_read_suggestions_and_next_actions() {
     );
     assert_eq!(json["truncated"], false);
     assert!(json["nextCursor"].is_null());
+}
+
+#[test]
+fn small_file_read_suggestions_prefer_one_full_file_read() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/main.rs"),
+        "fn first() {\n    println!(\"needle\");\n}\nfn second() {\n    println!(\"needle\");\n}\n",
+    )
+    .unwrap();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["find", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["results"].as_array().unwrap().len(), 2);
+    for result in json["results"].as_array().unwrap() {
+        assert_eq!(result["readCommandArgv"][4], "src/main.rs");
+    }
+    assert_eq!(json["suggestedReads"].as_array().unwrap().len(), 1);
+    assert_eq!(json["nextActions"].as_array().unwrap().len(), 1);
+    assert_eq!(json["suggestedReads"][0], json["results"][0]["readCommand"]);
+
+    let argv = json["results"][0]["readCommandArgv"].as_array().unwrap();
+    let read_output = codetrail()
+        .args(argv.iter().skip(1).map(|value| value.as_str().unwrap()))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let read_json: Value = serde_json::from_slice(&read_output).unwrap();
+    assert_eq!(
+        read_json["results"][0]["content"],
+        "fn first() {\n    println!(\"needle\");\n}\nfn second() {\n    println!(\"needle\");\n}\n"
+    );
+}
+
+#[test]
+fn large_file_read_suggestions_keep_precise_ranges() {
+    let dir = tempdir().unwrap();
+    let content = (0..8000)
+        .map(|idx| {
+            if idx == 7000 {
+                "needle in a large file\n".to_string()
+            } else {
+                format!("line {idx:04} filler text\n")
+            }
+        })
+        .collect::<String>();
+    fs::write(dir.path().join("large.txt"), content).unwrap();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["find", "needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    let read_target = json["results"][0]["readCommandArgv"][4].as_str().unwrap();
+    assert!(read_target.starts_with("large.txt:"));
+    assert_ne!(read_target, "large.txt");
+    assert_eq!(json["suggestedReads"].as_array().unwrap().len(), 1);
 }
 
 #[test]
@@ -2611,7 +2682,7 @@ fn read_commands_are_replayable_with_path_and_spaces() {
     assert_eq!(argv[1], "--path");
     assert_eq!(argv[2], canonical_root.to_string_lossy().as_ref());
     assert_eq!(argv[3], "read");
-    assert_eq!(argv[4], "src dir/a b.rs:1");
+    assert_eq!(argv[4], "src dir/a b.rs");
 
     let read_output = codetrail()
         .args(argv.iter().skip(1).map(|value| value.as_str().unwrap()))
@@ -2623,7 +2694,7 @@ fn read_commands_are_replayable_with_path_and_spaces() {
     let read_json: Value = serde_json::from_slice(&read_output).unwrap();
     assert_eq!(
         read_json["results"][0]["content"],
-        "fn main() { /* needle */ }"
+        "fn main() { /* needle */ }\n"
     );
 }
 
@@ -2644,7 +2715,7 @@ fn read_command_argv_handles_paths_that_look_like_flags() {
     let json: Value = serde_json::from_slice(&output).unwrap();
     let argv = json["results"][0]["readCommandArgv"].as_array().unwrap();
     assert_eq!(argv[4], "--");
-    assert_eq!(argv[5], "--odd.txt:1");
+    assert_eq!(argv[5], "--odd.txt");
 
     let read_output = codetrail()
         .args(argv.iter().skip(1).map(|value| value.as_str().unwrap()))
@@ -2654,7 +2725,7 @@ fn read_command_argv_handles_paths_that_look_like_flags() {
         .stdout
         .clone();
     let read_json: Value = serde_json::from_slice(&read_output).unwrap();
-    assert_eq!(read_json["results"][0]["content"], "needle");
+    assert_eq!(read_json["results"][0]["content"], "needle\n");
 }
 
 #[test]
@@ -4298,10 +4369,7 @@ fn imported_scip_index_drives_precise_defs_refs_and_symbols() {
     assert_eq!(defs_json["results"][0]["symbolName"], "needle");
     assert_eq!(defs_json["results"][0]["role"], "definition");
     assert_eq!(defs_json["results"][0]["range"]["start"]["line"], 1);
-    assert!(defs_json["results"][0]["readCommand"]
-        .as_str()
-        .unwrap()
-        .contains("src/lib.rs:1"));
+    assert_eq!(defs_json["results"][0]["readCommandArgv"][4], "src/lib.rs");
     let defs_read_json = replay_read_result(&defs_json["results"][0]);
     assert!(defs_read_json["results"][0]["content"]
         .as_str()
@@ -4323,10 +4391,7 @@ fn imported_scip_index_drives_precise_defs_refs_and_symbols() {
     assert_eq!(refs_json["results"][0]["symbolName"], "needle");
     assert_eq!(refs_json["results"][0]["role"], "reference");
     assert_eq!(refs_json["results"][0]["range"]["start"]["line"], 2);
-    assert!(refs_json["results"][0]["readCommand"]
-        .as_str()
-        .unwrap()
-        .contains("src/lib.rs:2"));
+    assert_eq!(refs_json["results"][0]["readCommandArgv"][4], "src/lib.rs");
     let refs_read_json = replay_read_result(&refs_json["results"][0]);
     assert!(refs_read_json["results"][0]["content"]
         .as_str()
@@ -4347,10 +4412,11 @@ fn imported_scip_index_drives_precise_defs_refs_and_symbols() {
     assert_eq!(symbols_json["results"][0]["name"], "needle");
     assert_eq!(symbols_json["results"][0]["symbolName"], "needle");
     assert_eq!(symbols_json["results"][0]["role"], "definition");
-    assert!(symbols_json["results"][0]["readCommand"]
-        .as_str()
-        .unwrap()
-        .contains("src/lib.rs:1"));
+    assert_eq!(symbols_json["results"][0]["range"]["start"]["line"], 1);
+    assert_eq!(
+        symbols_json["results"][0]["readCommandArgv"][4],
+        "src/lib.rs"
+    );
 }
 
 #[test]
@@ -4385,10 +4451,8 @@ fn defs_falls_back_to_parser_after_plain_index_build_without_scip() {
         defs_json["results"][0]["fallbackReason"],
         "precise_scip_index_unavailable"
     );
-    assert!(defs_json["results"][0]["readCommand"]
-        .as_str()
-        .unwrap()
-        .contains("src/lib.rs:1"));
+    assert_eq!(defs_json["results"][0]["range"]["start"]["line"], 1);
+    assert_eq!(defs_json["results"][0]["readCommandArgv"][4], "src/lib.rs");
 }
 
 #[test]
@@ -4426,10 +4490,11 @@ fn defs_falls_back_to_parser_for_java_classes() {
         defs_json["results"][0]["path"],
         "src/main/java/example/SampleService.java"
     );
-    assert!(defs_json["results"][0]["readCommand"]
-        .as_str()
-        .unwrap()
-        .contains("src/main/java/example/SampleService.java:3"));
+    assert_eq!(defs_json["results"][0]["range"]["start"]["line"], 3);
+    assert_eq!(
+        defs_json["results"][0]["readCommandArgv"][4],
+        "src/main/java/example/SampleService.java"
+    );
     let read_json = replay_read_result(&defs_json["results"][0]);
     assert!(read_json["results"][0]["content"]
         .as_str()
@@ -4462,10 +4527,10 @@ fn parser_defs_read_closure_covers_python_typescript_and_javascript() {
     )
     .unwrap();
 
-    for (identifier, language, line) in [
-        ("py_target", "python", "src/app.py:1"),
-        ("tsTarget", "typescript", "src/app.ts:1"),
-        ("jsTarget", "javascript", "src/app.js:1"),
+    for (identifier, language, path, line) in [
+        ("py_target", "python", "src/app.py", 1),
+        ("tsTarget", "typescript", "src/app.ts", 1),
+        ("jsTarget", "javascript", "src/app.js", 1),
     ] {
         let output = codetrail()
             .arg("--path")
@@ -4481,10 +4546,8 @@ fn parser_defs_read_closure_covers_python_typescript_and_javascript() {
         assert_eq!(json["results"][0]["symbolName"], identifier);
         assert_eq!(json["results"][0]["role"], "definition");
         assert_eq!(json["results"][0]["language"], language);
-        assert!(json["results"][0]["readCommand"]
-            .as_str()
-            .unwrap()
-            .contains(line));
+        assert_eq!(json["results"][0]["range"]["start"]["line"], line);
+        assert_eq!(json["results"][0]["readCommandArgv"][4], path);
     }
 }
 

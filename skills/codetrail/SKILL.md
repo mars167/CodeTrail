@@ -69,7 +69,9 @@ or path-only.
 6. Inspect `reliability`, `index`, `warnings`, `suggestedReads`, and `nextActions`.
    - Treat `severity=info, category=capability` as an expected capability-level note, not a risk warning.
    - Treat `severity=warning, category=risk` and `severity=error, category=error` as requiring narrowing, verification, or remediation.
-7. Before editing or making a strong claim, verify key ranges with `codetrail read <path[:start-end]>`.
+7. Before editing or making a strong claim, verify source with `codetrail read <path[:start-end]>`.
+   - Prefer `codetrail read <path>` when the file is small enough to fit the output budget, or when you need several ranges from the same file. CodeTrail reads small files whole and truncates large whole-file reads.
+   - Use `codetrail read <path:start-end>` for known-large files, truncated full reads, or a single narrow verification.
 8. Treat `calls` and `callers` as `inferred_candidate`; inspect the returned ranges before relying on them.
 9. Treat `remote_unverified` as a lead only; verify with local `read`.
 
@@ -95,10 +97,11 @@ obvious from the CLI argument names:
   default; add `--case-sensitive` when exact case matters.
 - `list [dir]` and `tree [dir]` take workspace-relative directories and reject
   paths outside the workspace. Omitted `dir` means `.`.
-- `read <target>` accepts `path`, `path:line`, or `path:start-end`. Line numbers
-  are 1-based; `0`, empty ranges, and descending ranges are invalid. If the
-  text after the final `:` is not a line or range, the whole target is treated
-  as a path.
+- `read <target>` accepts `path`, `path:line`, or `path:start-end`. Omit the
+  range to read a whole small file in one call; use ranges for large files or
+  when a full read returns `large_file_truncated`. Line numbers are 1-based;
+  `0`, empty ranges, and descending ranges are invalid. If the text after the
+  final `:` is not a line or range, the whole target is treated as a path.
 
 Navigation and relationship commands take one string argument. They default to
 `--input-mode compatible`, so simple names, `Class.method`, signature display

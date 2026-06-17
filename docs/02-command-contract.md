@@ -140,9 +140,11 @@ public JSON 不暴露内部计时和扫描统计。
   `--mode literal|regex|wildcard|glob`。
 - `list [dir]` 和 `tree [dir]` 接受 workspace-relative 目录；省略时为 `.`。
   目录必须存在、必须是目录，且 canonical path 不能逃出 workspace root。
-- `read <target>` 接受 `path`、`path:line` 或 `path:start-end`。行号从 1
-  开始，`0`、空行号和 start 大于 end 的范围非法。只有最后一个 `:` 后面全是
-  数字或 `数字-数字` 时才按范围解析，否则整个 target 按路径处理。
+- `read <target>` 接受 `path`、`path:line` 或 `path:start-end`。小文件或同一
+  文件多处命中应优先用 `read <path>` 一次验证；大文件全文读取会受预算保护并
+  返回截断提示，调用方再用范围读取。行号从 1 开始，`0`、空行号和 start 大于
+  end 的范围非法。只有最后一个 `:` 后面全是数字或 `数字-数字` 时才按范围解析，
+  否则整个 target 按路径处理。
 - `--lang <lang>` 按扩展名映射出的语言名过滤，大小写不敏感。当前内置语言名为
   `go`、`rust`、`python`、`java`、`typescript`、`javascript`、`markdown`、
   `ruby`、`json`、`toml`、`yaml`、`html`、`css` 和 `text`。
@@ -253,7 +255,7 @@ flowchart LR
 - MyBatis mapper XML 的 namespace、statement、resultMap、SQL fragment 和
   XML 内引用属于 `config_fact` / `source_fact` 层；它们提升召回，不代表
   SCIP precise semantic reference resolution。
-- 公开输出通过 caveats 暴露这些边界；自动化工具应先看 `severity/category`，不要把 `info/capability` 的能力说明当成风险告警。开发者修改代码前仍应对关键结果执行 `read <file[:range]>`。
+- 公开输出通过 caveats 暴露这些边界；自动化工具应先看 `severity/category`，不要把 `info/capability` 的能力说明当成风险告警。开发者修改代码前仍应对关键结果执行 `read <file[:range]>`；能放进预算的小文件应一次读取整个文件，避免用相邻范围分页。
 
 ## Saved Query Replay
 
