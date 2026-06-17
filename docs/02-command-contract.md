@@ -16,7 +16,7 @@ flowchart TB
   L0 --> Read["list / tree / read / changed / status"]
   L1 --> Nav["defs / refs / symbols / routes"]
   L2 --> Calls["calls / callers"]
-  Ops --> Index["index build / update / status / skipped / verify / clean / pack / unpack / import-scip"]
+  Ops --> Index["index build / update / status / skipped / verify / clean / pack / unpack"]
   Ops --> Query["query replay / show / list / delete"]
   Ops --> Hooks["hooks install / uninstall / status"]
 ```
@@ -152,10 +152,8 @@ public JSON 不暴露内部计时和扫描统计。
 - `--save-query <name>`、`query replay <name>`、`query show <name>` 和
   `query delete <name>` 使用同一名称规则：非空，不能是 `.` 或 `..`，并且只能
   包含 ASCII 字母、数字、`.`、`_` 和 `-`。
-- `index import-scip <path>` 接受 SCIP JSON 或 native binary `index.scip`
-  protobuf，按文件内容自动识别。`index generate-scip` 支持 `--lang go` 和
-  `--lang swift`，默认输出 `index.scip.json`。Swift 生成路径复用内部
-  SourceKit-LSP 到 SCIP occurrence 管线，不会自动创建 `buildServer.json`。
+- 手动 `index generate-scip` / `index import-scip` 不是公开命令。SCIP 生成与
+  导入必须由 `index build` 的语义阶段完成。
 - `index pack --output <path>` 输出 `.tar.gz` remote snapshot archive；
   `--output -` 或空 output 会把 archive bytes 写到 stdout。`index unpack
   <path>` 只接受该 archive 格式并解包到 `.codetrail/remote/`。
@@ -213,9 +211,12 @@ MCP tool result 的 `content[0].text` 使用同一 public JSON 投影。
 
 ## Index Build 与语义阶段
 
-- `index build` 默认在文本索引之后 best-effort 运行 LSP 语义阶段，生成 `.codetrail/scip/<snapshot-key>/occurrences.db` 与 `generation.json`。
+- `index build` 默认在文本索引之后 best-effort 运行 LSP 语义阶段，内部完成
+  SCIP occurrence 生成与导入，写入 `.codetrail/scip/<snapshot-key>/occurrences.db`
+  与 `generation.json`。
 - `--no-semantic` 关闭 LSP/SCIP 生成；`index build --staged` 不运行语义阶段。
-- build 结果的 `index.semantic` 摘要包含 `attempted`、`skipped`、`skipReason` 与各语言 `state`/`partialReasons`。
+- build 结果的 `index.semantic` 摘要包含 `attempted`、`skipped`、`skipReason`、
+  `scip.generated`、`scip.imported` 与各语言 `state`/`partialReasons`。
 - `index status` 返回 `indexedLanguages` 和 `semanticStatus`。`indexedLanguages`
   展示主索引/file catalog 中包含的语言；`semanticStatus.scipIndex` 展示
   SCIP occurrence DB 是否生成、可用、fresh 以及包含的 SCIP 语言；`semanticStatus.languageServers`
@@ -279,7 +280,8 @@ flowchart LR
 - 搜索结果按 `path:line  preview` 渲染。
 - `read` 直接输出文件内容。
 - `calls`/`callers` 按 caller -> callee 关系渲染，并附带位置。
-- `index build/update/import-scip/pack/unpack` 在 TTY 上显示加载进度；非 TTY 保持无 spinner，避免污染脚本输出。
+- `index build/update/pack/unpack` 在 TTY 上显示加载进度；非 TTY 保持无
+  spinner，避免污染脚本输出。
 - `index skipped` 输出跳过数量、日志路径和每条 path/reason/stage。
 - caveats 以短行展示，避免把内部审计、agent next action 或完整 schema 打到终端。
 

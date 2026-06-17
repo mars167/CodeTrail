@@ -55,7 +55,20 @@ pub struct SemanticBuildReport {
     pub attempted: bool,
     pub skipped: bool,
     pub skip_reason: Option<String>,
+    pub scip: Option<SemanticScipReport>,
     pub languages: Vec<SemanticLanguageReport>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticScipReport {
+    pub generated: bool,
+    pub imported: bool,
+    pub source: String,
+    pub path: Option<String>,
+    pub document_count: usize,
+    pub occurrence_count: usize,
+    pub symbol_count: usize,
 }
 
 impl SemanticBuildReport {
@@ -64,6 +77,7 @@ impl SemanticBuildReport {
             attempted: false,
             skipped: true,
             skip_reason: Some(reason.to_string()),
+            scip: None,
             languages: Vec::new(),
         }
     }
@@ -83,6 +97,7 @@ pub fn generate_best_effort(
                     attempted: false,
                     skipped: true,
                     skip_reason: Some(reason),
+                    scip: None,
                     languages: Vec::new(),
                 });
             }
@@ -155,11 +170,21 @@ pub fn generate_best_effort(
             attempted: true,
             skipped: false,
             skip_reason: None,
+            scip: Some(SemanticScipReport {
+                generated: false,
+                imported: false,
+                source: "lsp_scip".to_string(),
+                path: Some(db_path.to_string_lossy().to_string()),
+                document_count: 0,
+                occurrence_count: 0,
+                symbol_count: 0,
+            }),
             languages: language_reports,
         });
     }
 
     let scip_index = write_scip_index(&all_occurrences, &workspace.root.to_string_lossy())?;
+    let scip_report = scip_build_report(&scip_index, &db_path);
     fs::create_dir_all(index::scip_root(workspace))?;
     scip::build_occurrences_db(
         &scip_index,
@@ -180,68 +205,29 @@ pub fn generate_best_effort(
         attempted: true,
         skipped: false,
         skip_reason: None,
+        scip: Some(scip_report),
         languages: language_reports,
     })
 }
 
-pub fn generate_index_for_language(
-    workspace: &Workspace,
-    records: &[FileRecord],
-    language: ProjectLanguage,
-    verbose: VerboseLogger,
-) -> Result<(proto::Index, SemanticBuildReport)> {
-    let graph = project_graph_or_empty(workspace);
-    let budget_ms = semantic_budget_ms(&graph);
-    let deadline = Instant::now() + Duration::from_millis(budget_ms);
-    verbose.log(format!(
-        "semantic: generating SCIP via LSP language={} budget={}ms",
-        language, budget_ms
-    ));
-
-    let file_contents = load_file_contents(workspace, records);
-    let mut all_occurrences = Vec::new();
-    let mut language_reports = Vec::new();
-
-    for (_, _, report) in skipped_lsp_roots(workspace, &graph, Some(&language)) {
-        language_reports.push(report);
+fn scip_build_report(index: &proto::Index, db_path: &Path) -> SemanticScipReport {
+    SemanticScipReport {
+        generated: true,
+        imported: true,
+        source: "lsp_scip".to_string(),
+        path: Some(db_path.to_string_lossy().to_string()),
+        document_count: index.documents.len(),
+        occurrence_count: index
+            .documents
+            .iter()
+            .map(|document| document.occurrences.len())
+            .sum(),
+        symbol_count: index
+            .documents
+            .iter()
+            .map(|document| document.symbols.len())
+            .sum(),
     }
-
-    let groups = lsp_work_groups(workspace, &graph);
-    for ((group_language, lsp_root_path), roots) in groups {
-        if group_language != language {
-            continue;
-        }
-        if Instant::now() >= deadline {
-            verbose.log("semantic: wall-clock budget exhausted");
-            break;
-        }
-        let reports = index_lsp_group(
-            LspGroupRequest {
-                workspace,
-                language: group_language,
-                lsp_root_path: &lsp_root_path,
-                roots: &roots,
-                file_contents: &file_contents,
-                deadline,
-                verbose,
-            },
-            &mut all_occurrences,
-        );
-        for (_, _, report) in reports {
-            language_reports.push(report);
-        }
-    }
-
-    let scip_index = write_scip_index(&all_occurrences, &workspace.root.to_string_lossy())?;
-    Ok((
-        scip_index,
-        SemanticBuildReport {
-            attempted: true,
-            skipped: false,
-            skip_reason: None,
-            languages: language_reports,
-        },
-    ))
 }
 
 fn semantic_budget_ms(graph: &ProjectGraph) -> u64 {
@@ -253,19 +239,6 @@ fn semantic_budget_ms(graph: &ProjectGraph) -> u64 {
     }
 
     adaptive_semantic_budget_ms(graph)
-}
-
-fn project_graph_or_empty(workspace: &Workspace) -> ProjectGraph {
-    discover_project_graph(&workspace.root).unwrap_or_else(|_| ProjectGraph {
-        schema_version: ProjectGraph::CURRENT_SCHEMA_VERSION,
-        roots: Vec::new(),
-        source_owners: Vec::new(),
-        generated_sources: Vec::new(),
-        config_edges: Vec::new(),
-        environment_edges: Vec::new(),
-        dependency_edges: Vec::new(),
-        caveats: Vec::new(),
-    })
 }
 
 fn adaptive_semantic_budget_ms(graph: &ProjectGraph) -> u64 {
@@ -1093,6 +1066,15 @@ pub fn semantic_summary_json(report: &SemanticBuildReport) -> Value {
         "attempted": report.attempted,
         "skipped": report.skipped,
         "skipReason": report.skip_reason,
+        "scip": report.scip.as_ref().map(|scip| json!({
+            "generated": scip.generated,
+            "imported": scip.imported,
+            "source": scip.source,
+            "path": scip.path,
+            "documentCount": scip.document_count,
+            "occurrenceCount": scip.occurrence_count,
+            "symbolCount": scip.symbol_count,
+        })),
         "languages": report.languages.iter().map(|lang| json!({
             "language": lang.language,
             "rootId": lang.root_id,

@@ -439,7 +439,7 @@ fn swift_lsp_build_uses_sourcekit_env_override_for_precise_defs() {
 }
 
 #[test]
-fn swift_generate_scip_emits_importable_json() {
+fn swift_index_build_generates_and_imports_scip() {
     let dir = tempdir().unwrap();
     setup_swift_fixture(dir.path());
 
@@ -452,54 +452,32 @@ fn swift_generate_scip_emits_importable_json() {
         &format!("{} serve", server.display()),
     );
     let _budget_guard = EnvVarGuard::set("CODETRAIL_SEMANTIC_BUDGET_MS", "10000");
-    let output_path = dir.path().join("swift.scip.json");
 
-    let generate = Command::new(cargo_bin("codetrail"))
+    let build = Command::new(cargo_bin("codetrail"))
         .args([
             "--path",
             dir.path().to_str().unwrap(),
             "--output",
             "json",
             "index",
-            "generate-scip",
-            "--lang",
-            "swift",
-            "--output",
-            output_path.to_str().unwrap(),
+            "build",
+            "--force",
         ])
         .output()
         .unwrap();
     assert!(
-        generate.status.success(),
+        build.status.success(),
         "stderr: {}",
-        String::from_utf8_lossy(&generate.stderr)
+        String::from_utf8_lossy(&build.stderr)
     );
-    let scip_json: Value = serde_json::from_slice(&fs::read(&output_path).unwrap()).unwrap();
-    assert!(scip_json["documents"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|doc| {
-            doc["language"] == "swift" && doc["relativePath"] == "Sources/App/Needle.swift"
-        }));
-
-    let import = Command::new(cargo_bin("codetrail"))
-        .args([
-            "--path",
-            dir.path().to_str().unwrap(),
-            "--output",
-            "json",
-            "index",
-            "import-scip",
-            output_path.to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        import.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&import.stderr)
-    );
+    let build_json: Value = serde_json::from_slice(&build.stdout).unwrap();
+    let scip = &build_json["results"][0]["index"]["semantic"]["scip"];
+    assert_eq!(scip["generated"], true);
+    assert_eq!(scip["imported"], true);
+    assert_eq!(scip["source"], "lsp_scip");
+    assert!(scip["documentCount"].as_u64().unwrap() > 0);
+    assert!(scip["occurrenceCount"].as_u64().unwrap() > 0);
+    assert!(dir.path().join(".codetrail/scip").is_dir());
 
     let defs = Command::new(cargo_bin("codetrail"))
         .args([

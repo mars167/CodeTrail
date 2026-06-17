@@ -4386,6 +4386,9 @@ fn completions_print_shell_script_without_workspace() {
 
     assert!(script.contains("complete -F _codetrail codetrail"));
     assert!(script.contains("find grep files"));
+    assert!(script.contains("build update status skipped verify clean pack unpack"));
+    assert!(!script.contains("generate-scip"));
+    assert!(!script.contains("import-scip"));
 }
 
 #[test]
@@ -4403,7 +4406,7 @@ fn zsh_completions_include_allow_broad_option() {
 }
 
 #[test]
-fn imported_scip_index_drives_precise_defs_refs_and_symbols() {
+fn prebuilt_json_scip_index_drives_precise_defs_refs_and_symbols() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(
@@ -4414,21 +4417,9 @@ fn imported_scip_index_drives_precise_defs_refs_and_symbols() {
     let scip_path = dir.path().join("index.scip.json");
     write_minimal_scip_json(&scip_path);
 
-    let import_output = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["index", "import-scip"])
-        .arg(&scip_path)
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let import_json: Value = serde_json::from_slice(&import_output).unwrap();
-    assert_eq!(
-        import_json["results"][0]["index"]["storageBackend"],
-        "lancedb"
-    );
+    let workspace = codetrail::workspace::Workspace::discover(dir.path()).unwrap();
+    let import_json = codetrail::scip_index::import_scip_json(&workspace, &scip_path).unwrap();
+    assert_eq!(import_json["index"]["storageBackend"], "lancedb");
     assert!(dir.path().join(".codetrail/index.lance").is_dir());
 
     let defs = codetrail()
@@ -4915,37 +4906,51 @@ fn write_minimal_scip_json(path: &std::path::Path) {
     fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
 }
 
-#[test]
-fn native_scip_import_missing_path_uses_stable_caveat_code() {
-    let dir = tempdir().unwrap();
-    let scip_path = dir.path().join("missing.scip");
-
-    let output = raw_codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["--output", "json"])
-        .args(["index", "import-scip"])
-        .arg(&scip_path)
-        .assert()
-        .failure()
-        .get_output()
-        .stdout
-        .clone();
-    let json: Value = serde_json::from_slice(&output).unwrap();
-
-    assert_eq!(json["results"], json!([]));
-    assert_eq!(
-        json["caveats"][0]["code"],
-        "failed_to_parse_native_scip_index"
-    );
-    assert!(json["caveats"][0]["message"]
-        .as_str()
-        .unwrap()
-        .contains(scip_path.to_str().unwrap()));
+fn build_native_scip_db_from_file(
+    root: &std::path::Path,
+    scip_path: &std::path::Path,
+) -> std::path::PathBuf {
+    let workspace = codetrail::workspace::Workspace::discover(root).unwrap();
+    let scip_index = codetrail::scip::parse_native_scip(scip_path).unwrap();
+    let db_path = codetrail::scip_index::native_db_path(&workspace);
+    codetrail::scip::build_occurrences_db(
+        &scip_index,
+        &db_path,
+        &workspace.snapshot_id,
+        &workspace.root,
+    )
+    .unwrap();
+    db_path
 }
 
 #[test]
-fn native_scip_import_drives_precise_defs_refs_and_symbols() {
+fn manual_scip_commands_are_not_registered() {
+    let dir = tempdir().unwrap();
+
+    for subcommand in ["import-scip", "generate-scip"] {
+        let output = raw_codetrail()
+            .arg("--path")
+            .arg(dir.path())
+            .args(["--output", "json"])
+            .args(["index", subcommand])
+            .assert()
+            .failure()
+            .get_output()
+            .stdout
+            .clone();
+        let json: Value = serde_json::from_slice(&output).unwrap();
+
+        assert_eq!(json["results"], json!([]));
+        assert_eq!(json["caveats"][0]["code"], "cli_usage_error");
+        assert!(json["caveats"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains(subcommand));
+    }
+}
+
+#[test]
+fn prebuilt_native_scip_db_drives_precise_defs_refs_and_symbols() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(
@@ -4957,22 +4962,7 @@ fn native_scip_import_drives_precise_defs_refs_and_symbols() {
     let scip_path = dir.path().join("index.scip");
     codetrail::scip::write_minimal_test_index(&scip_path).unwrap();
 
-    codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["index", "import-scip"])
-        .arg(&scip_path)
-        .assert()
-        .success();
-
-    // Verify occurrence DB was created
-    let scip_dir = fs::read_dir(dir.path().join(".codetrail/scip"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let db_path = scip_dir.join("occurrences.db");
+    let db_path = build_native_scip_db_from_file(dir.path(), &scip_path);
     assert!(db_path.is_file());
 
     // defs
@@ -5036,13 +5026,7 @@ fn native_scip_precise_results_respect_hidden_and_no_ignore() {
     let scip_path = dir.path().join("index.scip");
     write_scip_index_for_paths(&scip_path, &[".hidden/lib.rs", "target/generated/lib.rs"]);
 
-    codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["index", "import-scip"])
-        .arg(&scip_path)
-        .assert()
-        .success();
+    build_native_scip_db_from_file(dir.path(), &scip_path);
 
     let default_output = codetrail()
         .arg("--path")
@@ -5112,23 +5096,7 @@ fn native_scip_stale_detection_simulates_staleness_by_db_removal() {
     let scip_path = dir.path().join("index.scip");
     codetrail::scip::write_minimal_test_index(&scip_path).unwrap();
 
-    // Import native SCIP
-    codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["index", "import-scip"])
-        .arg(&scip_path)
-        .assert()
-        .success();
-
-    // Remove the occurrence DB to simulate staleness
-    let scip_dir = fs::read_dir(dir.path().join(".codetrail/scip"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let db_path = scip_dir.join("occurrences.db");
+    let db_path = build_native_scip_db_from_file(dir.path(), &scip_path);
     assert!(db_path.is_file());
     fs::remove_file(&db_path).unwrap();
 

@@ -757,83 +757,6 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 json!([index::clean(&workspace)?]),
                 Vec::new(),
             ),
-            IndexCommand::GenerateScip {
-                lang,
-                output: out_path,
-            } => {
-                let out = out_path.as_deref().unwrap_or("index.scip.json");
-                let result = match lang.as_str() {
-                    "go" => {
-                        crate::scip_indexer::generate_go_scip(
-                            std::path::Path::new(&cli.path),
-                            std::path::Path::new(out),
-                        )?;
-                        json!({"status": "generated", "output": out})
-                    }
-                    "swift" => {
-                        let summary = crate::scip_indexer::generate_swift_scip(
-                            std::path::Path::new(&cli.path),
-                            std::path::Path::new(out),
-                            verbose,
-                        )?;
-                        json!({
-                            "status": "generated",
-                            "output": out,
-                            "documentCount": summary.document_count,
-                            "occurrenceCount": summary.occurrence_count,
-                            "symbolCount": summary.symbol_count,
-                            "semantic": crate::lsp::scip_gen::semantic_summary_json(&summary.semantic_report)
-                        })
-                    }
-                    _ => anyhow::bail!(
-                        "SCIP generation is currently supported for Go and Swift (--lang go|swift)"
-                    ),
-                };
-                output::response(
-                    "index generate-scip",
-                    "index generate-scip",
-                    json!({"lang": lang, "output": out}),
-                    &workspace.snapshot_id,
-                    output::freshness(),
-                    json!([result]),
-                    Vec::new(),
-                )
-            }
-            IndexCommand::ImportScip { path } => {
-                let input = std::fs::read(path).unwrap_or_default();
-                // Skip leading whitespace/BOM to detect JSON format
-                let is_json = {
-                    let bytes = &input[..];
-                    let pos = bytes
-                        .iter()
-                        .position(|b| !b.is_ascii_whitespace())
-                        .unwrap_or(bytes.len());
-                    !bytes[pos..].is_empty() && bytes[pos..][0] == b'{'
-                };
-                let value = with_progress(
-                    &cli.output,
-                    "Importing SCIP index",
-                    "SCIP import complete",
-                    || {
-                        if is_json {
-                            // JSON format (compatibility)
-                            scip_index::import_scip_json(&workspace, path)
-                        } else {
-                            // Native SCIP protobuf format
-                            scip_index::import_native_scip(&workspace, path)
-                        }
-                    },
-                )?;
-                output::response(
-                    "index import-scip",
-                    "index import-scip",
-                    json!({ "path": path }),
-                    &workspace.snapshot_id,
-                    output::freshness(),
-                    json!([value]),
-                    Vec::new(),
-                )
-            }
             IndexCommand::Pack { output } => {
                 let value =
                     with_progress(&cli.output, "Packing index", "Index pack complete", || {
@@ -1001,8 +924,6 @@ fn command_name(command: &Command) -> &'static str {
             IndexCommand::Skipped { .. } => "index skipped",
             IndexCommand::Verify => "index verify",
             IndexCommand::Clean => "index clean",
-            IndexCommand::ImportScip { .. } => "index import-scip",
-            IndexCommand::GenerateScip { .. } => "index generate-scip",
             IndexCommand::Pack { .. } => "index pack",
             IndexCommand::Unpack { .. } => "index unpack",
         },

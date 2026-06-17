@@ -108,7 +108,7 @@ flowchart LR
 
 ## 语义索引（LSP → SCIP）
 
-`index build` 在文本索引与调用图之后，默认 best-effort 启动各语言 LSP（`gopls`、`rust-analyzer`、`jdtls`、`typescript-language-server`、`ruby-lsp`、`sourcekit-lsp`），通过 `documentSymbol` 与采样 `references` 合成 `SemanticOccurrence`，写入 `.codetrail/scip/<snapshot-key>/occurrences.db`。
+`index build` 在文本索引与调用图之后，默认 best-effort 启动各语言 LSP（`gopls`、`rust-analyzer`、`jdtls`、`typescript-language-server`、`ruby-lsp`、`sourcekit-lsp`），通过 `documentSymbol` 与采样 `references` 合成 SCIP occurrence，并在同一 build 阶段导入 `.codetrail/scip/<snapshot-key>/occurrences.db`。
 
 - `--no-semantic` 跳过该阶段；`index build --staged` 不运行语义阶段。
 - 任何 LSP 失败只产生 partial/missing manifest 与 caveat，不阻塞 build。

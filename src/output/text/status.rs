@@ -34,7 +34,6 @@ pub(super) fn render_text_status_like(
             "index status" | "index verify" => render_index_status_result(result, out)?,
             "index build" | "index update" => render_index_build_result(result, out)?,
             "index skipped" => render_index_skipped_result(result, out)?,
-            "index import-scip" => render_index_import_result(result, out)?,
             "index pack" => render_index_pack_result(result, out)?,
             "index unpack" => render_index_unpack_result(result, out)?,
             "index clean" => render_index_clean_result(result, out)?,
@@ -212,26 +211,6 @@ fn render_index_build_result(result: &Value, out: &mut dyn Write) -> io::Result<
     Ok(())
 }
 
-fn render_index_import_result(result: &Value, out: &mut dyn Write) -> io::Result<()> {
-    let index = result.get("index").unwrap_or(result);
-    let record_count = index
-        .get("recordCount")
-        .or_else(|| index.get("definitionCount"))
-        .and_then(Value::as_u64);
-    if let Some(record_count) = record_count {
-        writeln!(out, "Imported {record_count} SCIP records")?;
-    } else {
-        writeln!(out, "Imported SCIP index")?;
-    }
-    if let Some(source) = index.get("source").and_then(Value::as_str) {
-        writeln!(out, "Source: {source}")?;
-    }
-    if let Some(path) = index.get("path").and_then(Value::as_str) {
-        writeln!(out, "Path: {path}")?;
-    }
-    Ok(())
-}
-
 fn render_index_pack_result(result: &Value, out: &mut dyn Write) -> io::Result<()> {
     let output_path = result
         .get("output")
@@ -288,7 +267,6 @@ pub(super) fn is_status_like(command: &str) -> bool {
             | "index build"
             | "index update"
             | "index skipped"
-            | "index import-scip"
             | "index pack"
             | "index unpack"
             | "index clean"

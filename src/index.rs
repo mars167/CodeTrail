@@ -232,6 +232,7 @@ pub fn build(
                 attempted: true,
                 skipped: false,
                 skip_reason: None,
+                scip: None,
                 languages: Vec::new(),
             }
         })

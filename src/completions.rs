@@ -27,6 +27,10 @@ const COMMANDS: &[&str] = &[
     "completions",
 ];
 
+const INDEX_COMMANDS: &[&str] = &[
+    "build", "update", "status", "skipped", "verify", "clean", "pack", "unpack",
+];
+
 pub fn script(shell: &CompletionShell) -> String {
     match shell {
         CompletionShell::Bash => bash(),
@@ -37,6 +41,7 @@ pub fn script(shell: &CompletionShell) -> String {
 
 fn bash() -> String {
     let commands = COMMANDS.join(" ");
+    let index_commands = INDEX_COMMANDS.join(" ");
     format!(
         r#"_codetrail()
 {{
@@ -46,7 +51,7 @@ fn bash() -> String {
   prev="${{COMP_WORDS[COMP_CWORD-1]}}"
   commands="{commands}"
   query_cmds="replay show list delete"
-  index_cmds="build update status verify clean import-scip generate-scip"
+  index_cmds="{index_commands}"
   hooks_cmds="install uninstall status"
   shells="bash zsh fish"
 
@@ -82,6 +87,7 @@ complete -F _codetrail codetrail
 
 fn zsh() -> String {
     let commands = COMMANDS.join(" ");
+    let index_commands = INDEX_COMMANDS.join(" ");
     format!(
         r#"#compdef codetrail
 
@@ -89,7 +95,7 @@ _codetrail() {{
   local -a commands query_cmds index_cmds hooks_cmds shells global_opts
   commands=({commands})
   query_cmds=(replay show list delete)
-  index_cmds=(build update status verify clean import-scip)
+  index_cmds=({index_commands})
   hooks_cmds=(install uninstall status)
   shells=(bash zsh fish)
   global_opts=(--path --output --include --exclude --hidden --no-ignore --lang --dir --ext --file-pattern --file-mode --case-sensitive --ignore-case --input-mode --changed --cursor --allow-broad --limit --context --save-query --help --version)
@@ -129,6 +135,7 @@ _codetrail "$@"
 }
 
 fn fish() -> String {
+    let index_commands = INDEX_COMMANDS.join(" ");
     let mut lines = vec![
         "complete -c codetrail -f".to_string(),
         "complete -c codetrail -l path -r".to_string(),
@@ -152,7 +159,9 @@ fn fish() -> String {
         "complete -c codetrail -n '__fish_seen_subcommand_from query' -a 'replay show list delete'"
             .to_string(),
     );
-    lines.push("complete -c codetrail -n '__fish_seen_subcommand_from index' -a 'build update status verify clean import-scip'".to_string());
+    lines.push(format!(
+        "complete -c codetrail -n '__fish_seen_subcommand_from index' -a '{index_commands}'"
+    ));
     lines.push("complete -c codetrail -n '__fish_seen_subcommand_from hooks' -a 'install uninstall status'".to_string());
     lines.push(
         "complete -c codetrail -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish'"
