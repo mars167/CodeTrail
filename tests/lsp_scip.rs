@@ -1,5 +1,6 @@
 use std::fs;
 use std::process::Command;
+use std::sync::{LazyLock, Mutex};
 
 use assert_cmd::cargo::cargo_bin;
 use codetrail::{
@@ -21,6 +22,8 @@ use codetrail::{
 use serde_json::Value;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
+
+static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn fake_lsp_server_path() -> std::path::PathBuf {
     cargo_bin("fake-lsp-server")
@@ -63,6 +66,15 @@ impl EnvVarGuard {
             value: std::env::var_os(key),
         };
         std::env::set_var(key, value);
+        guard
+    }
+
+    fn remove(key: &'static str) -> Self {
+        let guard = Self {
+            key,
+            value: std::env::var_os(key),
+        };
+        std::env::remove_var(key);
         guard
     }
 }
@@ -140,8 +152,9 @@ fn fake_lsp_server_builds_scip_occurrence_db() {
         "fake-lsp-server binary must be built for tests"
     );
 
-    std::env::set_var("CODETRAIL_LSP_GO", format!("{} serve", server.display()));
-    std::env::set_var("CODETRAIL_SEMANTIC_BUDGET_MS", "10000");
+    let _env_lock = ENV_LOCK.lock().unwrap();
+    let _go_guard = EnvVarGuard::set("CODETRAIL_LSP_GO", &format!("{} serve", server.display()));
+    let _budget_guard = EnvVarGuard::set("CODETRAIL_SEMANTIC_BUDGET_MS", "10000");
 
     let workspace = Workspace::discover(dir.path()).unwrap();
     let scan = ScanOptions {
@@ -323,6 +336,7 @@ fn failed_semantic_rerun_invalidates_existing_occurrence_db() {
         "missing generation manifest must block fresh occurrence DB precise queries"
     );
 
+    let _env_lock = ENV_LOCK.lock().unwrap();
     let _java_guard = EnvVarGuard::set(
         "CODETRAIL_LSP_JAVA",
         "/definitely/missing/codetrail-test-jdtls",
@@ -351,8 +365,9 @@ fn defs_use_precise_fact_after_lsp_index_build() {
     if !server.exists() {
         return;
     }
-    std::env::set_var("CODETRAIL_LSP_GO", format!("{} serve", server.display()));
-    std::env::set_var("CODETRAIL_SEMANTIC_BUDGET_MS", "10000");
+    let _env_lock = ENV_LOCK.lock().unwrap();
+    let _go_guard = EnvVarGuard::set("CODETRAIL_LSP_GO", &format!("{} serve", server.display()));
+    let _budget_guard = EnvVarGuard::set("CODETRAIL_SEMANTIC_BUDGET_MS", "10000");
 
     let workspace = Workspace::discover(dir.path()).unwrap();
     let scan = ScanOptions {
@@ -399,8 +414,10 @@ fn swift_lsp_build_uses_sourcekit_env_override_for_precise_defs() {
     if !server.exists() {
         return;
     }
-    std::env::set_var("CODETRAIL_LSP_SWIFT", format!("{} serve", server.display()));
-    std::env::set_var("CODETRAIL_SEMANTIC_BUDGET_MS", "10000");
+    let _env_lock = ENV_LOCK.lock().unwrap();
+    let _swift_guard =
+        EnvVarGuard::set("CODETRAIL_LSP_SWIFT", &format!("{} serve", server.display()));
+    let _budget_guard = EnvVarGuard::set("CODETRAIL_SEMANTIC_BUDGET_MS", "10000");
 
     let workspace = Workspace::discover(dir.path()).unwrap();
     let scan = ScanOptions {
@@ -447,6 +464,7 @@ fn swift_index_build_generates_and_imports_scip() {
     if !server.exists() {
         return;
     }
+    let _env_lock = ENV_LOCK.lock().unwrap();
     let _swift_guard = EnvVarGuard::set(
         "CODETRAIL_LSP_SWIFT",
         &format!("{} serve", server.display()),
@@ -544,8 +562,9 @@ fn gopls_e2e_builds_precise_index_when_available() {
 
     let dir = tempdir().unwrap();
     setup_go_fixture(dir.path());
-    std::env::remove_var("CODETRAIL_LSP_GO");
-    std::env::set_var("CODETRAIL_SEMANTIC_BUDGET_MS", "120000");
+    let _env_lock = ENV_LOCK.lock().unwrap();
+    let _go_guard = EnvVarGuard::remove("CODETRAIL_LSP_GO");
+    let _budget_guard = EnvVarGuard::set("CODETRAIL_SEMANTIC_BUDGET_MS", "120000");
 
     let workspace = Workspace::discover(dir.path()).unwrap();
     let scan = ScanOptions {
