@@ -415,8 +415,10 @@ fn swift_lsp_build_uses_sourcekit_env_override_for_precise_defs() {
         return;
     }
     let _env_lock = ENV_LOCK.lock().unwrap();
-    let _swift_guard =
-        EnvVarGuard::set("CODETRAIL_LSP_SWIFT", &format!("{} serve", server.display()));
+    let _swift_guard = EnvVarGuard::set(
+        "CODETRAIL_LSP_SWIFT",
+        &format!("{} serve", server.display()),
+    );
     let _budget_guard = EnvVarGuard::set("CODETRAIL_SEMANTIC_BUDGET_MS", "10000");
 
     let workspace = Workspace::discover(dir.path()).unwrap();
