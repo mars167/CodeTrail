@@ -274,6 +274,7 @@ fn root(id: &str, path: &str, language: ProjectLanguage) -> ProjectRoot {
         ProjectLanguage::Java => ProjectRootKind::JavaMaven,
         ProjectLanguage::TypeScript => ProjectRootKind::TypeScriptConfig,
         ProjectLanguage::Ruby => ProjectRootKind::RubyGemfile,
+        ProjectLanguage::Swift => ProjectRootKind::SwiftPackage,
     };
     ProjectRoot {
         id: id.to_string(),

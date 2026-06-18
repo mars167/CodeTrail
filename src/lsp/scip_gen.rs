@@ -15,10 +15,12 @@ use crate::{
     index,
     output::VerboseLogger,
     project_graph::{
-        discover_project_graph, ProjectGraph, ProjectLanguage, ProjectRoot, SemanticFactPolicy,
+        discover_project_graph, ProjectGraph, ProjectLanguage, ProjectRoot, ProjectRootKind,
+        SemanticFactPolicy,
     },
     scip,
     scip_index::native_db_path,
+    scip_proto::proto,
     semantic_facts::{
         write_scip_index, FactReliability, InternalRange, OccurrenceRole, ProviderProof,
         ProviderRange, RangeEncoding, SemanticOccurrence, SemanticSymbol, SymbolDescriptor,
@@ -34,6 +36,7 @@ use super::registry::{file_path_to_uri, resolve_server, uri_to_relative_path, Se
 
 const DEFAULT_SEMANTIC_BUDGET_MS: u64 = 60_000;
 const MAX_REFERENCE_PROBES: usize = 200;
+const MAX_HIGH_FANOUT_REFERENCE_PROBES: usize = 5_000;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,7 +55,20 @@ pub struct SemanticBuildReport {
     pub attempted: bool,
     pub skipped: bool,
     pub skip_reason: Option<String>,
+    pub scip: Option<SemanticScipReport>,
     pub languages: Vec<SemanticLanguageReport>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticScipReport {
+    pub generated: bool,
+    pub imported: bool,
+    pub source: String,
+    pub path: Option<String>,
+    pub document_count: usize,
+    pub occurrence_count: usize,
+    pub symbol_count: usize,
 }
 
 impl SemanticBuildReport {
@@ -61,6 +77,7 @@ impl SemanticBuildReport {
             attempted: false,
             skipped: true,
             skip_reason: Some(reason.to_string()),
+            scip: None,
             languages: Vec::new(),
         }
     }
@@ -80,6 +97,7 @@ pub fn generate_best_effort(
                     attempted: false,
                     skipped: true,
                     skip_reason: Some(reason),
+                    scip: None,
                     languages: Vec::new(),
                 });
             }
@@ -114,6 +132,11 @@ pub fn generate_best_effort(
     let mut language_reports = Vec::new();
     let mut manifests = Vec::new();
 
+    for (root, files, report) in skipped_lsp_roots(workspace, &graph, None) {
+        language_reports.push(report.clone());
+        manifests.push(build_manifest(workspace, root, &report, &files, records));
+    }
+
     let groups = lsp_work_groups(workspace, &graph);
     for ((language, lsp_root_path), roots) in groups {
         if Instant::now() >= deadline {
@@ -147,11 +170,21 @@ pub fn generate_best_effort(
             attempted: true,
             skipped: false,
             skip_reason: None,
+            scip: Some(SemanticScipReport {
+                generated: false,
+                imported: false,
+                source: "lsp_scip".to_string(),
+                path: Some(db_path.to_string_lossy().to_string()),
+                document_count: 0,
+                occurrence_count: 0,
+                symbol_count: 0,
+            }),
             languages: language_reports,
         });
     }
 
     let scip_index = write_scip_index(&all_occurrences, &workspace.root.to_string_lossy())?;
+    let scip_report = scip_build_report(&scip_index, &db_path);
     fs::create_dir_all(index::scip_root(workspace))?;
     scip::build_occurrences_db(
         &scip_index,
@@ -172,8 +205,29 @@ pub fn generate_best_effort(
         attempted: true,
         skipped: false,
         skip_reason: None,
+        scip: Some(scip_report),
         languages: language_reports,
     })
+}
+
+fn scip_build_report(index: &proto::Index, db_path: &Path) -> SemanticScipReport {
+    SemanticScipReport {
+        generated: true,
+        imported: true,
+        source: "lsp_scip".to_string(),
+        path: Some(db_path.to_string_lossy().to_string()),
+        document_count: index.documents.len(),
+        occurrence_count: index
+            .documents
+            .iter()
+            .map(|document| document.occurrences.len())
+            .sum(),
+        symbol_count: index
+            .documents
+            .iter()
+            .map(|document| document.symbols.len())
+            .sum(),
+    }
 }
 
 fn semantic_budget_ms(graph: &ProjectGraph) -> u64 {
@@ -285,6 +339,9 @@ struct RootIndexRequest<'a> {
 fn lsp_work_groups<'a>(workspace: &Workspace, graph: &'a ProjectGraph) -> LspWorkGroups<'a> {
     let mut groups = BTreeMap::new();
     for root in &graph.roots {
+        if !lsp_root_ready(workspace, root) {
+            continue;
+        }
         let files = source_files_for_root(graph, root);
         if files.is_empty() {
             continue;
@@ -295,6 +352,50 @@ fn lsp_work_groups<'a>(workspace: &Workspace, graph: &'a ProjectGraph) -> LspWor
             .push((root, files));
     }
     groups
+}
+
+fn skipped_lsp_roots<'a>(
+    workspace: &Workspace,
+    graph: &'a ProjectGraph,
+    language_filter: Option<&ProjectLanguage>,
+) -> Vec<(&'a ProjectRoot, Vec<String>, SemanticLanguageReport)> {
+    graph
+        .roots
+        .iter()
+        .filter(|root| language_filter.is_none_or(|language| &root.language == language))
+        .filter(|root| !lsp_root_ready(workspace, root))
+        .map(|root| {
+            (
+                root,
+                source_files_for_root(graph, root),
+                semantic_report(
+                    root,
+                    Some("sourcekit-lsp"),
+                    "partial",
+                    0,
+                    vec![
+                        "semantic_provider_missing_config: buildServer.json_or_compile_commands.json"
+                            .to_string(),
+                    ],
+                ),
+            )
+        })
+        .collect()
+}
+
+fn lsp_root_ready(workspace: &Workspace, root: &ProjectRoot) -> bool {
+    match root.kind {
+        ProjectRootKind::SwiftXcodeProject | ProjectRootKind::SwiftXcodeWorkspace => {
+            let root_path = if root.path == "." {
+                workspace.root.clone()
+            } else {
+                workspace.root.join(&root.path)
+            };
+            root_path.join("buildServer.json").exists()
+                || root_path.join("compile_commands.json").exists()
+        }
+        _ => true,
+    }
 }
 
 fn lsp_workspace_root(workspace: &Workspace, root: &ProjectRoot) -> PathBuf {
@@ -620,6 +721,7 @@ fn lsp_language_id(language: &ProjectLanguage) -> &'static str {
         ProjectLanguage::Java => "java",
         ProjectLanguage::TypeScript => "typescript",
         ProjectLanguage::Ruby => "ruby",
+        ProjectLanguage::Swift => "swift",
     }
 }
 
@@ -634,7 +736,20 @@ fn reference_probe_limit_for_root(root: &ProjectRoot, files: &[String]) -> usize
         return limit;
     }
     if root.language == ProjectLanguage::Java {
-        return MAX_REFERENCE_PROBES.max(files.len().saturating_mul(32).min(5_000));
+        return MAX_REFERENCE_PROBES.max(
+            files
+                .len()
+                .saturating_mul(32)
+                .min(MAX_HIGH_FANOUT_REFERENCE_PROBES),
+        );
+    }
+    if root.language == ProjectLanguage::Swift {
+        return MAX_REFERENCE_PROBES.max(
+            files
+                .len()
+                .saturating_mul(64)
+                .min(MAX_HIGH_FANOUT_REFERENCE_PROBES),
+        );
     }
     MAX_REFERENCE_PROBES
 }
@@ -951,6 +1066,15 @@ pub fn semantic_summary_json(report: &SemanticBuildReport) -> Value {
         "attempted": report.attempted,
         "skipped": report.skipped,
         "skipReason": report.skip_reason,
+        "scip": report.scip.as_ref().map(|scip| json!({
+            "generated": scip.generated,
+            "imported": scip.imported,
+            "source": scip.source,
+            "path": scip.path,
+            "documentCount": scip.document_count,
+            "occurrenceCount": scip.occurrence_count,
+            "symbolCount": scip.symbol_count,
+        })),
         "languages": report.languages.iter().map(|lang| json!({
             "language": lang.language,
             "rootId": lang.root_id,

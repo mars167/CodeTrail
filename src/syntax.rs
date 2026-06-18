@@ -55,7 +55,7 @@ pub(crate) fn candidate_language_matrix() -> &'static [LanguageCandidateMatrix] 
     &LANGUAGE_CANDIDATE_MATRIX
 }
 
-static LANGUAGE_CANDIDATE_MATRIX: [LanguageCandidateMatrix; 7] = [
+static LANGUAGE_CANDIDATE_MATRIX: [LanguageCandidateMatrix; 8] = [
     LanguageCandidateMatrix {
         language: "go",
         extracted_kinds: &["definition", "method", "type", "call", "import"],
@@ -130,6 +130,25 @@ static LANGUAGE_CANDIDATE_MATRIX: [LanguageCandidateMatrix; 7] = [
             "dynamic send/public_send dispatch",
             "autoload and constant lookup",
             "Rails convention binding",
+        ],
+    },
+    LanguageCandidateMatrix {
+        language: "swift",
+        extracted_kinds: &[
+            "definition",
+            "method",
+            "class",
+            "type",
+            "protocol",
+            "constructor",
+            "call",
+            "import",
+        ],
+        known_blind_spots: &[
+            "protocol dispatch",
+            "extension-provided members",
+            "result builders and macro expansion",
+            "Xcode build settings without build server config",
         ],
     },
 ];
@@ -671,7 +690,7 @@ fn push_candidate(candidate: TreeSitterCandidate, context: &mut CandidateWalkCon
 fn symbol_candidate(node: Node, context: &CandidateWalkContext) -> Option<TreeSitterCandidate> {
     let symbol_kind = symbol_kind(node.kind())?;
     let name_node = candidate_name_node(node)?;
-    let name = name_node.utf8_text(context.source).ok()?.trim().to_string();
+    let name = symbol_name(node, name_node, context.source)?;
     if name.is_empty() {
         return None;
     }
@@ -739,6 +758,7 @@ fn call_candidate(node: Node, context: &CandidateWalkContext) -> Option<TreeSitt
         .child_by_field_name("function")
         .or_else(|| node.child_by_field_name("name"))
         .or_else(|| node.child_by_field_name("method"))
+        .or_else(|| node.child_by_field_name("constructed_type"))
         .or_else(|| first_named_child(node))?;
     let target = target_node
         .utf8_text(context.source)
@@ -785,7 +805,7 @@ fn enclosing_symbol_details(node: Node, source: &[u8]) -> Option<EnclosingSymbol
             let name_node = candidate_name_node(parent)?;
             let body_node = parent.child_by_field_name("body").unwrap_or(parent);
             return Some(EnclosingSymbolDetails {
-                name: name_node.utf8_text(source).ok()?.to_string(),
+                name: symbol_name(parent, name_node, source)?,
                 body_hash: hash_node(body_node, source),
             });
         }
@@ -900,13 +920,17 @@ fn parser_language(path: &Path) -> Option<Language> {
         "typescript" => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
         "javascript" => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
         "ruby" => Some(tree_sitter_ruby::LANGUAGE.into()),
+        "swift" => Some(tree_sitter_swift::LANGUAGE.into()),
         _ => None,
     }
 }
 
 fn symbol_kind(kind: &str) -> Option<&'static str> {
     match kind {
-        "function_item" | "function_definition" | "function_declaration" => Some("function"),
+        "function_item"
+        | "function_definition"
+        | "function_declaration"
+        | "protocol_function_declaration" => Some("function"),
         "method_definition" | "method_declaration" => Some("function"),
         "method" | "singleton_method" => Some("function"),
         "method_elem" => Some("function"),
@@ -914,8 +938,11 @@ fn symbol_kind(kind: &str) -> Option<&'static str> {
         "enum_item" | "enum_declaration" => Some("enum"),
         "trait_item" => Some("trait"),
         "mod_item" => Some("module"),
-        "constructor_declaration" | "compact_constructor_declaration" => Some("constructor"),
-        "interface_declaration" => Some("interface"),
+        "constructor_declaration" | "compact_constructor_declaration" | "init_declaration" => {
+            Some("constructor")
+        }
+        "deinit_declaration" => Some("function"),
+        "interface_declaration" | "protocol_declaration" => Some("interface"),
         "record_declaration" => Some("record"),
         "annotation_type_declaration" => Some("annotation"),
         "class_definition" | "class_declaration" | "class" => Some("class"),
@@ -931,6 +958,7 @@ fn is_enclosing_symbol_node(kind: &str) -> bool {
         "function_item"
             | "function_definition"
             | "function_declaration"
+            | "protocol_function_declaration"
             | "method_definition"
             | "method_declaration"
             | "method"
@@ -938,6 +966,8 @@ fn is_enclosing_symbol_node(kind: &str) -> bool {
             | "method_elem"
             | "constructor_declaration"
             | "compact_constructor_declaration"
+            | "init_declaration"
+            | "deinit_declaration"
     )
 }
 
@@ -949,6 +979,8 @@ fn candidate_kind_for_symbol(node: Node, language: &str) -> &'static str {
         | "singleton_method"
         | "constructor_declaration"
         | "compact_constructor_declaration"
+        | "init_declaration"
+        | "deinit_declaration"
         | "method_elem" => "method",
         "class_definition" | "class_declaration" | "class" => "class",
         "module" => "module",
@@ -957,11 +989,16 @@ fn candidate_kind_for_symbol(node: Node, language: &str) -> &'static str {
         | "enum_declaration"
         | "trait_item"
         | "interface_declaration"
+        | "protocol_declaration"
         | "record_declaration"
         | "annotation_type_declaration"
         | "type_declaration" => "type",
+        "protocol_function_declaration" => "method",
         "function_item" if language == "rust" && has_parent_kind(node, "impl_item") => "method",
         "function_definition" if has_parent_kind(node, "class_definition") => "method",
+        "function_declaration" if language == "swift" && has_parent_kind(node, "class_body") => {
+            "method"
+        }
         _ => "definition",
     }
 }
@@ -969,7 +1006,11 @@ fn candidate_kind_for_symbol(node: Node, language: &str) -> &'static str {
 fn is_call_node(kind: &str) -> bool {
     matches!(
         kind,
-        "call_expression" | "call" | "method_invocation" | "function_call_expression"
+        "call_expression"
+            | "constructor_expression"
+            | "call"
+            | "method_invocation"
+            | "function_call_expression"
     )
 }
 
@@ -985,13 +1026,24 @@ fn is_import_node(kind: &str) -> bool {
 }
 
 fn first_named_child(node: Node) -> Option<Node> {
-    (0..node.named_child_count()).find_map(|idx| node.named_child(idx))
+    (0..node.named_child_count()).find_map(|idx| node.named_child(u32::try_from(idx).ok()?))
 }
 
 fn candidate_name_node(node: Node) -> Option<Node> {
+    if matches!(node.kind(), "init_declaration" | "deinit_declaration") {
+        return node.child(0).or_else(|| first_named_child(node));
+    }
     node.child_by_field_name("name")
         .or_else(|| child_name_node(node))
         .or_else(|| first_named_child(node))
+}
+
+fn symbol_name(node: Node, name_node: Node, source: &[u8]) -> Option<String> {
+    match node.kind() {
+        "init_declaration" => Some("init".to_string()),
+        "deinit_declaration" => Some("deinit".to_string()),
+        _ => Some(name_node.utf8_text(source).ok()?.trim().to_string()),
+    }
 }
 
 fn child_name_node(node: Node) -> Option<Node> {
@@ -1041,6 +1093,11 @@ fn import_name(node: Node, language: &str, source: &[u8]) -> Option<String> {
             .strip_prefix("import ")
             .unwrap_or(raw)
             .trim_end_matches(';')
+            .trim()
+            .to_string(),
+        "swift" => raw
+            .strip_prefix("import ")
+            .unwrap_or(raw)
             .trim()
             .to_string(),
         "python" => raw

@@ -1,9 +1,5 @@
 //! SCIP indexer orchestration.
 //!
-//! Calls language-specific indexers (Go compiler helper, etc.) to produce
-//! `index.scip` files, then imports them via the existing `index import-scip`
-//! pipeline.
-
 use std::path::Path;
 use std::process::Command;
 
@@ -33,31 +29,6 @@ pub fn generate_go_scip(project_root: &Path, output_path: &Path) -> Result<()> {
     }
 
     eprintln!("{}", String::from_utf8_lossy(&output.stdout).trim());
-    Ok(())
-}
-
-/// Run the Go SCIP indexer and then import the result.
-pub fn generate_and_import(project_root: &Path) -> Result<()> {
-    let tmp = tempfile::Builder::new()
-        .prefix("codetrail-index-")
-        .suffix(".scip.json")
-        .tempfile()
-        .with_context(|| "failed to create temporary SCIP output file")?;
-    let tmp_path = tmp.path().to_path_buf();
-    generate_go_scip(project_root, &tmp_path)?;
-
-    // Import using the existing command
-    let status = Command::new(std::env::current_exe().unwrap_or_else(|_| "codetrail".into()))
-        .args(["index", "import-scip"])
-        .arg(&tmp_path)
-        .current_dir(project_root)
-        .status()
-        .with_context(|| "failed to import generated SCIP index")?;
-
-    if !status.success() {
-        anyhow::bail!("SCIP import failed");
-    }
-
     Ok(())
 }
 

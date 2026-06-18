@@ -246,15 +246,6 @@ pub enum IndexCommand {
     },
     Verify,
     Clean,
-    ImportScip {
-        path: String,
-    },
-    GenerateScip {
-        #[arg(long, default_value = "go")]
-        lang: String,
-        #[arg(long)]
-        output: Option<String>,
-    },
     Pack {
         #[arg(long, default_value = "output.tar.gz")]
         output: String,

@@ -1065,6 +1065,53 @@ end
 }
 
 #[test]
+fn routes_scans_vapor_swift_routes() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("Sources/App")).unwrap();
+    fs::write(
+        dir.path().join("Package.swift"),
+        "// swift-tools-version: 6.0\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("Sources/App/routes.swift"),
+        r#"
+import Vapor
+
+func routes(_ app: Application) throws {
+    app.get("swift", "users", use: listUsers)
+    app.post("swift", "users") { req in "ok" }
+    let grouped = app.grouped("api")
+    grouped.delete("users", ":id", use: deleteUser)
+}
+"#,
+    )
+    .unwrap();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["routes", "--framework", "vapor"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let routes = json["results"].as_array().unwrap();
+    let patterns = routes
+        .iter()
+        .map(|route| route["routePattern"].as_str().unwrap())
+        .collect::<Vec<_>>();
+
+    assert!(patterns.contains(&"/swift/users"));
+    assert!(patterns.contains(&"/api/users/:id"));
+    assert!(routes.iter().all(|route| route["language"] == "swift"));
+    assert!(routes.iter().all(|route| route["framework"] == "vapor"));
+    assert_eq!(json["reliability"]["level"], "parser_fact");
+}
+
+#[test]
 fn routes_handles_utf8_near_java_annotation_window() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src/main/java/example")).unwrap();
@@ -1291,6 +1338,108 @@ fn browse_scope_filters_list_and_tree_by_language_extension_and_changed() {
     let tree_json: Value = serde_json::from_slice(&tree).unwrap();
     assert_eq!(tree_json["results"].as_array().unwrap().len(), 1);
     assert_eq!(tree_json["results"][0]["path"], "src/app.rb");
+}
+
+#[test]
+fn swift_language_mapping_is_visible_to_files_list_read_and_index_status() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("Sources/App")).unwrap();
+    fs::create_dir_all(dir.path().join("ios/App.xcodeproj")).unwrap();
+    fs::create_dir_all(dir.path().join("ios/Sources")).unwrap();
+    fs::write(
+        dir.path().join("Package.swift"),
+        "// swift-tools-version: 6.0\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("Sources/App/App.swift"),
+        "public struct App { public func run() {} }\n",
+    )
+    .unwrap();
+    fs::write(dir.path().join("ios/App.xcodeproj/project.pbxproj"), "{}\n").unwrap();
+    fs::write(
+        dir.path().join("ios/Sources/ViewController.swift"),
+        "final class ViewController {}\n",
+    )
+    .unwrap();
+
+    let files = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--lang")
+        .arg("swift")
+        .args(["files", "App.swift"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let files_json: Value = serde_json::from_slice(&files).unwrap();
+    assert_eq!(files_json["results"][0]["path"], "Sources/App/App.swift");
+    assert_eq!(files_json["results"][0]["language"], "swift");
+
+    let read = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["read", "Sources/App/App.swift:1"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let read_json: Value = serde_json::from_slice(&read).unwrap();
+    assert_eq!(read_json["results"][0]["language"], "swift");
+
+    raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build", "--no-semantic"])
+        .assert()
+        .success();
+
+    let status = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--output")
+        .arg("json")
+        .env("PATH", tempdir().unwrap().path())
+        .env_remove("CODETRAIL_LSP_SWIFT")
+        .args(["index", "status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let status_json: Value = serde_json::from_slice(&status).unwrap();
+    let status = &status_json["results"][0];
+    assert!(status["indexedLanguages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|language| language["language"] == "swift"
+            && language["fileCount"].as_u64().unwrap_or(0) >= 1));
+    let swift_server = status["semanticStatus"]["languageServers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|server| server["language"] == "swift")
+        .expect("swift server status");
+    assert_eq!(swift_server["status"], "missing");
+    assert_eq!(swift_server["defaultCommand"], "sourcekit-lsp");
+    assert_eq!(swift_server["envKey"], "CODETRAIL_LSP_SWIFT");
+
+    let roots = status["semanticStatus"]["roots"].as_array().unwrap();
+    let swiftpm_root = roots
+        .iter()
+        .find(|root| root["kind"] == "swift_package")
+        .expect("swift package root");
+    assert_eq!(swiftpm_root["swiftConfig"]["status"], "configured");
+    let xcode_root = roots
+        .iter()
+        .find(|root| root["kind"] == "swift_xcode_project")
+        .expect("xcode root");
+    assert_eq!(xcode_root["swiftConfig"]["ready"], false);
+    assert_eq!(xcode_root["swiftConfig"]["status"], "missing_config");
 }
 
 #[test]
@@ -4308,6 +4457,9 @@ fn completions_print_shell_script_without_workspace() {
 
     assert!(script.contains("complete -F _codetrail codetrail"));
     assert!(script.contains("find grep files"));
+    assert!(script.contains("build update status skipped verify clean pack unpack"));
+    assert!(!script.contains("generate-scip"));
+    assert!(!script.contains("import-scip"));
 }
 
 #[test]
@@ -4325,7 +4477,7 @@ fn zsh_completions_include_allow_broad_option() {
 }
 
 #[test]
-fn imported_scip_index_drives_precise_defs_refs_and_symbols() {
+fn prebuilt_json_scip_index_drives_precise_defs_refs_and_symbols() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(
@@ -4336,21 +4488,9 @@ fn imported_scip_index_drives_precise_defs_refs_and_symbols() {
     let scip_path = dir.path().join("index.scip.json");
     write_minimal_scip_json(&scip_path);
 
-    let import_output = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["index", "import-scip"])
-        .arg(&scip_path)
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let import_json: Value = serde_json::from_slice(&import_output).unwrap();
-    assert_eq!(
-        import_json["results"][0]["index"]["storageBackend"],
-        "lancedb"
-    );
+    let workspace = codetrail::workspace::Workspace::discover(dir.path()).unwrap();
+    let import_json = codetrail::scip_index::import_scip_json(&workspace, &scip_path).unwrap();
+    assert_eq!(import_json["index"]["storageBackend"], "lancedb");
     assert!(dir.path().join(".codetrail/index.lance").is_dir());
 
     let defs = codetrail()
@@ -4632,6 +4772,86 @@ fn parser_fallback_supports_java_methods_and_callers() {
 }
 
 #[test]
+fn parser_fallback_supports_swift_symbols_defs_and_callers() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("Sources/App")).unwrap();
+    fs::write(
+        dir.path().join("Package.swift"),
+        "// swift-tools-version: 6.0\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("Sources/App/App.swift"),
+        r#"
+import Vapor
+
+protocol Runnable {
+    func run()
+}
+
+struct Worker: Runnable {
+    func run() {
+        helper()
+        UserController()
+    }
+}
+
+final class UserController {
+    init() {}
+}
+
+func helper() {}
+"#,
+    )
+    .unwrap();
+
+    let symbols = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["symbols", "Worker"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let symbols_json: Value = serde_json::from_slice(&symbols).unwrap();
+    assert_eq!(symbols_json["reliability"]["level"], "parser_fact");
+    assert_eq!(symbols_json["results"][0]["language"], "swift");
+    assert_eq!(symbols_json["results"][0]["symbolName"], "Worker");
+
+    let defs = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "helper"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let defs_json: Value = serde_json::from_slice(&defs).unwrap();
+    assert_eq!(defs_json["results"][0]["language"], "swift");
+    assert_eq!(defs_json["results"][0]["name"], "helper");
+    assert_eq!(defs_json["results"][0]["kind"], "function");
+
+    let callers = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["callers", "helper"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let callers_json: Value = serde_json::from_slice(&callers).unwrap();
+    assert_eq!(callers_json["reliability"]["level"], "inferred_candidate");
+    assert!(callers_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|result| result["language"] == "swift" && result["enclosingSymbol"] == "run"));
+}
+
+#[test]
 fn calls_and_callers_do_not_claim_graph_store_before_kuzu_backend_exists() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
@@ -4749,37 +4969,51 @@ fn write_minimal_scip_json(path: &std::path::Path) {
     fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
 }
 
-#[test]
-fn native_scip_import_missing_path_uses_stable_caveat_code() {
-    let dir = tempdir().unwrap();
-    let scip_path = dir.path().join("missing.scip");
-
-    let output = raw_codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["--output", "json"])
-        .args(["index", "import-scip"])
-        .arg(&scip_path)
-        .assert()
-        .failure()
-        .get_output()
-        .stdout
-        .clone();
-    let json: Value = serde_json::from_slice(&output).unwrap();
-
-    assert_eq!(json["results"], json!([]));
-    assert_eq!(
-        json["caveats"][0]["code"],
-        "failed_to_parse_native_scip_index"
-    );
-    assert!(json["caveats"][0]["message"]
-        .as_str()
-        .unwrap()
-        .contains(scip_path.to_str().unwrap()));
+fn build_native_scip_db_from_file(
+    root: &std::path::Path,
+    scip_path: &std::path::Path,
+) -> std::path::PathBuf {
+    let workspace = codetrail::workspace::Workspace::discover(root).unwrap();
+    let scip_index = codetrail::scip::parse_native_scip(scip_path).unwrap();
+    let db_path = codetrail::scip_index::native_db_path(&workspace);
+    codetrail::scip::build_occurrences_db(
+        &scip_index,
+        &db_path,
+        &workspace.snapshot_id,
+        &workspace.root,
+    )
+    .unwrap();
+    db_path
 }
 
 #[test]
-fn native_scip_import_drives_precise_defs_refs_and_symbols() {
+fn manual_scip_commands_are_not_registered() {
+    let dir = tempdir().unwrap();
+
+    for subcommand in ["import-scip", "generate-scip"] {
+        let output = raw_codetrail()
+            .arg("--path")
+            .arg(dir.path())
+            .args(["--output", "json"])
+            .args(["index", subcommand])
+            .assert()
+            .failure()
+            .get_output()
+            .stdout
+            .clone();
+        let json: Value = serde_json::from_slice(&output).unwrap();
+
+        assert_eq!(json["results"], json!([]));
+        assert_eq!(json["caveats"][0]["code"], "cli_usage_error");
+        assert!(json["caveats"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains(subcommand));
+    }
+}
+
+#[test]
+fn prebuilt_native_scip_db_drives_precise_defs_refs_and_symbols() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(
@@ -4791,22 +5025,7 @@ fn native_scip_import_drives_precise_defs_refs_and_symbols() {
     let scip_path = dir.path().join("index.scip");
     codetrail::scip::write_minimal_test_index(&scip_path).unwrap();
 
-    codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["index", "import-scip"])
-        .arg(&scip_path)
-        .assert()
-        .success();
-
-    // Verify occurrence DB was created
-    let scip_dir = fs::read_dir(dir.path().join(".codetrail/scip"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let db_path = scip_dir.join("occurrences.db");
+    let db_path = build_native_scip_db_from_file(dir.path(), &scip_path);
     assert!(db_path.is_file());
 
     // defs
@@ -4870,13 +5089,7 @@ fn native_scip_precise_results_respect_hidden_and_no_ignore() {
     let scip_path = dir.path().join("index.scip");
     write_scip_index_for_paths(&scip_path, &[".hidden/lib.rs", "target/generated/lib.rs"]);
 
-    codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["index", "import-scip"])
-        .arg(&scip_path)
-        .assert()
-        .success();
+    build_native_scip_db_from_file(dir.path(), &scip_path);
 
     let default_output = codetrail()
         .arg("--path")
@@ -4946,23 +5159,7 @@ fn native_scip_stale_detection_simulates_staleness_by_db_removal() {
     let scip_path = dir.path().join("index.scip");
     codetrail::scip::write_minimal_test_index(&scip_path).unwrap();
 
-    // Import native SCIP
-    codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["index", "import-scip"])
-        .arg(&scip_path)
-        .assert()
-        .success();
-
-    // Remove the occurrence DB to simulate staleness
-    let scip_dir = fs::read_dir(dir.path().join(".codetrail/scip"))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let db_path = scip_dir.join("occurrences.db");
+    let db_path = build_native_scip_db_from_file(dir.path(), &scip_path);
     assert!(db_path.is_file());
     fs::remove_file(&db_path).unwrap();
 

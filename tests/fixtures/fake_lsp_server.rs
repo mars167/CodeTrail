@@ -69,6 +69,36 @@ fn language_status_delay_ms() -> Option<u64> {
 }
 
 fn document_symbols(uri: &str) -> serde_json::Value {
+    if uri.ends_with("Needle.swift") {
+        return serde_json::json!([{
+            "name": "Needle",
+            "kind": 12,
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 23 }
+            },
+            "selectionRange": {
+                "start": { "line": 0, "character": 12 },
+                "end": { "line": 0, "character": 18 }
+            },
+            "children": []
+        }]);
+    }
+    if uri.ends_with("Main.swift") {
+        return serde_json::json!([{
+            "name": "main",
+            "kind": 12,
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 2, "character": 1 }
+            },
+            "selectionRange": {
+                "start": { "line": 0, "character": 12 },
+                "end": { "line": 0, "character": 16 }
+            },
+            "children": []
+        }]);
+    }
     if uri.ends_with("needle.go") {
         return serde_json::json!([{
             "name": "Needle",
@@ -107,6 +137,15 @@ fn references(message: &serde_json::Value) -> serde_json::Value {
         .as_str()
         .unwrap_or_default();
     let line = message["params"]["position"]["line"].as_u64().unwrap_or(0);
+    if uri.ends_with("Needle.swift") && line == 0 {
+        return serde_json::json!([{
+            "uri": uri.replace("Needle.swift", "Main.swift"),
+            "range": {
+                "start": { "line": 1, "character": 4 },
+                "end": { "line": 1, "character": 10 }
+            }
+        }]);
+    }
     if !uri.ends_with("needle.go") || line != 2 {
         return serde_json::json!([]);
     }

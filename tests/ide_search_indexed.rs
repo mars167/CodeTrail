@@ -1,6 +1,7 @@
 use std::fs;
 
 use assert_cmd::Command;
+use codetrail::workspace::Workspace;
 use serde_json::{json, Value};
 use tempfile::tempdir;
 
@@ -120,13 +121,8 @@ fn precise_scip_respects_default_ignore_case_and_strict_mode() {
     )
     .unwrap();
 
-    codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["index", "import-scip"])
-        .arg(&scip_path)
-        .assert()
-        .success();
+    let workspace = Workspace::discover(dir.path()).unwrap();
+    codetrail::scip_index::import_scip_json(&workspace, &scip_path).unwrap();
 
     let output = codetrail()
         .arg("--path")

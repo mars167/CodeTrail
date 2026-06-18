@@ -2,7 +2,7 @@ use std::fs;
 
 use codetrail::project_graph::{
     discover_project_graph, ConfigEdgeKind, DependencyEdgeKind, EnvironmentEdgeKind,
-    ProjectGraphCaveatCode, ProjectRootKind, SemanticFactPolicy,
+    ProjectGraphCaveatCode, ProjectLanguage, ProjectRootKind, SemanticFactPolicy,
 };
 use tempfile::tempdir;
 
@@ -54,6 +54,74 @@ fn discovers_ruby_root_and_owned_sources() {
         graph.source_owners[0].semantic_fact_policy,
         SemanticFactPolicy::PreciseEligible
     );
+}
+
+#[test]
+fn discovers_swiftpm_and_xcode_roots_with_config_edges() {
+    let dir = tempdir().unwrap();
+    write(
+        &dir.path().join("Package.swift"),
+        "// swift-tools-version: 6.0\n",
+    );
+    write(
+        &dir.path().join("Sources/App/App.swift"),
+        "public struct App {}\n",
+    );
+    write(&dir.path().join("Package.resolved"), "{}\n");
+    write(
+        &dir.path().join("ios/App.xcodeproj/project.pbxproj"),
+        "// !$*UTF8*$!\n",
+    );
+    write(
+        &dir.path()
+            .join("ios/App.xcodeproj/project.xcworkspace/contents.xcworkspacedata"),
+        "<?xml version=\"1.0\"?>\n",
+    );
+    write(&dir.path().join("ios/buildServer.json"), "{}\n");
+    write(
+        &dir.path().join("ios/Sources/ViewController.swift"),
+        "class ViewController {}\n",
+    );
+
+    let graph = discover_project_graph(dir.path()).unwrap();
+    let roots = graph
+        .roots
+        .iter()
+        .map(|root| (root.id.as_str(), root.kind.clone()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        roots,
+        vec![
+            ("swift:.", ProjectRootKind::SwiftPackage),
+            ("swift:ios", ProjectRootKind::SwiftXcodeProject),
+        ]
+    );
+    assert!(graph.source_owners.iter().any(|owner| {
+        owner.path == "Sources/App/App.swift"
+            && owner.root_id == "swift:."
+            && owner.language == ProjectLanguage::Swift
+            && owner.semantic_fact_policy == SemanticFactPolicy::PreciseEligible
+    }));
+    assert!(graph.source_owners.iter().any(|owner| {
+        owner.path == "ios/Sources/ViewController.swift"
+            && owner.root_id == "swift:ios"
+            && owner.language == ProjectLanguage::Swift
+    }));
+    let package_resolved = graph
+        .config_edges
+        .iter()
+        .find(|edge| edge.path == "Package.resolved")
+        .expect("Package.resolved config edge");
+    assert_eq!(package_resolved.kind, ConfigEdgeKind::DependencyConfig);
+    assert_eq!(package_resolved.owner_root_id.as_deref(), Some("swift:."));
+    let build_server = graph
+        .config_edges
+        .iter()
+        .find(|edge| edge.path == "ios/buildServer.json")
+        .expect("buildServer.json config edge");
+    assert_eq!(build_server.kind, ConfigEdgeKind::BuildConfig);
+    assert_eq!(build_server.owner_root_id.as_deref(), Some("swift:ios"));
 }
 
 #[test]
