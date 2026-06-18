@@ -192,6 +192,7 @@ MCP tool result 的 `content[0].text` 使用同一 public JSON 投影。
 - `caveats` 是机器可匹配的边界说明，结构为 `{code,message,severity,category}`。`severity` 目前使用 `info`、`warning` 或 `error`；`category` 目前使用 `capability`、`risk` 或 `error`。
 - `severity=info, category=capability` 表示预期能力级别说明，例如没有 SCIP 时的 parser fallback、`refs` 的 identifier-boundary text search、`calls/callers` 的 `inferred_candidate`。这些不是风险警告，但调用方仍要按 `reliability` 契约验证结果。
 - `severity=warning, category=risk` 表示需要调用方调整或复核的风险边界，例如 `ambiguous_results`、无匹配不可证明、宽查询保护和输出裁切。错误 caveat 使用 `severity=error, category=error`。
+- `reliability.llm_instruction` 是英文运行时契约文本。面向中文读者的说明只能放在文档正文，不能放入 Rust runtime strings。
 
 `--output compact-json` 是兼容别名，输出同一公开 JSON 形态。
 

@@ -1124,7 +1124,7 @@ fn routes_handles_utf8_near_java_annotation_window() {
 @RequestMapping("/demo")
 class DemoController {{
   @GetMapping("/window")
-  /* {padding}窗 marker */
+  /* {padding}é marker */
   public String window() {{ return ""; }}
 }}
 "#

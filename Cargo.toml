@@ -2,7 +2,7 @@
 name = "codetrail"
 version = "0.1.7-beta.2"
 edition = "2021"
-description = "CodeTrail: 确定性优先、带可靠性标注的代码搜索 CLI。"
+description = "CodeTrail: deterministic-first code search CLI with reliability labels."
 license = "MIT"
 
 [lib]

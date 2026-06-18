@@ -1,5 +1,5 @@
 #!/bin/bash
-# codetrail 性能基准采集和对比脚本
+# codetrail performance benchmark collection and comparison script
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
