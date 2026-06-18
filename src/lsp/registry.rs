@@ -6,9 +6,6 @@ use dunce::canonicalize;
 
 use crate::project_graph::ProjectLanguage;
 
-const DEFAULT_JDTLS_READY_TIMEOUT_MS: u64 = 30_000;
-const JDTLS_READY_TIMEOUT_ENV: &str = "CODETRAIL_LSP_JAVA_READY_TIMEOUT_MS";
-
 #[derive(Clone, Debug)]
 pub struct ServerSpec {
     pub program: String,
@@ -21,9 +18,9 @@ pub struct ServerSpec {
 pub enum ReadinessStrategy {
     /// Server is ready immediately after initialize.
     Immediate,
-    /// Wait for `$/progress` end notification (rust-analyzer).
+    /// Wait for `$/progress` end notification.
     ProgressEnd { timeout_ms: u64 },
-    /// Wait for `language/status` ServiceReady (jdtls).
+    /// Wait for `language/status` ServiceReady.
     LanguageStatus { timeout_ms: u64 },
 }
 
@@ -32,65 +29,20 @@ pub fn resolve_server(language: &ProjectLanguage) -> Option<ServerSpec> {
         return Some(spec);
     }
     match language {
-        ProjectLanguage::Go => Some(ServerSpec {
-            program: resolve_binary("gopls")?,
-            args: vec!["serve".to_string()],
-            provider_id: "gopls".to_string(),
-            readiness: ReadinessStrategy::Immediate,
-        }),
-        ProjectLanguage::Rust => Some(ServerSpec {
-            program: resolve_binary("rust-analyzer")?,
-            args: Vec::new(),
-            provider_id: "rust-analyzer".to_string(),
-            readiness: ReadinessStrategy::ProgressEnd {
-                timeout_ms: 120_000,
-            },
-        }),
-        ProjectLanguage::Java => Some(ServerSpec {
-            program: resolve_binary("jdtls")?,
-            args: Vec::new(),
-            provider_id: "jdtls".to_string(),
-            readiness: ReadinessStrategy::LanguageStatus {
-                timeout_ms: jdtls_ready_timeout_ms(),
-            },
-        }),
-        ProjectLanguage::TypeScript => Some(ServerSpec {
-            program: resolve_binary("typescript-language-server")?,
-            args: vec!["--stdio".to_string()],
-            provider_id: "typescript-language-server".to_string(),
-            readiness: ReadinessStrategy::Immediate,
-        }),
-        ProjectLanguage::Ruby => Some(ServerSpec {
-            program: resolve_binary("ruby-lsp")?,
-            args: Vec::new(),
-            provider_id: "ruby-lsp".to_string(),
-            readiness: ReadinessStrategy::Immediate,
-        }),
         ProjectLanguage::Swift => Some(ServerSpec {
             program: resolve_binary("sourcekit-lsp")?,
             args: Vec::new(),
             provider_id: "sourcekit-lsp".to_string(),
             readiness: ReadinessStrategy::Immediate,
         }),
+        _ => None,
     }
-}
-
-fn jdtls_ready_timeout_ms() -> u64 {
-    env::var(JDTLS_READY_TIMEOUT_ENV)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|timeout_ms| *timeout_ms > 0)
-        .unwrap_or(DEFAULT_JDTLS_READY_TIMEOUT_MS)
 }
 
 fn resolve_from_env(language: &ProjectLanguage) -> Option<ServerSpec> {
     let key = match language {
-        ProjectLanguage::Go => "CODETRAIL_LSP_GO",
-        ProjectLanguage::Rust => "CODETRAIL_LSP_RUST",
-        ProjectLanguage::Java => "CODETRAIL_LSP_JAVA",
-        ProjectLanguage::TypeScript => "CODETRAIL_LSP_TYPESCRIPT",
-        ProjectLanguage::Ruby => "CODETRAIL_LSP_RUBY",
         ProjectLanguage::Swift => "CODETRAIL_LSP_SWIFT",
+        _ => return None,
     };
     let value = env::var(key).ok()?;
     let mut parts = shell_words(&value).into_iter();
@@ -283,64 +235,25 @@ mod tests {
     use crate::project_graph::ProjectLanguage;
 
     #[test]
-    fn all_supported_languages_have_registry_entries() {
-        for language in [
-            ProjectLanguage::Go,
-            ProjectLanguage::Rust,
-            ProjectLanguage::Java,
-            ProjectLanguage::TypeScript,
-            ProjectLanguage::Ruby,
-            ProjectLanguage::Swift,
-        ] {
-            let _ = resolve_server(&language);
-        }
+    fn only_swift_is_registered_as_lsp_bridge() {
+        assert!(resolve_server(&ProjectLanguage::Go).is_none());
+        assert!(resolve_server(&ProjectLanguage::Rust).is_none());
+        assert!(resolve_server(&ProjectLanguage::Java).is_none());
+        assert!(resolve_server(&ProjectLanguage::TypeScript).is_none());
+        assert!(resolve_server(&ProjectLanguage::Ruby).is_none());
     }
 
     #[test]
-    fn env_override_takes_precedence() {
-        let key = "CODETRAIL_LSP_GO";
+    fn swift_env_override_takes_precedence() {
+        let key = "CODETRAIL_LSP_SWIFT";
         let previous = std::env::var(key).ok();
-        std::env::set_var(key, "\"/tmp/fake gopls\" --mode \"test value\"");
-        let spec = resolve_server(&ProjectLanguage::Go).expect("env override spec");
-        assert_eq!(spec.program, "/tmp/fake gopls");
+        std::env::set_var(key, "\"/tmp/fake sourcekit-lsp\" --mode \"test value\"");
+        let spec = resolve_server(&ProjectLanguage::Swift).expect("env override spec");
+        assert_eq!(spec.program, "/tmp/fake sourcekit-lsp");
         assert_eq!(
             spec.args,
             vec!["--mode".to_string(), "test value".to_string()]
         );
-        match previous {
-            Some(value) => std::env::set_var(key, value),
-            None => std::env::remove_var(key),
-        }
-    }
-
-    #[test]
-    fn ruby_env_override_takes_precedence() {
-        let key = "CODETRAIL_LSP_RUBY";
-        let previous = std::env::var(key).ok();
-        std::env::set_var(key, "\"/tmp/fake ruby-lsp\" --stdio");
-        let spec = resolve_server(&ProjectLanguage::Ruby).expect("ruby env override spec");
-        assert_eq!(spec.provider_id, "env:CODETRAIL_LSP_RUBY");
-        assert_eq!(spec.program, "/tmp/fake ruby-lsp");
-        assert_eq!(spec.args, vec!["--stdio".to_string()]);
-        match previous {
-            Some(value) => std::env::set_var(key, value),
-            None => std::env::remove_var(key),
-        }
-    }
-
-    #[test]
-    fn jdtls_readiness_timeout_is_configurable() {
-        let key = JDTLS_READY_TIMEOUT_ENV;
-        let previous = std::env::var(key).ok();
-        std::env::remove_var(key);
-        assert_eq!(jdtls_ready_timeout_ms(), DEFAULT_JDTLS_READY_TIMEOUT_MS);
-
-        std::env::set_var(key, "60000");
-        assert_eq!(jdtls_ready_timeout_ms(), 60_000);
-
-        std::env::set_var(key, "0");
-        assert_eq!(jdtls_ready_timeout_ms(), DEFAULT_JDTLS_READY_TIMEOUT_MS);
-
         match previous {
             Some(value) => std::env::set_var(key, value),
             None => std::env::remove_var(key),
@@ -363,7 +276,7 @@ mod tests {
 
     #[test]
     fn file_uri_uses_windows_drive_slash() {
-        let uri = file_path_to_uri(Path::new(r"C:\Program Files\jdtls\bin\jdtls.cmd")).unwrap();
-        assert_eq!(uri, "file:///C:/Program%20Files/jdtls/bin/jdtls.cmd");
+        let uri = file_path_to_uri(Path::new(r"C:\Program Files\tool\bin\server.cmd")).unwrap();
+        assert_eq!(uri, "file:///C:/Program%20Files/tool/bin/server.cmd");
     }
 }

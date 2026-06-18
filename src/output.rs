@@ -23,7 +23,7 @@ use projection::public_response;
 use text::render_text;
 
 pub use enrichment::{no_match_exit, with_workspace_root};
-pub use progress::ProgressIndicator;
+pub use progress::{stage_summary_line, ProgressIndicator};
 pub use projection::public_response_value;
 
 pub const SCHEMA_VERSION: &str = "1.0";

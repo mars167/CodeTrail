@@ -88,7 +88,7 @@ fn language_status_readiness_waits_across_quiet_intervals() {
     let spec = ServerSpec {
         program: server.to_string_lossy().to_string(),
         args: vec!["--language-status-delay-ms=1200".to_string()],
-        provider_id: "fake-jdtls".to_string(),
+        provider_id: "fake-lsp".to_string(),
         readiness: ReadinessStrategy::LanguageStatus { timeout_ms: 2_500 },
     };
     let mut client = LspClient::spawn(&spec, dir.path()).unwrap();
@@ -117,7 +117,7 @@ fn language_status_readiness_reports_timeout() {
     let spec = ServerSpec {
         program: server.to_string_lossy().to_string(),
         args: vec!["--language-status-delay-ms=1200".to_string()],
-        provider_id: "fake-jdtls".to_string(),
+        provider_id: "fake-lsp".to_string(),
         readiness: ReadinessStrategy::LanguageStatus { timeout_ms: 100 },
     };
     let mut client = LspClient::spawn(&spec, dir.path()).unwrap();
@@ -130,9 +130,9 @@ fn language_status_readiness_reports_timeout() {
 }
 
 #[test]
-fn fake_lsp_server_builds_scip_occurrence_db() {
+fn fake_swift_lsp_server_builds_scip_occurrence_db() {
     let dir = tempdir().unwrap();
-    setup_go_fixture(dir.path());
+    setup_swift_fixture(dir.path());
 
     let server = fake_lsp_server_path();
     assert!(
@@ -140,7 +140,7 @@ fn fake_lsp_server_builds_scip_occurrence_db() {
         "fake-lsp-server binary must be built for tests"
     );
 
-    std::env::set_var("CODETRAIL_LSP_GO", format!("{} serve", server.display()));
+    std::env::set_var("CODETRAIL_LSP_SWIFT", format!("{} serve", server.display()));
     std::env::set_var("CODETRAIL_SEMANTIC_BUDGET_MS", "10000");
 
     let workspace = Workspace::discover(dir.path()).unwrap();
@@ -189,8 +189,8 @@ fn fake_lsp_server_builds_scip_occurrence_db() {
     );
     let refs = scip::query_refs(&db_path, "Needle").unwrap();
     assert_eq!(refs.len(), 1, "expected one cross-file reference: {refs:?}");
-    assert_eq!(refs[0].path, "main.go");
-    assert_eq!(refs[0].start_line, 4);
+    assert_eq!(refs[0].path, "Sources/App/Main.swift");
+    assert_eq!(refs[0].start_line, 2);
 
     let service = QueryService::new(dir.path()).unwrap();
     let callers = service.callers("Needle", &QueryOptions::default()).unwrap();
@@ -198,10 +198,10 @@ fn fake_lsp_server_builds_scip_occurrence_db() {
     assert!(
         results.iter().any(|result| {
             result["source"] == "scip_precise"
-                && result["path"] == "main.go"
+                && result["path"] == "Sources/App/Main.swift"
                 && result["enclosingSymbol"] == "main"
         }),
-        "expected graph caller from fresh LSP SCIP references: {callers}"
+        "expected graph caller from fresh Swift LSP SCIP references: {callers}"
     );
 }
 
@@ -303,7 +303,7 @@ fn failed_semantic_rerun_invalidates_existing_occurrence_db() {
             generation_id: "partial-run".to_string(),
             root_id: "java:java".to_string(),
             language: ProjectLanguage::Java,
-            provider_name: "jdtls".to_string(),
+            provider_name: "scip-java".to_string(),
             provider_version_hash: "provider".to_string(),
             environment_hash: "env".to_string(),
             source_proof_hash: "source".to_string(),
@@ -324,8 +324,8 @@ fn failed_semantic_rerun_invalidates_existing_occurrence_db() {
     );
 
     let _java_guard = EnvVarGuard::set(
-        "CODETRAIL_LSP_JAVA",
-        "/definitely/missing/codetrail-test-jdtls",
+        "CODETRAIL_SCIP_JAVA",
+        "/definitely/missing/codetrail-test-scip-java",
     );
     let report = lsp::generate_best_effort(&workspace, &records, VerboseLogger::new(0)).unwrap();
 
@@ -333,7 +333,7 @@ fn failed_semantic_rerun_invalidates_existing_occurrence_db() {
     assert!(report
         .languages
         .iter()
-        .any(|language| language.state == "partial"));
+        .any(|language| language.state == "missing"));
     assert!(
         !db_path.exists()
             || !scip::occurrence_db_fresh(&db_path, &workspace.snapshot_id, &workspace.root),
@@ -343,15 +343,15 @@ fn failed_semantic_rerun_invalidates_existing_occurrence_db() {
 }
 
 #[test]
-fn defs_use_precise_fact_after_lsp_index_build() {
+fn defs_use_precise_fact_after_swift_lsp_index_build() {
     let dir = tempdir().unwrap();
-    setup_go_fixture(dir.path());
+    setup_swift_fixture(dir.path());
 
     let server = fake_lsp_server_path();
     if !server.exists() {
         return;
     }
-    std::env::set_var("CODETRAIL_LSP_GO", format!("{} serve", server.display()));
+    std::env::set_var("CODETRAIL_LSP_SWIFT", format!("{} serve", server.display()));
     std::env::set_var("CODETRAIL_SEMANTIC_BUDGET_MS", "10000");
 
     let workspace = Workspace::discover(dir.path()).unwrap();
@@ -531,20 +531,20 @@ fn swift_index_build_generates_and_imports_scip() {
 }
 
 #[test]
-fn gopls_e2e_builds_precise_index_when_available() {
-    if !Command::new("gopls")
-        .arg("version")
+fn scip_go_e2e_builds_precise_index_when_available() {
+    if !Command::new("scip-go")
+        .arg("--help")
         .output()
         .map(|output| output.status.success())
         .unwrap_or(false)
     {
-        eprintln!("skipping gopls e2e: gopls not available");
+        eprintln!("skipping scip-go e2e: scip-go not available");
         return;
     }
 
     let dir = tempdir().unwrap();
     setup_go_fixture(dir.path());
-    std::env::remove_var("CODETRAIL_LSP_GO");
+    std::env::remove_var("CODETRAIL_SCIP_GO");
     std::env::set_var("CODETRAIL_SEMANTIC_BUDGET_MS", "120000");
 
     let workspace = Workspace::discover(dir.path()).unwrap();
@@ -576,7 +576,7 @@ fn gopls_e2e_builds_precise_index_when_available() {
 
     let db_path = native_db_path(&workspace);
     if !db_path.exists() {
-        eprintln!("skipping gopls precise assertion: no occurrence DB written");
+        eprintln!("skipping scip-go precise assertion: no occurrence DB written");
         return;
     }
 
@@ -585,7 +585,7 @@ fn gopls_e2e_builds_precise_index_when_available() {
     if response["reliability"]["level"] == "precise_fact" {
         assert!(
             !response["results"].as_array().unwrap().is_empty(),
-            "gopls should produce precise defs when indexing succeeds"
+            "scip-go should produce precise defs when indexing succeeds"
         );
     }
 }

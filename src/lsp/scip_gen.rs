@@ -92,7 +92,7 @@ pub fn generate_best_effort(
     if scip::occurrence_db_fresh(&db_path, &workspace.snapshot_id, &workspace.root) {
         match fresh_occurrence_db_skip_reason(workspace) {
             Ok(Some(reason)) => {
-                verbose.log("semantic: occurrence DB already fresh; skipping LSP phase");
+                verbose.log("semantic: occurrence DB already fresh; skipping provider phase");
                 return Ok(SemanticBuildReport {
                     attempted: false,
                     skipped: true,
@@ -102,10 +102,10 @@ pub fn generate_best_effort(
                 });
             }
             Ok(None) => verbose.log(
-                "semantic: occurrence DB is fresh but generation manifest is not fresh; rerunning LSP phase",
+                "semantic: occurrence DB is fresh but generation manifest is not fresh; rerunning provider phase",
             ),
             Err(error) => verbose.log(format!(
-                "semantic: occurrence DB is fresh but generation manifest could not be read ({error}); rerunning LSP phase"
+                "semantic: occurrence DB is fresh but generation manifest could not be read ({error}); rerunning provider phase"
             )),
         }
     }
@@ -124,20 +124,80 @@ pub fn generate_best_effort(
     let budget_ms = semantic_budget_ms(&graph);
     let deadline = Instant::now() + Duration::from_millis(budget_ms);
     verbose.log(format!(
-        "semantic: starting LSP bridge (budget={budget_ms}ms)"
+        "semantic: starting semantic providers (budget={budget_ms}ms)"
     ));
 
     let file_contents = load_file_contents(workspace, records);
     let mut all_occurrences = Vec::new();
     let mut language_reports = Vec::new();
     let mut manifests = Vec::new();
+    let mut native_indexes = Vec::new();
+
+    for root in &graph.roots {
+        let requirement = crate::provider_help::requirement_for_language(&root.language);
+        if requirement.kind != crate::provider_help::ProviderKind::NativeScip {
+            continue;
+        }
+        let files = source_files_for_root(&graph, root);
+        if files.is_empty() {
+            continue;
+        }
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            let report = semantic_report(
+                root,
+                Some(requirement.provider),
+                "partial",
+                0,
+                vec!["semantic_provider_failed: provider_timeout".to_string()],
+            );
+            language_reports.push(report.clone());
+            manifests.push(build_manifest(workspace, root, &report, &files, records));
+            continue;
+        };
+        let report =
+            match crate::scip_provider::run_native_provider(workspace, root, verbose, remaining)? {
+                crate::scip_provider::NativeScipOutcome::Generated {
+                    provider, index, ..
+                } => {
+                    let occurrence_count = count_scip_occurrences(&index);
+                    native_indexes.push(index);
+                    semantic_report(root, Some(provider), "fresh", occurrence_count, Vec::new())
+                }
+                crate::scip_provider::NativeScipOutcome::Missing { requirement } => {
+                    semantic_report(
+                        root,
+                        Some(requirement.provider),
+                        "missing",
+                        0,
+                        vec!["semantic_provider_missing".to_string()],
+                    )
+                }
+                crate::scip_provider::NativeScipOutcome::Failed { provider, message } => {
+                    semantic_report(
+                        root,
+                        Some(provider),
+                        "partial",
+                        0,
+                        vec![format!("semantic_provider_failed: {message}")],
+                    )
+                }
+                crate::scip_provider::NativeScipOutcome::NotNative => continue,
+            };
+        language_reports.push(report.clone());
+        manifests.push(build_manifest(workspace, root, &report, &files, records));
+    }
 
     for (root, files, report) in skipped_lsp_roots(workspace, &graph, None) {
         language_reports.push(report.clone());
         manifests.push(build_manifest(workspace, root, &report, &files, records));
     }
 
-    let groups = lsp_work_groups(workspace, &graph);
+    let groups = lsp_work_groups(workspace, &graph)
+        .into_iter()
+        .filter(|((language, _), _)| {
+            crate::provider_help::requirement_for_language(language).kind
+                == crate::provider_help::ProviderKind::LspBridge
+        });
     for ((language, lsp_root_path), roots) in groups {
         if Instant::now() >= deadline {
             verbose.log("semantic: wall-clock budget exhausted");
@@ -162,7 +222,17 @@ pub fn generate_best_effort(
         }
     }
 
-    if all_occurrences.is_empty() {
+    let native_index_count = native_indexes.len();
+    let lsp_generated = !all_occurrences.is_empty();
+    let mut indexes = native_indexes;
+    if lsp_generated {
+        indexes.push(write_scip_index(
+            &all_occurrences,
+            &workspace.root.to_string_lossy(),
+        )?);
+    }
+
+    if indexes.is_empty() {
         scip::invalidate_db(&db_path)
             .with_context(|| "failed to invalidate empty occurrence database")?;
         write_generation_manifests(workspace, &manifests)?;
@@ -173,7 +243,7 @@ pub fn generate_best_effort(
             scip: Some(SemanticScipReport {
                 generated: false,
                 imported: false,
-                source: "lsp_scip".to_string(),
+                source: scip_report_source(native_index_count, lsp_generated),
                 path: Some(db_path.to_string_lossy().to_string()),
                 document_count: 0,
                 occurrence_count: 0,
@@ -183,8 +253,12 @@ pub fn generate_best_effort(
         });
     }
 
-    let scip_index = write_scip_index(&all_occurrences, &workspace.root.to_string_lossy())?;
-    let scip_report = scip_build_report(&scip_index, &db_path);
+    let scip_index = crate::scip_provider::merge_native_indexes(indexes);
+    let scip_report = scip_build_report(
+        &scip_index,
+        &db_path,
+        scip_report_source(native_index_count, lsp_generated),
+    );
     fs::create_dir_all(index::scip_root(workspace))?;
     scip::build_occurrences_db(
         &scip_index,
@@ -192,12 +266,12 @@ pub fn generate_best_effort(
         &workspace.snapshot_id,
         &workspace.root,
     )
-    .with_context(|| "failed to build occurrence database from LSP facts")?;
+    .with_context(|| "failed to build occurrence database from semantic provider facts")?;
 
     write_generation_manifests(workspace, &manifests)?;
     verbose.log(format!(
         "semantic: wrote {} occurrences to {}",
-        all_occurrences.len(),
+        scip_report.occurrence_count,
         db_path.display()
     ));
 
@@ -210,11 +284,11 @@ pub fn generate_best_effort(
     })
 }
 
-fn scip_build_report(index: &proto::Index, db_path: &Path) -> SemanticScipReport {
+fn scip_build_report(index: &proto::Index, db_path: &Path, source: String) -> SemanticScipReport {
     SemanticScipReport {
         generated: true,
         imported: true,
-        source: "lsp_scip".to_string(),
+        source,
         path: Some(db_path.to_string_lossy().to_string()),
         document_count: index.documents.len(),
         occurrence_count: index
@@ -228,6 +302,23 @@ fn scip_build_report(index: &proto::Index, db_path: &Path) -> SemanticScipReport
             .map(|document| document.symbols.len())
             .sum(),
     }
+}
+
+fn scip_report_source(native_index_count: usize, lsp_generated: bool) -> String {
+    match (native_index_count > 0, lsp_generated) {
+        (true, true) => "mixed_scip".to_string(),
+        (true, false) => "native_scip".to_string(),
+        (false, true) => "lsp_scip".to_string(),
+        (false, false) => "semantic_scip".to_string(),
+    }
+}
+
+fn count_scip_occurrences(index: &proto::Index) -> usize {
+    index
+        .documents
+        .iter()
+        .map(|document| document.occurrences.len())
+        .sum()
 }
 
 fn semantic_budget_ms(graph: &ProjectGraph) -> u64 {
@@ -363,6 +454,10 @@ fn skipped_lsp_roots<'a>(
         .roots
         .iter()
         .filter(|root| language_filter.is_none_or(|language| &root.language == language))
+        .filter(|root| {
+            crate::provider_help::requirement_for_language(&root.language).kind
+                == crate::provider_help::ProviderKind::LspBridge
+        })
         .filter(|root| !lsp_root_ready(workspace, root))
         .map(|root| {
             (
@@ -399,9 +494,6 @@ fn lsp_root_ready(workspace: &Workspace, root: &ProjectRoot) -> bool {
 }
 
 fn lsp_workspace_root(workspace: &Workspace, root: &ProjectRoot) -> PathBuf {
-    if root.language == ProjectLanguage::Java {
-        return workspace.root.clone();
-    }
     if root.path == "." {
         workspace.root.clone()
     } else {
@@ -1097,7 +1189,7 @@ mod tests {
             generation_id: "test".to_string(),
             root_id: "java:app".to_string(),
             language: ProjectLanguage::Java,
-            provider_name: "jdtls".to_string(),
+            provider_name: "scip-java".to_string(),
             provider_version_hash: "provider".to_string(),
             environment_hash: "env".to_string(),
             source_proof_hash: "source".to_string(),

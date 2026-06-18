@@ -307,7 +307,7 @@ mod tests {
             source_proof_hash: "c".into(),
             config_proof_hash: "d".into(),
         };
-        let manifest = crate::generation_manifest::new_manifest(&root, "gopls", &hashes);
+        let manifest = crate::generation_manifest::new_manifest(&root, "scip-go", &hashes);
         let gate = FreshnessGate::from_manifests(vec![manifest]);
         let cap = CapabilityManifest::from_gate("/repo", "snap1", &gate, &[ProjectLanguage::Go]);
         assert!(cap

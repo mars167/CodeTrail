@@ -39,4 +39,7 @@ else
   echo "PowerShell installer smoke skipped: pwsh not found" >&2
 fi
 
+node "$repo_root/scripts/npm/check-versions.js"
+node --test "$repo_root/npm/test/"*.test.js
+
 echo "Installer smoke tests passed."

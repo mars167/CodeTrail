@@ -441,7 +441,7 @@ mod tests {
     #[test]
     fn fresh_manifest_does_not_block_precise() {
         let root = test_root("go:backend", ProjectLanguage::Go);
-        let manifest = new_manifest(&root, "gopls", &test_hashes());
+        let manifest = new_manifest(&root, "scip-go", &test_hashes());
         assert_eq!(manifest.state, ManifestState::Fresh);
         assert!(!manifest.state.blocks_precise());
         assert!(manifest.state.is_usable());
@@ -480,7 +480,7 @@ mod tests {
     #[test]
     fn provider_env_change_transitions_to_stale() {
         let root = test_root("go:svc", ProjectLanguage::Go);
-        let mut manifest = new_manifest(&root, "gopls", &test_hashes());
+        let mut manifest = new_manifest(&root, "scip-go", &test_hashes());
         let result = apply_refresh_event(
             &mut manifest,
             &RefreshEvent::ProviderEnvChanged {
@@ -494,7 +494,7 @@ mod tests {
     #[test]
     fn stale_reconcile_transitions_to_updating() {
         let root = test_root("java:app", ProjectLanguage::Java);
-        let mut manifest = new_manifest(&root, "jdtls", &test_hashes());
+        let mut manifest = new_manifest(&root, "scip-java", &test_hashes());
         manifest.state = ManifestState::Stale;
 
         let result = apply_refresh_event(
@@ -543,7 +543,7 @@ mod tests {
     #[test]
     fn mark_partial_with_reasons() {
         let root = test_root("java:mod", ProjectLanguage::Java);
-        let mut manifest = new_manifest(&root, "jdtls", &test_hashes());
+        let mut manifest = new_manifest(&root, "scip-java", &test_hashes());
         mark_partial(&mut manifest, vec!["proc_macro_disabled".to_string()]);
 
         assert_eq!(manifest.state, ManifestState::Partial);
@@ -568,7 +568,7 @@ mod tests {
         let root_a = test_root("go:a", ProjectLanguage::Go);
         let root_b = test_root("rust:b", ProjectLanguage::Rust);
 
-        let mut manifest_a = new_manifest(&root_a, "gopls", &test_hashes());
+        let mut manifest_a = new_manifest(&root_a, "scip-go", &test_hashes());
         let manifest_b = new_manifest(&root_b, "rust-analyzer", &test_hashes());
         manifest_a.state = ManifestState::Stale;
 
@@ -581,7 +581,7 @@ mod tests {
     #[test]
     fn freshness_gate_query_filters_by_root_language_provider() {
         let root = test_root("go:srv", ProjectLanguage::Go);
-        let manifest = new_manifest(&root, "gopls", &test_hashes());
+        let manifest = new_manifest(&root, "scip-go", &test_hashes());
         let gate = FreshnessGate::from_manifests(vec![manifest]);
 
         let by_root = gate.query(Some("go:srv"), None, None);
@@ -590,7 +590,7 @@ mod tests {
         let by_lang = gate.query(None, Some(&ProjectLanguage::Go), None);
         assert_eq!(by_lang.len(), 1);
 
-        let by_provider = gate.query(None, None, Some("gopls"));
+        let by_provider = gate.query(None, None, Some("scip-go"));
         assert_eq!(by_provider.len(), 1);
 
         let no_match = gate.query(Some("rust:other"), None, None);

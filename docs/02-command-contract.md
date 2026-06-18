@@ -10,6 +10,7 @@ flowchart TB
   CS --> L1["navigation facts"]
   CS --> L2["relationship candidates"]
   CS --> Ops["index / query / watch / serve / mcp"]
+  CS --> Wrapper["npm wrapper"]
 
   L0 --> Search["find / grep"]
   L0 --> Paths["files / find-path / glob"]
@@ -19,6 +20,7 @@ flowchart TB
   Ops --> Index["index build / update / status / skipped / verify / clean / pack / unpack"]
   Ops --> Query["query replay / show / list / delete"]
   Ops --> Hooks["hooks install / uninstall / status"]
+  Wrapper --> WrapperCmds["update / skills / agents"]
 ```
 
 | 族 | 命令 | 契约 |
@@ -32,10 +34,16 @@ flowchart TB
 | Saved query | `--save-query`, `query replay/show/list/delete` | 保存可重放 query/scope/snapshot/cursor 元数据，不保存结果正文 |
 | 索引 | `index ...`, `hooks ...` | 维护 freshness 和本地/remote 缓存 |
 | 集成接口 | `mcp`, `serve`, `watch` | 包装同一套 query service 和 watcher 状态 |
+| NPM wrapper | `update ...`, `skills ...`, `agents ...` | Node wrapper 命令。它们自己的命令响应可以写 JSON 到 stdout，但不能改变 Rust query JSON/JSONL stdout。 |
 
 任务级调查不属于命令族。`brief`、`context`、`analyze architecture` 或
 `analyze data-model` 这类行为应由 Agent/subagent 模板通过上述原语组合完成，
 不进入 CodeTrail CLI/MCP 的公共命令契约。
+
+`update`、`skills` 和 `agents` 属于 npm wrapper 层命令；直接运行 Rust release
+binary 时不可用。自动 update notice 只写 stderr，并在 JSON/JSONL 输出、CI、非
+TTY session 或 `CODETRAIL_NO_UPDATE_CHECK=1` 时禁用。Rust core completions
+仍只描述 core 命令；npm wrapper completions 在运行时追加 wrapper-only 命令。
 
 ## IDE-like 搜索选项
 
@@ -214,21 +222,22 @@ MCP tool result 的 `content[0].text` 使用同一 public JSON 投影。
 
 ## Index Build 与语义阶段
 
-- `index build` 默认在文本索引之后 best-effort 运行 LSP 语义阶段，内部完成
+- `index build` 默认在文本索引之后 best-effort 运行 provider 语义阶段，内部完成
   SCIP occurrence 生成与导入，写入 `.codetrail/scip/<snapshot-key>/occurrences.db`
   与 `generation.json`。
-- `--no-semantic` 关闭 LSP/SCIP 生成；`index build --staged` 不运行语义阶段。
+- `--no-semantic` 关闭 provider/SCIP 生成；`index build --staged` 不运行语义阶段。
 - build 结果的 `index.semantic` 摘要包含 `attempted`、`skipped`、`skipReason`、
   `scip.generated`、`scip.imported` 与各语言 `state`/`partialReasons`。
 - `index status` 返回 `indexedLanguages` 和 `semanticStatus`。`indexedLanguages`
   展示主索引/file catalog 中包含的语言；`semanticStatus.scipIndex` 展示
-  SCIP occurrence DB 是否生成、可用、fresh 以及包含的 SCIP 语言；`semanticStatus.languageServers`
-  展示当前项目 root 所需 LSP provider 是否可解析，缺失时给出 `missingDependencies`。
+  SCIP occurrence DB 是否生成、可用、fresh 以及包含的 SCIP 语言；`semanticStatus.semanticProviders`
+  展示当前项目 root 所需 semantic provider 是否可解析，缺失时给出 `missingDependencies`。
+  `semanticStatus.languageServers` 暂时保留为兼容别名，内容来自同一 provider registry。
   旧的 `semanticManifests` 数组保留，用于展示 per-root 生成状态。
 - Swift root 在 `semanticStatus.roots[*].swiftConfig` 中报告 SourceKit-LSP
   配置状态。SwiftPM root 直接可尝试；Xcode `.xcodeproj`/`.xcworkspace` root
   只有在已有 `buildServer.json` 或 `compile_commands.json` 时标记 ready。
-- LSP 缺失或超时时产生 `semantic_provider_missing` / `semantic_provider_partial` caveat；`defs`/`refs`/`symbols` 继续走 parser/text fallback。
+- Provider 缺失或超时时产生 `semantic_provider_missing` / `semantic_provider_partial` caveat；`defs`/`refs`/`symbols` 继续走 parser/text fallback。
 
 ## Index Skipped Log
 

@@ -12,8 +12,10 @@ flowchart TB
 
   Fresh --> Store["Primary local store\n.codetrail/index.lance"]
   Store --> Text["Text/path candidates"]
-  Build["index build semantic phase"] --> LSP["LSP bridge\ngopls / rust-analyzer / jdtls / tls / sourcekit-lsp"]
-  LSP --> Occ["SCIP occurrences.db"]
+  Build["index build semantic phase"] --> Providers["SCIP providers\nscip-go / rust-analyzer scip / scip-java / scip-typescript / scip-ruby"]
+  Build --> Swift["Swift LSP bridge\nsourcekit-lsp"]
+  Providers --> Occ["SCIP occurrences.db"]
+  Swift --> Occ
   Fresh --> Parser["Tree-sitter fallback"]
   Fresh --> G["Petgraph call candidates"]
   Snap --> Saved["Saved query metadata"]
@@ -106,13 +108,13 @@ flowchart LR
 - Watcher 不执行 `git add`，不修改 staged，不生成 commit snapshot。
 - 当前 `watch --once` 是按需 reconcile；`serve` 暴露 query service 状态和 watcher 状态。
 
-## 语义索引（LSP → SCIP）
+## 语义索引（Provider → SCIP）
 
-`index build` 在文本索引与调用图之后，默认 best-effort 启动各语言 LSP（`gopls`、`rust-analyzer`、`jdtls`、`typescript-language-server`、`ruby-lsp`、`sourcekit-lsp`），通过 `documentSymbol` 与采样 `references` 合成 SCIP occurrence，并在同一 build 阶段导入 `.codetrail/scip/<snapshot-key>/occurrences.db`。
+`index build` 在文本索引与调用图之后，默认 best-effort 启动语义 provider。Go、Rust、Java、TypeScript/JavaScript 和 Ruby 优先使用 native SCIP provider（`scip-go`、`rust-analyzer scip .`、`scip-java index`、`scip-typescript index`、`scip-ruby .`）；Swift 继续使用 `sourcekit-lsp` bridge 合成 SCIP occurrence。所有 provider 产物会先写入 `.codetrail/scip/<snapshot-key>/provider-output/`，合并后在同一 build 阶段导入 `.codetrail/scip/<snapshot-key>/occurrences.db`。
 
 - `--no-semantic` 跳过该阶段；`index build --staged` 不运行语义阶段。
-- 任何 LSP 失败只产生 partial/missing manifest 与 caveat，不阻塞 build。
-- 环境变量：`CODETRAIL_LSP_<LANG>` 覆盖 server 命令；`CODETRAIL_SEMANTIC_BUDGET_MS` 控制总墙钟预算（默认 60s）。
+- 任何 provider 失败只产生 partial/missing manifest 与 caveat，不阻塞 build；查询继续回退到 tree-sitter/parser/text fallback。
+- 环境变量：`CODETRAIL_SCIP_<LANG>` 覆盖 native SCIP provider 命令；Swift 使用 `CODETRAIL_LSP_SWIFT` 覆盖 `sourcekit-lsp`；`CODETRAIL_SEMANTIC_BUDGET_MS` 控制总墙钟预算（默认 60s）。
 - 若 `occurrences.db` 已与当前 snapshot 和 file hash 对齐，重复 build 会跳过语义阶段。
 - SwiftPM root 直接通过 `sourcekit-lsp` 尝试语义索引；Xcode root 只读取已有
   `buildServer.json` 或 `compile_commands.json` 状态并在 `index status`

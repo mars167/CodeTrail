@@ -262,7 +262,7 @@ mod tests {
             source_proof_hash: "c".to_string(),
             config_proof_hash: "d".to_string(),
         };
-        let mut manifest = crate::generation_manifest::new_manifest(&root, "gopls", &hashes);
+        let mut manifest = crate::generation_manifest::new_manifest(&root, "scip-go", &hashes);
         manifest.state = crate::generation_manifest::ManifestState::Stale;
         let gate = FreshnessGate::from_manifests(vec![manifest]);
 

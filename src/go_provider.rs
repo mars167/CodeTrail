@@ -1,11 +1,10 @@
-//! Go compiler-helper provider protocol.
+//! Go semantic provider protocol.
 //!
 //! Go's `go/packages` + `go/types` API provides batch access to package graphs,
-//! definitions, uses, and type information. This is preferred over per-symbol
-//! LSP `textDocument/references` for whole-repository indexing.
+//! definitions, uses, and type information. Native SCIP providers such as
+//! `scip-go` are preferred for whole-repository indexing.
 //!
-//! The helper runs as an external process (Go binary or `gopls` in serve mode).
-//! CodeTrail core sends candidate probes and receives normalized semantic facts.
+//! CodeTrail core treats provider output as batch semantic facts.
 
 use serde::{Deserialize, Serialize};
 
