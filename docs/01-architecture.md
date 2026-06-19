@@ -91,9 +91,8 @@ flowchart TD
 ```
 
 `find`、`grep`、`files`、`find-path` 和 `glob` 是 index-backed discovery
-路径；`list`、`tree` 和 `read` 是 filesystem/source verification 路径，不作为
-索引查询核心。`read` 是验证入口：搜索和图结果帮助定位，真正进入编辑前应读取
-精确范围。
+路径。CLI/MCP 不再暴露 `list`、`tree` 或 `read`；搜索和图结果帮助定位，真正
+进入编辑前应由宿主编辑器或 Agent read 工具读取精确范围。
 
 ## Watcher 和 Hook
 
@@ -140,7 +139,7 @@ Remote 适合 CI 产物、大仓预热和团队共享。remote archive 包含 te
 metadata、gram postings 和 text content segment，因此 MCP remote-only
 查询可以在本地源文件不可读时返回导航线索。只要本地文件无法与 remote
 snapshot 对齐，结果就必须降级，且不能覆盖本地 dirty/staged/worktree 事实；
-调用方需要用 `read` 重新验证可编辑源码。
+调用方需要用宿主源码读取工具重新验证可编辑源码。
 
 ## Saved Query
 

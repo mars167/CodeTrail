@@ -65,9 +65,8 @@ Search discipline:
 - Use an index-first workflow. For multi-step investigations, check
   `codetrail --output json index status` early and inspect whether SCIP is
   fresh/available for the relevant language.
-- Do not count `codetrail read`, `codetrail list`, or `codetrail tree` as
-  indexed discovery. They are filesystem/source verification helpers; use host
-  tools for the same job when that is simpler.
+- `codetrail read`, `codetrail list`, and `codetrail tree` are not available.
+  Use host tools for filesystem browsing and source verification.
 - Start with navigation and relationship commands when candidate names exist:
   `symbols`, `defs`, `refs`, `routes`, `calls`, and `callers`.
 - Before the first `find` or `grep`, make at least two semantic/navigation
@@ -100,9 +99,9 @@ Search discipline:
 - Keep `--limit` small and use `--cursor` only when the next page is clearly
   needed.
 - Verify every important claim with an exact source read, then cite the exact
-  verified line range in your output. Use host read tools by default; use
-  `codetrail read <path:start-end>` when you need CodeTrail range parsing or
-  JSON projection. Line numbers are 1-based.
+  verified line range in your output. Use host read tools with the CodeTrail
+  result `path`, `range`, `sourceTarget`, or `suggestedReads`. Line numbers are
+  1-based.
 - Prefer one whole-file read when the file is small enough to fit the output
   budget, when `suggestedReads` points at the file path, or when several
   needed ranges are in the same file. Do not page a small file through adjacent

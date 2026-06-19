@@ -7,8 +7,7 @@ CodeTrail owns indexed discovery and reliability metadata:
 
 - text, path, symbol, reference, call-candidate, status, and freshness facts;
 - output budgets, pagination, caveats, and reliability labels;
-- optional exact range reads for verification when the host agent does not
-  provide a better read tool.
+- source range targets that the host agent can verify with its read tool.
 
 Subagents own:
 
@@ -44,8 +43,8 @@ The subagent uses an index-first workflow: check `codetrail index status`, try
 semantic/navigation commands (`symbols`, `defs`, `refs`, `routes`, `calls`,
 `callers`), use indexed path/content commands (`files`, `find-path`, `glob`,
 `find`, `grep`) for scoped discovery, then verify focused ranges with normal
-source-read tools or `codetrail read`. `list`, `tree`, and `read` are not
-counted as indexed discovery commands.
+source-read tools. `list`, `tree`, and `read` are not CodeTrail CLI/MCP
+commands.
 
 ## OpenCode
 
@@ -75,5 +74,5 @@ The subagent uses an index-first workflow: check `codetrail index status`, try
 semantic/navigation commands (`symbols`, `defs`, `refs`, `routes`, `calls`,
 `callers`), use indexed path/content commands (`files`, `find-path`, `glob`,
 `find`, `grep`) for scoped discovery, then verify focused ranges with normal
-source-read tools or `codetrail read`. `list`, `tree`, and `read` are not
-counted as indexed discovery commands.
+source-read tools. `list`, `tree`, and `read` are not CodeTrail CLI/MCP
+commands.

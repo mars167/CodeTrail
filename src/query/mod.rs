@@ -877,17 +877,14 @@ mod tests {
     }
 
     #[test]
-    fn query_service_read_command_preserves_workspace_root() {
+    fn query_service_source_target_preserves_relative_path() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("src dir")).unwrap();
         fs::write(dir.path().join("src dir/a b.rs"), "needle\n").unwrap();
         let svc = QueryService::new(dir.path()).unwrap();
 
         let result = svc.find("needle", &QueryOptions::default()).unwrap();
-        let argv = result["results"][0]["readCommandArgv"].as_array().unwrap();
-        assert_eq!(argv[1], "--path");
-        assert_eq!(argv[3], "read");
-        assert_eq!(argv[4], "src dir/a b.rs");
+        assert_eq!(result["results"][0]["sourceTarget"], "src dir/a b.rs");
     }
 
     // -- grep -----------------------------------------------------------

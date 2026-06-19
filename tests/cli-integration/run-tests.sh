@@ -138,11 +138,6 @@ for repo in go-gin rust-ripgrep java-junit4 ts-express; do
     run_test "${repo}" "grep"       "${lang}" ""             grep "${grep_pat}"
     run_test "${repo}" "files"      "${lang}" ""             files "${file:0:4}"
     run_test "${repo}" "glob"       "${lang}" ""             glob "${glob}"
-    run_test "${repo}" "list"       "${lang}" ""             list
-    run_test "${repo}" "tree"       "${lang}" ""             tree --depth 2
-
-    # Read
-    run_test "${repo}" "read"       "${lang}" ""             read "${file}:1-20"
 
     # Navigation
     run_test "${repo}" "symbols"    "${lang}" ""             symbols "${sym}"

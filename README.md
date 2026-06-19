@@ -51,7 +51,7 @@ codetrail find "TODO"
 codetrail defs main
 ```
 
-Default output is concise text. For machine consumption, use `--output json` or `--output jsonl`. Use your editor, agent read tool, or `codetrail read <path:start-end>` to verify the exact source range before editing. For full argument details, run `codetrail --help` and check `src/cli.rs`.
+Default output is concise text. For machine consumption, use `--output json` or `--output jsonl`. Use your editor or agent read tool to verify the exact source range before editing. For full argument details, run `codetrail --help` and check `src/cli.rs`.
 
 ## Common Commands
 
@@ -64,13 +64,12 @@ codetrail files "README"
 codetrail glob "src/**/*.rs"
 ```
 
-Symbol lookup and source verification:
+Symbol lookup:
 
 ```bash
 codetrail defs main
 codetrail refs main
 codetrail symbols query
-codetrail read README.md:1-40
 ```
 
 Indexing and saved query:
@@ -98,7 +97,7 @@ codetrail mcp
 
 Public JSON responses only include `results`, `page`, and `caveats`. Each caveat carries a stable `severity` and `category` to distinguish risk warnings from expected capability-level caveats.
 
-Before editing code, verify search, remote, or graph-derived results with `read`. Different source types are represented with different reliability levels: text hits are verifiable clues, SCIP occurrences are more precise but still need range review, parser fallback and call candidates are not semantic proof, and remote results must be clearly marked when they are not aligned with local file proof.
+Before editing code, verify search, remote, or graph-derived results with an editor or agent source read. Different source types are represented with different reliability levels: text hits are verifiable clues, SCIP occurrences are more precise but still need range review, parser fallback and call candidates are not semantic proof, and remote results must be clearly marked when they are not aligned with local file proof.
 
 ## Architecture
 
@@ -133,16 +132,16 @@ flowchart TB
   RemoteResults --> Query
 
   Query --> Output["Results with ranges,\nreliability and caveats"]
-  Output --> Read["read verifies exact source ranges"]
+  Output --> VerifyRange["editor/agent read verifies exact source ranges"]
 ```
 
 Core boundaries:
 
 - Snapshot is the truth boundary: results must declare whether they come from commit, staged, or worktree state; different sources must not be merged into one untraceable answer.
 - Local index is the acceleration layer: when index data is missing, stale, or partial, queries should fall back to live scanning, dirty overlay, or return clear caveats.
-- Index-backed discovery is limited to search/navigation commands such as `find`, `grep`, `files`, `find-path`, `glob`, `defs`, `refs`, `symbols`, `routes`, `calls`, and `callers`; `list`, `tree`, and `read` are filesystem/source verification helpers.
+- Index-backed discovery is limited to search/navigation commands such as `find`, `grep`, `files`, `find-path`, `glob`, `defs`, `refs`, `symbols`, `routes`, `calls`, and `callers`; the CLI no longer exposes `list`, `tree`, or `read`.
 - Query service is the integration boundary: CLI, MCP, saved query replay, and remote snapshots all share the same public JSON/text projection.
-- Reliability is an interface contract: text hits, exact occurrences, parser fallbacks, call candidates, and remote results must use different reliability levels; key edits should still be rechecked with `read`.
+- Reliability is an interface contract: text hits, exact occurrences, parser fallbacks, call candidates, and remote results must use different reliability levels; key edits should still be rechecked with a source read.
 - Remote and saved query are not ground truth: remote is only confidence-boosting when aligned with local proof; saved query stores only replay metadata, never full result payloads.
 
 ## Agent Skill

@@ -5,7 +5,7 @@ use serde_json::json;
 use super::with_workspace_root;
 
 #[test]
-fn with_workspace_root_omits_read_commands_for_nonportable_paths() {
+fn with_workspace_root_omits_source_targets_for_nonportable_paths() {
     let paths = [
         "/tmp/outside.rs",
         "C:/repo/src/main.rs",
@@ -30,13 +30,12 @@ fn with_workspace_root_omits_read_commands_for_nonportable_paths() {
             Path::new("/workspace"),
         );
         let result = &enriched["results"][0];
-        assert!(result.get("readCommand").is_none(), "{path}");
-        assert!(result.get("readCommandArgv").is_none(), "{path}");
+        assert!(result.get("sourceTarget").is_none(), "{path}");
     }
 }
 
 #[test]
-fn with_workspace_root_keeps_read_commands_for_missing_portable_paths() {
+fn with_workspace_root_keeps_source_targets_for_missing_portable_paths() {
     let enriched = with_workspace_root(
         json!({
             "results": [{
@@ -52,14 +51,7 @@ fn with_workspace_root_keeps_read_commands_for_missing_portable_paths() {
     );
 
     assert_eq!(
-        enriched["results"][0]["readCommandArgv"],
-        json!([
-            "codetrail",
-            "--path",
-            "/workspace",
-            "read",
-            "--",
-            "-dash/src/main.rs:2"
-        ])
+        enriched["results"][0]["sourceTarget"],
+        "-dash/src/main.rs:2"
     );
 }

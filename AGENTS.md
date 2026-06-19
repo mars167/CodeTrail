@@ -6,7 +6,7 @@
 
 ## OVERVIEW
 
-CodeTrail is a Rust CLI and MCP server for local-index-first code search with explicit reliability labels. Its core rule: search/index/graph answers are navigation evidence; `read` is the source verification surface before editing.
+CodeTrail is a Rust CLI and MCP server for local-index-first code search with explicit reliability labels. Its core rule: search/index/graph answers are navigation evidence; exact source reads happen in the host editor or agent before editing.
 
 ## STRUCTURE
 
@@ -30,7 +30,7 @@ code-search-cli/
 | --- | --- | --- |
 | Add or change CLI args | `src/cli.rs` | Clap surface is canonical with `codetrail --help`. |
 | Route command behavior | `src/commands.rs` | Dispatcher joins workspace, scan options, query/index backends, output. |
-| Text/path/list/tree/read behavior | `src/search.rs` | Broad guards, pagination, live/index candidates, read verification. |
+| Text/path behavior | `src/search.rs` | Broad guards, pagination, live/index candidates, and source target hints. |
 | Output JSON/text/JSONL contract | `src/output.rs`, `docs/02-command-contract.md` | Public JSON is `results`, `page`, `caveats`. |
 | Index lifecycle and freshness | `src/index.rs`, `src/lancedb_store.rs`, `src/snapshot_store.rs` | Snapshot and file proof rules live here. |
 | Dirty worktree/watch behavior | `src/watcher/`, `src/diff_proof.rs` | Watcher reconciles overlays; it must not stage files. |
@@ -48,7 +48,7 @@ LSP rust-analyzer failed to start in this worktree; this map is scan-derived.
 | --- | --- | --- | --- |
 | `Cli`, `Command`, `OutputFormat` | clap types | `src/cli.rs` | Public command and output surface. |
 | `commands::run` | dispatcher | `src/commands.rs` | Main runtime switchboard. |
-| `search::find/read/files/list/tree` | query fns | `src/search.rs` | Source/path facts and verification reads. |
+| `search::find/files` | query fns | `src/search.rs` | Source/path facts and discovery results. |
 | `index::*` | lifecycle | `src/index.rs` | Build, update, verify, pack, unpack, hooks. |
 | `QueryService` | facade | `src/query/mod.rs` | Programmatic path shared by integrations. |
 | `output::*` | contract | `src/output.rs` | Rendering, caveats, reliability, paging. |

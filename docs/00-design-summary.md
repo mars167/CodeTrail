@@ -28,7 +28,6 @@ CodeTrail 是本地优先、Git 优先的代码搜索与跳转工具，目标是
 它提供：
 
 - 可利用索引的内容搜索、路径搜索和代码跳转。
-- 文件系统目录浏览和范围读取，用于验证源码证据。
 - 定义、引用、符号、调用候选和变更状态。
 - 本地索引、Git hook、watcher、saved query、remote pack/unpack 和 MCP 入口。
 - 每个响应的 snapshot、producer、freshness 与 reliability 信息。
@@ -66,27 +65,27 @@ flowchart TB
   Remote --> Query
   Saved --> Query
 
-  Query --> Read["read verifies file range"]
+  Query --> VerifyRange["source range targets for host verification"]
   Query --> Json["JSON response with reliability"]
 ```
 
 索引是加速层，不是事实源。事实源始终是本地源码、Git 状态、文件 hash 和可读取的 range。
 
 任务意图、查询顺序和停止条件属于 Agent 层。CodeTrail 的 CLI/MCP 只执行
-可组合的 index-backed 搜索/跳转、索引和状态原语；目录浏览与读取是
-filesystem/source verification 边界。subagent 可以结合这些原语和普通
-Agent 源码读取工具完成多步调查，并把结果压缩为主 Agent 可消费的证据包。
+可组合的 index-backed 搜索/跳转、索引和状态原语；目录浏览与源码读取交给
+宿主编辑器或 Agent 工具。subagent 可以结合这些原语和普通 Agent 源码读取工具
+完成多步调查，并把结果压缩为主 Agent 可消费的证据包。
 
 ## 可靠性
 
 | level | 来源 | `exact` | 使用方式 |
 | --- | --- | --- | --- |
-| `source_fact` | 文件系统、Git、文本和路径匹配 | `true` | 可作为源码证据；编辑前仍用 `read` 取精确范围 |
+| `source_fact` | Git、文本和路径匹配 | `true` | 可作为源码证据；编辑前仍用源码读取工具验证精确范围 |
 | `precise_fact` | SCIP、语言服务或编译器索引 | `true` | 可作为 IDE 级跳转事实；仍保留 range verification |
 | `parser_fact` | tree-sitter AST | `false` | 确定的语法事实，不等于语义精确引用 |
 | `inferred_candidate` | 图、AST heuristic、search-based inference | `false` | 只用于缩小范围，必须二次验证 |
 | `freshness` | manifest、hash、watcher、index status | `false` | 描述缓存状态，不提升代码事实准确性 |
-| `remote_verified` | 与本地 file proof 对齐的 remote snapshot | `false` | 可作为加速结果；关键编辑仍用 `read` 复核 |
+| `remote_verified` | 与本地 file proof 对齐的 remote snapshot | `false` | 可作为加速结果；关键编辑仍用源码读取工具复核 |
 | `remote_unverified` | 未能与本地文件对齐的 remote snapshot | `false` | 只能作为线索，不能直接用于编辑决策 |
 
 ## 贡献者参考

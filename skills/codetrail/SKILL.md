@@ -41,9 +41,9 @@ Use `--path <dir>` when searching from outside the repository root or when the u
 
 Use an index-first workflow for repository investigations. CodeTrail's design
 is to use indexed navigation, text, and path evidence to shrink the search
-space, then use exact source reads as the verification surface. Do not count
-`read`, `list`, or `tree` as indexed search commands: they are filesystem
-inspection and verification helpers. Do not let a multi-step investigation
+space, then use host source reads as the verification surface. CodeTrail no
+longer exposes `read`, `list`, or `tree`; use the host agent or editor for
+filesystem browsing and exact source verification. Do not let a multi-step investigation
 degrade into broad `grep` plus repeated reads unless the index is missing,
 stale, unsupported for the language, or the task is explicitly literal-text
 or path-only.
@@ -73,9 +73,8 @@ or path-only.
    - Treat `severity=info, category=capability` as an expected capability-level note, not a risk warning.
    - Treat `severity=warning, category=risk` and `severity=error, category=error` as requiring narrowing, verification, or remediation.
 7. Before editing or making a strong claim, verify source with an exact file
-   read. Use the host agent's read tool when available; `codetrail read
-   <path[:start-end]>` remains available when you need the CLI's range parsing
-   or JSON projection.
+   read. Use the host agent's read tool or editor, using the result `path`,
+   `range`, `sourceTarget`, or `suggestedReads` as the target.
    - Prefer one whole-file read when the file is small enough to fit the output
      budget, or when you need several ranges from the same file.
    - Use `path:start-end` for known-large files, truncated full reads, or a
@@ -139,7 +138,7 @@ codetrail --output json routes user --limit 50
 codetrail --output json files SysUser --limit 40
 codetrail --output json files Shiro --limit 40
 # Verify the selected controller/service/model/mapper ranges with the host
-# read tool or with `codetrail --output json read <path:start-end>`.
+# read tool.
 ```
 
 ## Command Input Quick Reference
@@ -156,11 +155,8 @@ obvious from the CLI argument names:
 - Use `--dir`, `--ext`, `--file-pattern`, and `--file-mode` to scope before
   scanning file contents or parsing symbols. Matching is ignore-case by
   default; add `--case-sensitive` when exact case matters.
-- `list [dir]`, `tree [dir]`, and `read <target>` are filesystem/source
-  verification commands, not indexed discovery commands. Prefer normal agent
-  read/list tools for these operations when they are available. When using
-  `codetrail read`, the target accepts `path`, `path:line`, or
-  `path:start-end`; line numbers are 1-based.
+- `list`, `tree`, and `read` are not CodeTrail CLI/MCP commands. Use normal
+  agent or editor tools for filesystem browsing and source verification.
 
 Navigation and relationship commands take one string argument. They default to
 `--input-mode compatible`, so simple names, `Class.method`, signature display
@@ -268,7 +264,7 @@ Primary semantic providers:
 
 If a provider is missing, failed, or timed out, continue with parser/text
 fallback only as `parser_fact` or `inferred_candidate`, and verify with
-`codetrail read` before editing. Do not describe fallback results as precise
+a host source read before editing. Do not describe fallback results as precise
 semantic facts.
 
 ## Reliability Levels

@@ -136,20 +136,6 @@ pub enum Command {
         #[arg(long, value_enum, default_value_t = SearchPatternMode::Glob, help = "Path match mode")]
         mode: SearchPatternMode,
     },
-    #[command(alias = "ls")]
-    List {
-        dir: Option<String>,
-        #[arg(long)]
-        recursive: bool,
-    },
-    Tree {
-        dir: Option<String>,
-        #[arg(long)]
-        depth: Option<u8>,
-    },
-    Read {
-        target: String,
-    },
     Refs {
         identifier: String,
     },

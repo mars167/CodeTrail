@@ -11,7 +11,7 @@
 | Command definitions | `cli.rs` | Clap derives and aliases. |
 | Command execution | `commands.rs` | Workspace setup, scan options, dispatch, output emission. |
 | Output contract | `output.rs` | Caveats, reliability, paging, renderers. |
-| Text/path/read queries | `search.rs` | Live scan, indexed candidates, broad guards, cursor scope. |
+| Text/path queries | `search.rs` | Live scan, indexed candidates, broad guards, cursor scope. |
 | Index and storage | `index.rs`, `lancedb_store.rs`, `snapshot_store.rs` | Freshness, manifests, LanceDB schemas, remote pack format. |
 | Workspace proof | `workspace.rs`, `diff_proof.rs`, `watcher/` | File catalog, changed scope, dirty overlay, watcher status. |
 | Semantic facts | `semantic_facts.rs`, `semantic_provider.rs`, `*_provider.rs` | Provider proof and partial/deferred work. |
@@ -22,7 +22,7 @@
 ## CONVENTIONS
 
 - Keep data provenance visible. Result producers, reliability, and caveats should reflect whether data came from local files, fresh index, parser fallback, graph, remote, or live overlay.
-- `read` is the edit-verification boundary. Search-like commands should help locate evidence, not imply the file content was verified.
+- Search-like commands should help locate evidence, not imply the file content was verified; exact source verification happens through the host editor or agent read tool.
 - Cursor scopes include query args, scan options, and snapshot state; changing any should reject stale cursors rather than silently reusing them.
 - `source_fact` and `precise_fact` can be exact. Parser and graph results stay candidate or fallback-level.
 - Error JSON must still use the public shape with error caveats; do not revive legacy envelopes.

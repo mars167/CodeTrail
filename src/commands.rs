@@ -189,53 +189,6 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 query_output,
             )
         }
-        Command::List { dir, recursive } => output::response(
-            "list",
-            "list",
-            scoped_query(json!({ "dir": dir, "recursive": recursive }), &scan_opts),
-            &workspace.snapshot_id,
-            output::source_fact(),
-            search::list(&workspace, &scan_opts, dir.as_deref(), *recursive)?,
-            Vec::new(),
-        ),
-        Command::Tree { dir, depth } => output::response(
-            "tree",
-            "tree",
-            scoped_query(json!({ "dir": dir, "depth": depth }), &scan_opts),
-            &workspace.snapshot_id,
-            output::source_fact(),
-            search::tree(&workspace, &scan_opts, dir.as_deref(), *depth)?,
-            Vec::new(),
-        ),
-        Command::Read { target } => {
-            let result = search::read(&workspace, target)?;
-            let reliability = if result
-                .get("exact")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-            {
-                output::source_fact()
-            } else {
-                output::source_fact_inexact()
-            };
-            let warnings = result
-                .get("warnings")
-                .and_then(serde_json::Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(serde_json::Value::as_str)
-                .map(ToString::to_string)
-                .collect();
-            output::response(
-                "read",
-                "read",
-                json!({ "target": target }),
-                &workspace.snapshot_id,
-                reliability,
-                json!([result]),
-                warnings,
-            )
-        }
         Command::Refs { identifier } => {
             let precise_empty =
                 if let Some(precise) = scip_index::refs(&workspace, &scan_opts, identifier)? {
@@ -1232,9 +1185,6 @@ fn command_name(command: &Command) -> &'static str {
         Command::Files { .. } => "files",
         Command::FindPath { .. } => "find-path",
         Command::Glob { .. } => "glob",
-        Command::List { .. } => "list",
-        Command::Tree { .. } => "tree",
-        Command::Read { .. } => "read",
         Command::Refs { .. } => "refs",
         Command::Symbols { .. } => "symbols",
         Command::Defs { .. } => "defs",
