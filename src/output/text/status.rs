@@ -41,6 +41,9 @@ pub(super) fn render_text_status_like(
             "index clean" => render_index_clean_result(result, out)?,
             "index-provider install" => render_index_provider_install_result(result, out)?,
             "skill install" => render_skill_install_result(result, out)?,
+            "hooks install" | "hooks uninstall" | "hooks status" => {
+                render_hook_result(command, result, out)?
+            }
             _ => writeln!(out, "{}", one_line_json(result))?,
         }
     }
@@ -358,6 +361,64 @@ fn render_skill_install_result(result: &Value, out: &mut dyn Write) -> io::Resul
     Ok(())
 }
 
+fn render_hook_result(command: &str, result: &Value, out: &mut dyn Write) -> io::Result<()> {
+    let hook = result
+        .get("hook")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let state = result
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| hook_state_from_legacy_fields(command, result));
+    let path = result.get("path").and_then(Value::as_str).unwrap_or("");
+    let mut label = state.to_string();
+
+    if command == "hooks install" {
+        if let Some(previous_state) = result.get("previousState").and_then(Value::as_str) {
+            if state != "unchanged" && previous_state != "missing" {
+                label = format!("{state} (was {previous_state})");
+            }
+        }
+    } else if command == "hooks status" && state == "unmanaged" {
+        label = "unmanaged (not owned by codetrail)".to_string();
+    }
+
+    if path.is_empty() {
+        writeln!(out, "{hook}: {label}")?;
+    } else {
+        writeln!(out, "{hook}: {label}  {path}")?;
+    }
+    Ok(())
+}
+
+fn hook_state_from_legacy_fields<'a>(command: &str, result: &'a Value) -> &'a str {
+    match command {
+        "hooks status" => {
+            if result
+                .get("installed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                "installed"
+            } else {
+                "missing"
+            }
+        }
+        "hooks uninstall" => {
+            if result
+                .get("removed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                "removed"
+            } else {
+                "skipped"
+            }
+        }
+        _ => "updated",
+    }
+}
+
 pub(super) fn is_status_like(command: &str) -> bool {
     matches!(
         command,
@@ -372,6 +433,9 @@ pub(super) fn is_status_like(command: &str) -> bool {
             | "index clean"
             | "index-provider install"
             | "skill install"
+            | "hooks install"
+            | "hooks uninstall"
+            | "hooks status"
     )
 }
 

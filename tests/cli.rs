@@ -326,6 +326,91 @@ fn index_build_text_output_suppresses_progress_when_stderr_is_not_tty() {
 }
 
 #[test]
+fn hooks_text_output_reports_state() {
+    let dir = tempdir().unwrap();
+    init_git_repo(dir.path());
+
+    let first_install = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "text", "hooks", "install"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let first_install = String::from_utf8(first_install).unwrap();
+    assert!(
+        first_install.contains("pre-commit: created"),
+        "unexpected hooks install output: {first_install}"
+    );
+    assert!(
+        first_install.contains(".git/hooks/pre-commit"),
+        "unexpected hooks install output: {first_install}"
+    );
+
+    let second_install = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "text", "hooks", "install"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let second_install = String::from_utf8(second_install).unwrap();
+    assert!(
+        second_install.contains("pre-commit: unchanged"),
+        "unexpected hooks reinstall output: {second_install}"
+    );
+
+    let status = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "text", "hooks", "status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let status = String::from_utf8(status).unwrap();
+    assert!(
+        status.contains("pre-commit: installed"),
+        "unexpected hooks status output: {status}"
+    );
+
+    let uninstall = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "text", "hooks", "uninstall"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let uninstall = String::from_utf8(uninstall).unwrap();
+    assert!(
+        uninstall.contains("pre-commit: removed"),
+        "unexpected hooks uninstall output: {uninstall}"
+    );
+
+    let status_after_uninstall = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "text", "hooks", "status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let status_after_uninstall = String::from_utf8(status_after_uninstall).unwrap();
+    assert!(
+        status_after_uninstall.contains("pre-commit: missing"),
+        "unexpected hooks status output after uninstall: {status_after_uninstall}"
+    );
+}
+
+#[test]
 fn index_build_reports_scip_java_install_help_with_parser_fallback() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("pom.xml"), "<project></project>\n").unwrap();
