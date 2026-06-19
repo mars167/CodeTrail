@@ -78,6 +78,9 @@ fn render_text_results(value: &Value, out: &mut dyn Write) -> io::Result<()> {
         if matches!(command, "calls" | "callers") {
             return render_text_graph(value, results, out);
         }
+        if command == "routes" {
+            return render_text_routes(results, out);
+        }
         if command == "read" {
             return render_text_read(results, out);
         }
@@ -91,6 +94,40 @@ fn render_text_results(value: &Value, out: &mut dyn Write) -> io::Result<()> {
     }
 
     writeln!(out, "{value}")?;
+    Ok(())
+}
+
+fn render_text_routes(results: &[Value], out: &mut dyn Write) -> io::Result<()> {
+    for result in results {
+        let method = result
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or("ANY");
+        let route = result
+            .get("routePattern")
+            .and_then(Value::as_str)
+            .unwrap_or("<unknown>");
+        let path = result.get("path").and_then(Value::as_str).unwrap_or("");
+        let location = if path.is_empty() {
+            String::new()
+        } else {
+            format_location(path, result.get("range"))
+        };
+        let mut details = Vec::new();
+        if let Some(framework) = result.get("framework").and_then(Value::as_str) {
+            details.push(framework.to_string());
+        }
+        if let Some(handler) = result.get("handler").and_then(Value::as_str) {
+            details.push(format!("handler={handler}"));
+        }
+        let suffix = match (location.is_empty(), details.is_empty()) {
+            (true, true) => String::new(),
+            (false, true) => format!("  {location}"),
+            (true, false) => format!("  {}", details.join(" ")),
+            (false, false) => format!("  {location}  {}", details.join(" ")),
+        };
+        writeln!(out, "{method:<7} {route}{suffix}")?;
+    }
     Ok(())
 }
 

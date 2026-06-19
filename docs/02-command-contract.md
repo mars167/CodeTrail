@@ -290,6 +290,8 @@ flowchart LR
 默认 text 输出保持短、可审计、不过度设计：
 
 - 搜索结果按 `path:line  preview` 渲染。
+- `routes` 按 `METHOD routePattern  path:line` 渲染，并附带 framework 与
+  handler candidate。
 - `read` 直接输出文件内容。
 - `calls`/`callers` 按 caller -> callee 关系渲染，并附带位置。
 - `index build/update/pack/unpack` 在 TTY 上显示加载进度；非 TTY 保持无

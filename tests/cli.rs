@@ -1220,6 +1220,35 @@ public class AdminController {
 }
 
 #[test]
+fn routes_text_output_shows_method_route_and_location() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("config")).unwrap();
+    fs::write(
+        dir.path().join("config/routes.rb"),
+        "get \"/health\", to: \"health#show\"\n",
+    )
+    .unwrap();
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["routes", "--framework", "rails"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+
+    assert!(text.contains("GET"));
+    assert!(text.contains("/health"));
+    assert!(text.contains("config/routes.rb:1"));
+    assert!(text.contains("rails"));
+    assert!(text.contains("handler=health#show"));
+    assert_ne!(text.trim(), "config/routes.rb:1");
+}
+
+#[test]
 fn routes_saved_query_replays_scope_and_filters() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("config")).unwrap();
