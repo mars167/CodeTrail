@@ -35,7 +35,7 @@ jobs:
     if: ${{ github.event_name == 'pull_request' }}
     container:
       image: rust:1.95-bookworm
-      options: --volume codetrail-cache:/cache/codetrail
+      options: --volume /tmp/codetrail-cache:/cache/codetrail
     steps:
       - name: Prepare CI tools
         run: |
@@ -58,7 +58,7 @@ jobs:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     container:
       image: rust:1.95-bookworm
-      options: --volume codetrail-cache:/cache/codetrail
+      options: --volume /tmp/codetrail-cache:/cache/codetrail
     steps:
       - name: Prepare CI tools
         run: |
@@ -86,7 +86,7 @@ jobs:
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     container:
       image: rust:1.95-bookworm
-      options: --volume codetrail-cache:/cache/codetrail
+      options: --volume /tmp/codetrail-cache:/cache/codetrail
     steps:
       - name: Prepare cross tools
         run: |
@@ -109,7 +109,7 @@ jobs:
     if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_bench == 'true') }}
     container:
       image: rust:1.95-bookworm
-      options: --volume codetrail-cache:/cache/codetrail
+      options: --volume /tmp/codetrail-cache:/cache/codetrail
     steps:
       - name: Prepare benchmark tools
         run: |
