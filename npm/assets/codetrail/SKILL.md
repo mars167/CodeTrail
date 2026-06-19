@@ -202,7 +202,7 @@ Primary semantic providers:
 | --- | --- | --- | --- |
 | Go | `scip-go` | `CODETRAIL_SCIP_GO` | `go install github.com/scip-code/scip-go/cmd/scip-go@latest` |
 | Rust | `rust-analyzer scip .` | `CODETRAIL_SCIP_RUST` | `rustup component add rust-analyzer` |
-| Java | `scip-java index` | `CODETRAIL_SCIP_JAVA` | Install Coursier and run `coursier bootstrap --standalone -o scip-java com.sourcegraph:scip-java_2.13:0.12.3 --main com.sourcegraph.scip_java.ScipJava` |
+| Java | `scip-java index` | `CODETRAIL_SCIP_JAVA` | Install Coursier and run `mkdir -p "$HOME/.local/bin" && coursier bootstrap --standalone -o "$HOME/.local/bin/scip-java" com.sourcegraph:scip-java_2.13:0.12.3 --main com.sourcegraph.scip_java.ScipJava` |
 | TypeScript/JavaScript | `scip-typescript index` | `CODETRAIL_SCIP_TYPESCRIPT` | `npm install -g @sourcegraph/scip-typescript` |
 | Ruby | `scip-ruby .` | `CODETRAIL_SCIP_RUBY` | `bundle add scip-ruby --group development` |
 | Swift | `sourcekit-lsp` | `CODETRAIL_LSP_SWIFT` | Install Xcode or a Swift toolchain that includes `sourcekit-lsp` |

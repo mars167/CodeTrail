@@ -34,17 +34,50 @@ function packageRoot(packageName) {
   }
 }
 
-function resolveCoreBinary(platform = process.platform, arch = process.arch) {
-  const packageName = packageNameForPlatform(platform, arch);
-  const binaryPath = path.join(packageRoot(packageName), "bin", binaryNameForPlatform(platform));
+function existingBinary(binaryPath) {
+  return fs.existsSync(binaryPath) ? binaryPath : null;
+}
+
+function envCoreBinary() {
+  const binaryPath = process.env.CODETRAIL_CORE_BINARY;
+  if (!binaryPath) return null;
   if (!fs.existsSync(binaryPath)) {
     throw new Error(`Codetrail core binary missing: ${binaryPath}`);
   }
   return binaryPath;
 }
 
+function localDevCoreBinary(platform = process.platform) {
+  return existingBinary(
+    path.resolve(__dirname, "..", "..", "target", "release", binaryNameForPlatform(platform))
+  );
+}
+
+function resolveCoreBinary(platform = process.platform, arch = process.arch) {
+  const envBinary = envCoreBinary();
+  if (envBinary) return envBinary;
+
+  const packageName = packageNameForPlatform(platform, arch);
+  try {
+    const binaryPath = path.join(packageRoot(packageName), "bin", binaryNameForPlatform(platform));
+    const packageBinary = existingBinary(binaryPath);
+    if (packageBinary) return packageBinary;
+    const localBinary = localDevCoreBinary(platform);
+    if (localBinary) return localBinary;
+    throw new Error(`Codetrail core binary missing: ${binaryPath}`);
+  } catch (error) {
+    if (!String(error.message || "").includes("Codetrail core package is missing")) {
+      throw error;
+    }
+    const localBinary = localDevCoreBinary(platform);
+    if (localBinary) return localBinary;
+    throw error;
+  }
+}
+
 module.exports = {
   packageNameForPlatform,
   binaryNameForPlatform,
+  localDevCoreBinary,
   resolveCoreBinary
 };

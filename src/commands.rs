@@ -1,10 +1,15 @@
-use std::io::IsTerminal;
+use std::io::{self, IsTerminal, Write};
 
 use serde_json::{json, Value};
 
 use crate::{
-    cli::{Cli, Command, HooksCommand, IndexCommand, OutputFormat, QueryCommand},
-    completions, graph, index, output,
+    cli::{
+        Cli, Command, HooksCommand, IndexCommand, IndexProviderCommand, OutputFormat, QueryCommand,
+        SkillCommand,
+    },
+    completions, graph, index,
+    install::{IndexProviderInstallOptions, SkillInstallOptions},
+    output,
     query_input::{compatible_input_needs_expansion, InputPlan},
     routes, saved_query, scip_index, search,
     search_pattern::SearchPatternMode,
@@ -828,6 +833,61 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 )
             }
         },
+        Command::IndexProvider { command } => match command {
+            IndexProviderCommand::Install {
+                languages,
+                dry_run,
+                force,
+            } => {
+                let (results, code) = crate::install::install_index_providers(
+                    &workspace,
+                    &IndexProviderInstallOptions {
+                        languages: languages.clone(),
+                        dry_run: *dry_run,
+                        force: *force,
+                    },
+                )?;
+                exit_code = code;
+                output::response(
+                    "index-provider install",
+                    "index-provider install",
+                    json!({ "languages": languages, "dryRun": dry_run, "force": force }),
+                    &workspace.snapshot_id,
+                    output::freshness(),
+                    results,
+                    Vec::new(),
+                )
+            }
+        },
+        Command::Skill { command } => match command {
+            SkillCommand::Install {
+                target,
+                scope,
+                path,
+                dry_run,
+                force,
+            } => {
+                let target = resolve_skill_install_target(target.as_deref(), &cli.output)?;
+                output::response(
+                    "skill install",
+                    "skill install",
+                    json!({ "target": &target, "scope": format!("{scope:?}").to_lowercase(), "path": path, "dryRun": dry_run, "force": force }),
+                    &workspace.snapshot_id,
+                    output::freshness(),
+                    crate::install::install_skill(
+                        &workspace,
+                        &SkillInstallOptions {
+                            target,
+                            scope: *scope,
+                            path: path.clone(),
+                            dry_run: *dry_run,
+                            force: *force,
+                        },
+                    )?,
+                    Vec::new(),
+                )
+            }
+        },
         Command::Hooks { command } => match command {
             HooksCommand::Install => output::response(
                 "hooks install",
@@ -877,6 +937,67 @@ fn emit_response(
     let exit_code = output::no_match_exit(&value["results"]);
     output::emit(format, &value)?;
     Ok(exit_code)
+}
+
+fn resolve_skill_install_target(target: Option<&str>, format: &OutputFormat) -> AppResult<String> {
+    if let Some(target) = target {
+        return Ok(target.to_string());
+    }
+    if *format == OutputFormat::Text && io::stdin().is_terminal() && io::stderr().is_terminal() {
+        return prompt_skill_install_target();
+    }
+    Err(anyhow::anyhow!(
+        "skill target is required in non-interactive mode; pass one of: {}",
+        skill_target_id_list()
+    ))
+}
+
+fn prompt_skill_install_target() -> AppResult<String> {
+    let options = crate::install::skill_target_options();
+    eprintln!("Select target agent for CodeTrail skill install:");
+    for (index, option) in options.iter().enumerate() {
+        eprintln!("  {}. {} ({})", index + 1, option.label, option.id);
+    }
+    eprint!("Target agent: ");
+    io::stderr().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    parse_skill_target_selection(&input).ok_or_else(|| {
+        anyhow::anyhow!(
+            "invalid skill target selection; pass one of: {}",
+            skill_target_id_list()
+        )
+    })
+}
+
+fn parse_skill_target_selection(input: &str) -> Option<String> {
+    let selection = input.trim();
+    if selection.is_empty() {
+        return None;
+    }
+    let options = crate::install::skill_target_options();
+    if let Ok(index) = selection.parse::<usize>() {
+        if (1..=options.len()).contains(&index) {
+            return Some(options[index - 1].id.to_string());
+        }
+        return None;
+    }
+    options
+        .iter()
+        .find(|option| {
+            option.id.eq_ignore_ascii_case(selection)
+                || option.label.eq_ignore_ascii_case(selection)
+        })
+        .map(|option| option.id.to_string())
+}
+
+fn skill_target_id_list() -> String {
+    crate::install::skill_target_options()
+        .iter()
+        .map(|option| option.id)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn with_progress<T, F>(
@@ -1015,6 +1136,12 @@ fn command_name(command: &Command) -> &'static str {
             IndexCommand::Clean => "index clean",
             IndexCommand::Pack { .. } => "index pack",
             IndexCommand::Unpack { .. } => "index unpack",
+        },
+        Command::IndexProvider { command } => match command {
+            IndexProviderCommand::Install { .. } => "index-provider install",
+        },
+        Command::Skill { command } => match command {
+            SkillCommand::Install { .. } => "skill install",
         },
         Command::Hooks { .. } => "hooks",
         Command::Completions { .. } => "completions",

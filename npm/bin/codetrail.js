@@ -5,6 +5,8 @@ const { resolveCoreBinary } = require("../lib/core-binary");
 const { renderNodeCompletions } = require("../lib/completions");
 const { runCore } = require("../lib/run-core");
 const { listTargets, installTarget, removeTarget, doctorTarget } = require("../lib/agent-install");
+const { maybeRunIndexProviderInstallInteractive } = require("../lib/index-provider-install-ui");
+const { maybeRunSkillInstallInteractive } = require("../lib/skill-install-ui");
 const { compareVersions, fetchLatestVersion, installVersion, maybePrintUpdateNotice } = require("../lib/update");
 
 function currentVersion() {
@@ -86,6 +88,14 @@ async function main() {
   }
 
   if ((args[0] === "skills" || args[0] === "agents") && handleInstallCommand(args[0], args)) {
+    return;
+  }
+
+  if (await maybeRunIndexProviderInstallInteractive(args)) {
+    return;
+  }
+
+  if (await maybeRunSkillInstallInteractive(args)) {
     return;
   }
 

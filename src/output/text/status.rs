@@ -2,6 +2,8 @@ use std::io::{self, Write};
 
 use serde_json::Value;
 
+use crate::provider_help::{current_platform_install_commands, requirement_for_language_name};
+
 pub(super) fn render_text_status_like(
     command: &str,
     results: &[Value],
@@ -37,6 +39,8 @@ pub(super) fn render_text_status_like(
             "index pack" => render_index_pack_result(result, out)?,
             "index unpack" => render_index_unpack_result(result, out)?,
             "index clean" => render_index_clean_result(result, out)?,
+            "index-provider install" => render_index_provider_install_result(result, out)?,
+            "skill install" => render_skill_install_result(result, out)?,
             _ => writeln!(out, "{}", one_line_json(result))?,
         }
     }
@@ -180,8 +184,31 @@ fn render_semantic_status(result: &Value, out: &mut dyn Write) -> io::Result<()>
                 out,
                 "  {language}: {status} ({default_command}; missing: {missing})"
             )?;
+            render_provider_install_help(language, out)?;
         }
     }
+    Ok(())
+}
+
+fn render_provider_install_help(language: &str, out: &mut dyn Write) -> io::Result<()> {
+    let Some(requirement) = requirement_for_language_name(language) else {
+        return Ok(());
+    };
+    let commands = current_platform_install_commands(&requirement.install);
+    if !commands.is_empty() {
+        writeln!(out, "    Install:")?;
+        for command in commands {
+            writeln!(out, "      {command}")?;
+        }
+    }
+    let args = if requirement.args.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", requirement.args.join(" "))
+    };
+    writeln!(out, "    Command: {}{args}", requirement.command)?;
+    writeln!(out, "    Override: {}", requirement.env_key)?;
+    writeln!(out, "    Fallback: tree-sitter parser")?;
     Ok(())
 }
 
@@ -263,6 +290,74 @@ fn render_index_clean_result(result: &Value, out: &mut dyn Write) -> io::Result<
     Ok(())
 }
 
+fn render_index_provider_install_result(result: &Value, out: &mut dyn Write) -> io::Result<()> {
+    let language = result
+        .get("language")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let provider = result
+        .get("provider")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let status = result
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    writeln!(out, "{language}: {provider} ({status})")?;
+    if let Some(commands) = result.get("installCommands").and_then(Value::as_array) {
+        if !commands.is_empty() {
+            writeln!(out, "  Install commands:")?;
+            for command in commands.iter().filter_map(Value::as_str) {
+                writeln!(out, "    {command}")?;
+            }
+        }
+    }
+    if let Some(steps) = result.get("steps").and_then(Value::as_array) {
+        if !steps.is_empty() {
+            writeln!(out, "  Steps:")?;
+            for step in steps {
+                let command = step.get("command").and_then(Value::as_str).unwrap_or("");
+                let step_status = step
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                writeln!(out, "    {step_status}: {command}")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn render_skill_install_result(result: &Value, out: &mut dyn Write) -> io::Result<()> {
+    let target = result
+        .get("target")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let scope = result
+        .get("scope")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let changed = result
+        .get("changed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    writeln!(out, "Skill target: {target} ({scope}, changed: {changed})")?;
+    if let Some(files) = result.get("files").and_then(Value::as_array) {
+        for file in files {
+            let destination = file
+                .get("destination")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let status = file
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            writeln!(out, "  {status}: {destination}")?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn is_status_like(command: &str) -> bool {
     matches!(
         command,
@@ -275,6 +370,8 @@ pub(super) fn is_status_like(command: &str) -> bool {
             | "index pack"
             | "index unpack"
             | "index clean"
+            | "index-provider install"
+            | "skill install"
     )
 }
 

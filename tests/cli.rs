@@ -3100,6 +3100,13 @@ fn index_status_reports_semantic_status_languages_and_missing_servers() {
     assert!(text.contains("java=1"));
     assert!(text.contains("SCIP index: not_generated (enabled: false, usable: false)"));
     assert!(text.contains("java: missing (scip-java; missing: scip-java)"));
+    assert!(text.contains("Install:"));
+    assert!(text.contains("scip-java_2.13"));
+    assert!(text.contains("$HOME/.local/bin/scip-java"));
+    assert!(!text.contains("-o scip-java "));
+    assert!(text.contains("Command: scip-java index"));
+    assert!(text.contains("Override: CODETRAIL_SCIP_JAVA"));
+    assert!(text.contains("Fallback: tree-sitter parser"));
 }
 
 #[test]
@@ -3157,6 +3164,160 @@ fn index_status_reports_ruby_scip_provider_missing() {
     assert_eq!(ruby_server["envKey"], "CODETRAIL_SCIP_RUBY");
     assert_eq!(ruby_server["fallback"], "tree_sitter_parser");
     assert_eq!(ruby_server["missingDependencies"][0], "scip-ruby");
+}
+
+#[test]
+fn index_provider_install_dry_run_reports_user_level_commands() {
+    let dir = tempdir().unwrap();
+    let path_dir = tempdir().unwrap();
+    fs::write(dir.path().join("pom.xml"), "<project />\n").unwrap();
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--output")
+        .arg("json")
+        .env("PATH", path_dir.path())
+        .env_remove("CODETRAIL_SCIP_JAVA")
+        .args(["index-provider", "install", "java", "--dry-run"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let result = &json["results"][0];
+    assert_eq!(result["language"], "java");
+    assert_eq!(result["provider"], "scip-java");
+    assert_eq!(result["status"], "planned");
+    assert_eq!(result["dryRun"], true);
+    assert!(result["installCommands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|line| line
+            .as_str()
+            .unwrap()
+            .contains("$HOME/.local/bin/scip-java")));
+    assert!(result["installCommands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|line| line
+            .as_str()
+            .unwrap()
+            .contains("bootstrap --standalone -f -o")));
+    assert!(!result["installCommands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|line| line.as_str().unwrap().contains("-o scip-java ")));
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--output")
+        .arg("text")
+        .env("PATH", path_dir.path())
+        .env_remove("CODETRAIL_SCIP_JAVA")
+        .args(["index-provider", "install", "java", "--dry-run"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+    assert!(text.contains("java: scip-java (planned)"));
+    assert!(text.contains("$HOME/.local/bin/scip-java"));
+}
+
+#[test]
+fn skill_install_supports_project_scope_and_dry_run() {
+    let dir = tempdir().unwrap();
+    let project = tempdir().unwrap();
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--output")
+        .arg("json")
+        .args([
+            "skill",
+            "install",
+            "codex",
+            "--scope",
+            "project",
+            "--path",
+            project.path().to_str().unwrap(),
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let result = &json["results"][0];
+    assert_eq!(result["target"], "codex");
+    assert_eq!(result["scope"], "project");
+    assert_eq!(result["dryRun"], true);
+    assert_eq!(result["changed"], false);
+    assert_eq!(
+        project
+            .path()
+            .join(".codex/skills/codetrail/SKILL.md")
+            .exists(),
+        false
+    );
+
+    raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args([
+            "skill",
+            "install",
+            "codex",
+            "--scope",
+            "project",
+            "--path",
+            project.path().to_str().unwrap(),
+            "--force",
+        ])
+        .assert()
+        .success();
+    assert!(project
+        .path()
+        .join(".codex/skills/codetrail/SKILL.md")
+        .exists());
+    assert!(project
+        .path()
+        .join(".codex/agents/codetrail-evidence.toml")
+        .exists());
+}
+
+#[test]
+fn skill_install_requires_target_without_interactive_terminal() {
+    let dir = tempdir().unwrap();
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--output")
+        .arg("json")
+        .args(["skill", "install", "--dry-run"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let caveat = &json["caveats"][0];
+    let message = caveat["message"].as_str().unwrap();
+    assert_eq!(json["results"].as_array().unwrap().len(), 0);
+    assert_eq!(caveat["severity"], "error");
+    assert!(message.contains("skill target is required in non-interactive mode"));
+    assert!(message.contains("codex"));
+    assert!(message.contains("openai"));
 }
 
 #[test]
