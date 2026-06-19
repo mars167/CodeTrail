@@ -18,8 +18,6 @@ declare -a TESTS=(
   "startup|help|--help|3|10|"
   "startup|completions|completions bash|3|10|"
   "l0-source|status|status|2|5|"
-  "l0-source|list|list ruoyi-admin/src/main/java/com/ruoyi/web/controller|2|5|"
-  "l0-source|read|read ruoyi-admin/src/main/java/com/ruoyi/RuoYiApplication.java|2|5|"
   "l0-source|changed|changed|2|5|"
   "l0-source|files|files Controller|2|5|"
   "l0-source|find-path|find-path mapper|2|5|"
