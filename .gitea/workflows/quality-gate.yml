@@ -21,12 +21,13 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  CARGO_HOME: /cache/codetrail/cargo
+  CODETRAIL_CACHE_ROOT: /opt/hostedtoolcache/codetrail
+  CARGO_HOME: /opt/hostedtoolcache/codetrail/cargo
   CARGO_INCREMENTAL: "0"
   CARGO_BUILD_JOBS: "2"
   RUOYI_REPO_URL: https://git.home.arpa/mars/RuoYi.git
   RUOYI_BRANCH: master
-  RUOYI_CACHE_DIR: /cache/codetrail/fixtures/RuoYi
+  RUOYI_CACHE_DIR: /opt/hostedtoolcache/codetrail/fixtures/RuoYi
 
 jobs:
   pr-gate:
@@ -35,10 +36,10 @@ jobs:
     if: ${{ github.event_name == 'pull_request' }}
     container:
       image: rust:1.95-bookworm
-      options: --volume /tmp/codetrail-cache:/cache/codetrail
     steps:
       - name: Prepare CI tools
         run: |
+          mkdir -p "$CODETRAIL_CACHE_ROOT"
           mkdir -p "$CARGO_HOME"
           if ! command -v protoc >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
             apt-get update
@@ -58,10 +59,10 @@ jobs:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     container:
       image: rust:1.95-bookworm
-      options: --volume /tmp/codetrail-cache:/cache/codetrail
     steps:
       - name: Prepare CI tools
         run: |
+          mkdir -p "$CODETRAIL_CACHE_ROOT"
           mkdir -p "$CARGO_HOME"
           if ! command -v protoc >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
             apt-get update
@@ -86,10 +87,10 @@ jobs:
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     container:
       image: rust:1.95-bookworm
-      options: --volume /tmp/codetrail-cache:/cache/codetrail
     steps:
       - name: Prepare cross tools
         run: |
+          mkdir -p "$CODETRAIL_CACHE_ROOT"
           mkdir -p "$CARGO_HOME"
           if ! command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
             apt-get update
@@ -109,10 +110,10 @@ jobs:
     if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_bench == 'true') }}
     container:
       image: rust:1.95-bookworm
-      options: --volume /tmp/codetrail-cache:/cache/codetrail
     steps:
       - name: Prepare benchmark tools
         run: |
+          mkdir -p "$CODETRAIL_CACHE_ROOT"
           mkdir -p "$CARGO_HOME"
           if ! command -v hyperfine >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
             apt-get update
