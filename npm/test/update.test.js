@@ -37,7 +37,7 @@ test("uses user home cache path", () => {
 });
 
 test("builds npm install command args", () => {
-  assert.deepEqual(buildInstallArgs("0.2.0"), ["install", "-g", "codetrail@0.2.0"]);
+  assert.deepEqual(buildInstallArgs("0.2.0"), ["install", "-g", "@mars167/codetrail@0.2.0"]);
 });
 
 test("uses next dist tag for prerelease and latest for stable", () => {
@@ -89,7 +89,7 @@ test("checks npm global environment before installing", () => {
   };
   assert.equal(canUseGlobalNpm(spawn), true);
   assert.equal(installVersion("0.2.0", spawn), 0);
-  assert.deepEqual(calls.at(-1), ["npm", ["install", "-g", "codetrail@0.2.0"]]);
+  assert.deepEqual(calls.at(-1), ["npm", ["install", "-g", "@mars167/codetrail@0.2.0"]]);
 });
 
 test("prints manual install command when npm global environment is not confirmed", () => {
@@ -112,5 +112,5 @@ test("prints manual install command when npm global environment is not confirmed
     ["npm", ["--version"]],
     ["npm", ["prefix", "-g"]]
   ]);
-  assert.match(errors[0], /npm install -g codetrail@0\.2\.0/);
+  assert.match(errors[0], /npm install -g @mars167\/codetrail@0\.2\.0/);
 });

@@ -7,7 +7,8 @@ const { isJsonOutput } = require("./args");
 
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const REGISTRY_TIMEOUT_MS = 2500;
-const REGISTRY_URL = "https://registry.npmjs.org/codetrail/latest";
+const PACKAGE_NAME = "@mars167/codetrail";
+const REGISTRY_URL = "https://registry.npmjs.org/@mars167%2Fcodetrail/latest";
 
 function isTruthyEnv(value) {
   return /^(1|true|yes)$/i.test(String(value || ""));
@@ -158,7 +159,7 @@ async function maybePrintUpdateNotice(currentVersion, args, env = process.env, n
 }
 
 function buildInstallArgs(version) {
-  return ["install", "-g", `codetrail@${version}`];
+  return ["install", "-g", `${PACKAGE_NAME}@${version}`];
 }
 
 function packageTagForVersion(version) {

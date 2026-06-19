@@ -1,5 +1,6 @@
 # CodeTrail
 [![GitHub release](https://img.shields.io/github/v/release/mars167/CodeTrail?label=release)](https://github.com/mars167/CodeTrail/releases)
+[![npm](https://img.shields.io/npm/v/%40mars167/codetrail?label=npm)](https://www.npmjs.com/package/@mars167/codetrail)
 
 [English](README.md)
 
@@ -8,6 +9,12 @@
 CodeTrail 的核心承诺不是“理解代码”，而是快速给出可验证的代码证据：搜索、路径定位、范围读取、定义、引用、调用候选、索引状态和 MCP 工具输出都围绕可读取的结果、分页和 caveats 组织。
 
 ## 安装
+
+NPM:
+
+```bash
+npm install -g @mars167/codetrail
+```
 
 macOS/Linux:
 
