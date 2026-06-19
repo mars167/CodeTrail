@@ -80,7 +80,7 @@ pub fn source_fact() -> Reliability {
         source: "text_path_git_filesystem",
         exact: true,
         llm_instruction:
-            "These results are verifiable source facts. For small files or multiple hits in the same file, prefer codetrail read <path>; for large files, read the exact source range.",
+            "These results are verifiable source facts. Verify exact source ranges with the host editor or agent read tool before editing.",
     }
 }
 
@@ -90,7 +90,7 @@ pub fn source_fact_inexact() -> Reliability {
         source: "text_path_git_filesystem",
         exact: false,
         llm_instruction:
-            "These results come from source files, but content was omitted or truncated. Use a narrower codetrail read range for verification.",
+            "These results come from source files, but content was omitted or truncated. Use a narrower source range for verification.",
     }
 }
 
@@ -104,13 +104,23 @@ pub fn parser_fact() -> Reliability {
     }
 }
 
+pub fn config_fact() -> Reliability {
+    Reliability {
+        level: "config_fact",
+        source: "configuration_parser",
+        exact: false,
+        llm_instruction:
+            "These results come from configuration files and are not precise semantic reference resolution. Verify the source range before editing.",
+    }
+}
+
 pub fn precise_fact() -> Reliability {
     Reliability {
         level: "precise_fact",
         source: "scip_occurrence_index",
         exact: true,
         llm_instruction:
-            "These results come from a precise code intelligence index. For small files, verify context with codetrail read <path>; for large files, read the source range.",
+            "These results come from a precise code intelligence index. Verify source context before editing.",
     }
 }
 
@@ -120,7 +130,7 @@ pub fn inferred_candidate() -> Reliability {
         source: "tree_sitter_ast_heuristic",
         exact: false,
         llm_instruction:
-            "These results are candidate relationships, not a complete call graph. Verify each match with codetrail read before reasoning from it.",
+            "These results are candidate relationships, not a complete call graph. Verify each source range before reasoning from it.",
     }
 }
 

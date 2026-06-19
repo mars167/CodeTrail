@@ -136,20 +136,6 @@ pub enum Command {
         #[arg(long, value_enum, default_value_t = SearchPatternMode::Glob, help = "Path match mode")]
         mode: SearchPatternMode,
     },
-    #[command(alias = "ls")]
-    List {
-        dir: Option<String>,
-        #[arg(long)]
-        recursive: bool,
-    },
-    Tree {
-        dir: Option<String>,
-        #[arg(long)]
-        depth: Option<u8>,
-    },
-    Read {
-        target: String,
-    },
     Refs {
         identifier: String,
     },
@@ -192,6 +178,14 @@ pub enum Command {
     Index {
         #[command(subcommand)]
         command: IndexCommand,
+    },
+    IndexProvider {
+        #[command(subcommand)]
+        command: IndexProviderCommand,
+    },
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommand,
     },
     Hooks {
         #[command(subcommand)]
@@ -254,6 +248,41 @@ pub enum IndexCommand {
         path: String,
     },
 }
+
+#[derive(Debug, Subcommand)]
+pub enum IndexProviderCommand {
+    Install {
+        #[arg(value_name = "LANGUAGE")]
+        languages: Vec<String>,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SkillCommand {
+    Install {
+        #[arg(value_name = "TARGET")]
+        target: Option<String>,
+        #[arg(long, value_enum, default_value_t = SkillScope::User)]
+        scope: SkillScope,
+        #[arg(long)]
+        path: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum SkillScope {
+    User,
+    Project,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum HooksCommand {
     Install,

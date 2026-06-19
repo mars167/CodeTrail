@@ -16,6 +16,8 @@
   "scripts": {
     "test": "node --test test/*.test.js",
     "check:versions": "node ../scripts/npm/check-versions.js",
+    "check:assets": "node ../scripts/npm/check-agent-assets.js",
+    "sync:assets": "node ../scripts/npm/check-agent-assets.js --write",
     "smoke": "node ../scripts/npm/smoke.js"
   },
   "optionalDependencies": {

@@ -62,6 +62,7 @@ fn public_result(result: &Value) -> Value {
         "fileHash",
         "readCommand",
         "readCommandArgv",
+        "sourceTarget",
         "producer",
         "sourceReason",
         "indexFresh",

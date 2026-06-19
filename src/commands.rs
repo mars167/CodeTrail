@@ -1,11 +1,16 @@
-use std::io::IsTerminal;
+use std::io::{self, IsTerminal, Write};
 
 use serde_json::{json, Value};
 
 use crate::{
-    cli::{Cli, Command, HooksCommand, IndexCommand, OutputFormat, QueryCommand},
-    completions, graph, index, output,
-    query_input::{compatible_input_needs_expansion, InputPlan},
+    cli::{
+        Cli, Command, HooksCommand, IndexCommand, IndexProviderCommand, OutputFormat, QueryCommand,
+        SkillCommand,
+    },
+    completions, config_index, graph, index,
+    install::{IndexProviderInstallOptions, SkillInstallOptions},
+    output,
+    query_input::InputPlan,
     routes, saved_query, scip_index, search,
     search_pattern::SearchPatternMode,
     syntax,
@@ -184,58 +189,57 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 query_output,
             )
         }
-        Command::List { dir, recursive } => output::response(
-            "list",
-            "list",
-            scoped_query(json!({ "dir": dir, "recursive": recursive }), &scan_opts),
-            &workspace.snapshot_id,
-            output::source_fact(),
-            search::list(&workspace, &scan_opts, dir.as_deref(), *recursive)?,
-            Vec::new(),
-        ),
-        Command::Tree { dir, depth } => output::response(
-            "tree",
-            "tree",
-            scoped_query(json!({ "dir": dir, "depth": depth }), &scan_opts),
-            &workspace.snapshot_id,
-            output::source_fact(),
-            search::tree(&workspace, &scan_opts, dir.as_deref(), *depth)?,
-            Vec::new(),
-        ),
-        Command::Read { target } => {
-            let result = search::read(&workspace, target)?;
-            let reliability = if result
-                .get("exact")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-            {
-                output::source_fact()
-            } else {
-                output::source_fact_inexact()
-            };
-            let warnings = result
-                .get("warnings")
-                .and_then(serde_json::Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(serde_json::Value::as_str)
-                .map(ToString::to_string)
-                .collect();
-            output::response(
-                "read",
-                "read",
-                json!({ "target": target }),
-                &workspace.snapshot_id,
-                reliability,
-                json!([result]),
-                warnings,
-            )
-        }
         Command::Refs { identifier } => {
-            if let Some(precise) = scip_index::refs(&workspace, &scan_opts, identifier)? {
-                if has_results(&precise.results)
-                    || !compatible_input_needs_expansion(identifier, scan_opts.input_mode)
-                {
+            let precise_empty =
+                if let Some(precise) = scip_index::refs(&workspace, &scan_opts, identifier)? {
+                    if has_results(&precise.results) {
+                        return emit_response(
+                            &cli.output,
+                            output::response_with_index(
+                                "refs",
+                                "refs",
+                                scoped_query(
+                                    json!({ "identifier": identifier, "producer": "scip" }),
+                                    &scan_opts,
+                                ),
+                                &workspace.snapshot_id,
+                                output::precise_fact(),
+                                output::IndexedResponseParts::new(
+                                    precise.index,
+                                    precise.results,
+                                    scope_warnings.clone(),
+                                ),
+                            ),
+                            &workspace,
+                            cli.save_query.as_deref(),
+                        );
+                    }
+                    Some(precise)
+                } else {
+                    None
+                };
+            let mut query_output = search::find(
+                &workspace,
+                &scan_opts,
+                identifier,
+                SearchPatternMode::Literal,
+                cli.context,
+                true,
+            )?;
+            let definition_ranges =
+                syntax::definition_ranges(&workspace, &scan_opts, identifier).unwrap_or_default();
+            query_output.results = search::annotate_identifier_refs_with_definitions(
+                query_output.results,
+                identifier,
+                &definition_ranges,
+            );
+            let source_had_results = has_results(&query_output.results);
+            if let Some(config) = config_index::refs(&workspace, &scan_opts, identifier)? {
+                append_results(&mut query_output.results, config.results);
+                append_config_index(&mut query_output.index, config.index);
+            }
+            if !has_results(&query_output.results) {
+                if let Some(precise) = precise_empty {
                     return emit_response(
                         &cli.output,
                         output::response_with_index(
@@ -258,28 +262,13 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                     );
                 }
             }
-            let mut query_output = search::find(
-                &workspace,
-                &scan_opts,
-                identifier,
-                SearchPatternMode::Literal,
-                cli.context,
-                true,
-            )?;
-            let definition_ranges =
-                syntax::definition_ranges(&workspace, &scan_opts, identifier).unwrap_or_default();
-            query_output.results = search::annotate_identifier_refs_with_definitions(
-                query_output.results,
-                identifier,
-                &definition_ranges,
-            );
             exit_code = output::no_match_exit(&query_output.results);
             page_response(output::response_with_index(
                 "refs",
                 "refs",
                 scoped_query(json!({ "identifier": identifier, "mode": "identifier_boundary_text_search" }), &scan_opts),
                 &workspace.snapshot_id,
-                output::source_fact(),
+                source_reliability(source_had_results, &query_output.results),
                 output::IndexedResponseParts::new(
                     query_output.index.clone(),
                     query_output.results.clone(),
@@ -291,45 +280,73 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             ), query_output)
         }
         Command::Symbols { query } => {
-            if let Some(precise) = scip_index::symbols(&workspace, &scan_opts, query)? {
-                if has_results(&precise.results)
-                    || !compatible_input_needs_expansion(query, scan_opts.input_mode)
-                {
-                    let page = search::page_results(
-                        precise.results,
-                        &scan_opts,
-                        "symbols",
-                        json!({ "query": query, "producer": "scip" }),
-                        &workspace.snapshot_id,
-                    )?;
+            let precise_empty =
+                if let Some(precise) = scip_index::symbols(&workspace, &scan_opts, query)? {
+                    if has_results(&precise.results) {
+                        let page = search::page_results(
+                            precise.results,
+                            &scan_opts,
+                            "symbols",
+                            json!({ "query": query, "producer": "scip" }),
+                            &workspace.snapshot_id,
+                        )?;
+                        return emit_response(
+                            &cli.output,
+                            output::with_page_meta(
+                                output::response_with_index(
+                                    "symbols",
+                                    "symbols",
+                                    scoped_query(
+                                        json!({ "query": query, "producer": "scip" }),
+                                        &scan_opts,
+                                    ),
+                                    &workspace.snapshot_id,
+                                    output::precise_fact(),
+                                    output::IndexedResponseParts::new(
+                                        precise.index,
+                                        page.results.clone(),
+                                        scope_warnings.clone(),
+                                    ),
+                                ),
+                                page.truncated,
+                                page.next_cursor,
+                                page.facets,
+                            ),
+                            &workspace,
+                            cli.save_query.as_deref(),
+                        );
+                    }
+                    Some(precise)
+                } else {
+                    None
+                };
+            let (mut results, warnings) = syntax::symbols(&workspace, &scan_opts, query)?;
+            let parser_had_results = has_results(&results);
+            if let Some(config) = config_index::symbols(&workspace, &scan_opts, query)? {
+                append_results(&mut results, config.results);
+            }
+            let fallback_had_results = has_results(&results);
+            if !fallback_had_results {
+                if let Some(precise) = precise_empty {
                     return emit_response(
                         &cli.output,
-                        output::with_page_meta(
-                            output::response_with_index(
-                                "symbols",
-                                "symbols",
-                                scoped_query(
-                                    json!({ "query": query, "producer": "scip" }),
-                                    &scan_opts,
-                                ),
-                                &workspace.snapshot_id,
-                                output::precise_fact(),
-                                output::IndexedResponseParts::new(
-                                    precise.index,
-                                    page.results.clone(),
-                                    scope_warnings.clone(),
-                                ),
+                        output::response_with_index(
+                            "symbols",
+                            "symbols",
+                            scoped_query(json!({ "query": query, "producer": "scip" }), &scan_opts),
+                            &workspace.snapshot_id,
+                            output::precise_fact(),
+                            output::IndexedResponseParts::new(
+                                precise.index,
+                                precise.results,
+                                scope_warnings.clone(),
                             ),
-                            page.truncated,
-                            page.next_cursor,
-                            page.facets,
                         ),
                         &workspace,
                         cli.save_query.as_deref(),
                     );
                 }
             }
-            let (results, warnings) = syntax::symbols(&workspace, &scan_opts, query)?;
             let page = search::page_results(
                 results,
                 &scan_opts,
@@ -347,7 +364,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                         &scan_opts,
                     ),
                     &workspace.snapshot_id,
-                    output::parser_fact(),
+                    result_reliability(parser_had_results, &page.results),
                     page.results.clone(),
                     merge_warnings(
                         warnings,
@@ -366,10 +383,41 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             )
         }
         Command::Defs { identifier } => {
-            if let Some(precise) = scip_index::defs(&workspace, &scan_opts, identifier)? {
-                if has_results(&precise.results)
-                    || !compatible_input_needs_expansion(identifier, scan_opts.input_mode)
-                {
+            let precise_empty =
+                if let Some(precise) = scip_index::defs(&workspace, &scan_opts, identifier)? {
+                    if has_results(&precise.results) {
+                        return emit_response(
+                            &cli.output,
+                            output::response_with_index(
+                                "defs",
+                                "defs",
+                                scoped_query(
+                                    json!({ "identifier": identifier, "producer": "scip" }),
+                                    &scan_opts,
+                                ),
+                                &workspace.snapshot_id,
+                                output::precise_fact(),
+                                output::IndexedResponseParts::new(
+                                    precise.index,
+                                    precise.results,
+                                    scope_warnings.clone(),
+                                ),
+                            ),
+                            &workspace,
+                            cli.save_query.as_deref(),
+                        );
+                    }
+                    Some(precise)
+                } else {
+                    None
+                };
+            let (mut results, warnings) = syntax::defs(&workspace, &scan_opts, identifier)?;
+            let parser_had_results = has_results(&results);
+            if let Some(config) = config_index::defs(&workspace, &scan_opts, identifier)? {
+                append_results(&mut results, config.results);
+            }
+            if !has_results(&results) {
+                if let Some(precise) = precise_empty {
                     return emit_response(
                         &cli.output,
                         output::response_with_index(
@@ -392,7 +440,6 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                     );
                 }
             }
-            let (results, warnings) = syntax::defs(&workspace, &scan_opts, identifier)?;
             exit_code = output::no_match_exit(&results);
             output::response(
                 "defs",
@@ -402,7 +449,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                     &scan_opts,
                 ),
                 &workspace.snapshot_id,
-                output::parser_fact(),
+                result_reliability(parser_had_results, &results),
                 results,
                 merge_warnings(
                     warnings,
@@ -828,6 +875,61 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 )
             }
         },
+        Command::IndexProvider { command } => match command {
+            IndexProviderCommand::Install {
+                languages,
+                dry_run,
+                force,
+            } => {
+                let (results, code) = crate::install::install_index_providers(
+                    &workspace,
+                    &IndexProviderInstallOptions {
+                        languages: languages.clone(),
+                        dry_run: *dry_run,
+                        force: *force,
+                    },
+                )?;
+                exit_code = code;
+                output::response(
+                    "index-provider install",
+                    "index-provider install",
+                    json!({ "languages": languages, "dryRun": dry_run, "force": force }),
+                    &workspace.snapshot_id,
+                    output::freshness(),
+                    results,
+                    Vec::new(),
+                )
+            }
+        },
+        Command::Skill { command } => match command {
+            SkillCommand::Install {
+                target,
+                scope,
+                path,
+                dry_run,
+                force,
+            } => {
+                let target = resolve_skill_install_target(target.as_deref(), &cli.output)?;
+                output::response(
+                    "skill install",
+                    "skill install",
+                    json!({ "target": &target, "scope": format!("{scope:?}").to_lowercase(), "path": path, "dryRun": dry_run, "force": force }),
+                    &workspace.snapshot_id,
+                    output::freshness(),
+                    crate::install::install_skill(
+                        &workspace,
+                        &SkillInstallOptions {
+                            target,
+                            scope: *scope,
+                            path: path.clone(),
+                            dry_run: *dry_run,
+                            force: *force,
+                        },
+                    )?,
+                    Vec::new(),
+                )
+            }
+        },
         Command::Hooks { command } => match command {
             HooksCommand::Install => output::response(
                 "hooks install",
@@ -877,6 +979,67 @@ fn emit_response(
     let exit_code = output::no_match_exit(&value["results"]);
     output::emit(format, &value)?;
     Ok(exit_code)
+}
+
+fn resolve_skill_install_target(target: Option<&str>, format: &OutputFormat) -> AppResult<String> {
+    if let Some(target) = target {
+        return Ok(target.to_string());
+    }
+    if *format == OutputFormat::Text && io::stdin().is_terminal() && io::stderr().is_terminal() {
+        return prompt_skill_install_target();
+    }
+    Err(anyhow::anyhow!(
+        "skill target is required in non-interactive mode; pass one of: {}",
+        skill_target_id_list()
+    ))
+}
+
+fn prompt_skill_install_target() -> AppResult<String> {
+    let options = crate::install::skill_target_options();
+    eprintln!("Select target agent for CodeTrail skill install:");
+    for (index, option) in options.iter().enumerate() {
+        eprintln!("  {}. {} ({})", index + 1, option.label, option.id);
+    }
+    eprint!("Target agent: ");
+    io::stderr().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    parse_skill_target_selection(&input).ok_or_else(|| {
+        anyhow::anyhow!(
+            "invalid skill target selection; pass one of: {}",
+            skill_target_id_list()
+        )
+    })
+}
+
+fn parse_skill_target_selection(input: &str) -> Option<String> {
+    let selection = input.trim();
+    if selection.is_empty() {
+        return None;
+    }
+    let options = crate::install::skill_target_options();
+    if let Ok(index) = selection.parse::<usize>() {
+        if (1..=options.len()).contains(&index) {
+            return Some(options[index - 1].id.to_string());
+        }
+        return None;
+    }
+    options
+        .iter()
+        .find(|option| {
+            option.id.eq_ignore_ascii_case(selection)
+                || option.label.eq_ignore_ascii_case(selection)
+        })
+        .map(|option| option.id.to_string())
+}
+
+fn skill_target_id_list() -> String {
+    crate::install::skill_target_options()
+        .iter()
+        .map(|option| option.id)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn with_progress<T, F>(
@@ -976,6 +1139,37 @@ fn has_results(value: &Value) -> bool {
     value.as_array().is_some_and(|results| !results.is_empty())
 }
 
+fn append_results(target: &mut Value, extra: Value) {
+    let Some(target_items) = target.as_array_mut() else {
+        return;
+    };
+    if let Value::Array(mut extra_items) = extra {
+        target_items.append(&mut extra_items);
+    }
+}
+
+fn append_config_index(target: &mut Value, config_index: Value) {
+    if let Some(object) = target.as_object_mut() {
+        object.insert("configFacts".to_string(), config_index);
+    }
+}
+
+fn result_reliability(parser_had_results: bool, results: &Value) -> output::Reliability {
+    if !parser_had_results && has_results(results) {
+        output::config_fact()
+    } else {
+        output::parser_fact()
+    }
+}
+
+fn source_reliability(source_had_results: bool, results: &Value) -> output::Reliability {
+    if !source_had_results && has_results(results) {
+        output::config_fact()
+    } else {
+        output::source_fact()
+    }
+}
+
 fn path_mode_label(command: &str, mode: SearchPatternMode) -> &'static str {
     match (command, mode) {
         ("files" | "find-path", SearchPatternMode::Literal) => "path_substring",
@@ -991,9 +1185,6 @@ fn command_name(command: &Command) -> &'static str {
         Command::Files { .. } => "files",
         Command::FindPath { .. } => "find-path",
         Command::Glob { .. } => "glob",
-        Command::List { .. } => "list",
-        Command::Tree { .. } => "tree",
-        Command::Read { .. } => "read",
         Command::Refs { .. } => "refs",
         Command::Symbols { .. } => "symbols",
         Command::Defs { .. } => "defs",
@@ -1015,6 +1206,12 @@ fn command_name(command: &Command) -> &'static str {
             IndexCommand::Clean => "index clean",
             IndexCommand::Pack { .. } => "index pack",
             IndexCommand::Unpack { .. } => "index unpack",
+        },
+        Command::IndexProvider { command } => match command {
+            IndexProviderCommand::Install { .. } => "index-provider install",
+        },
+        Command::Skill { command } => match command {
+            SkillCommand::Install { .. } => "skill install",
         },
         Command::Hooks { .. } => "hooks",
         Command::Completions { .. } => "completions",

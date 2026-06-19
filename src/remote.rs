@@ -203,7 +203,7 @@ pub fn remote_reliability(remote_verified: bool) -> Value {
             "source": "remote_unverified",
             "exact": false,
             "remote_verified": false,
-            "llm_instruction": "These results come from a remote index that does NOT match current local files. Verify every result with codetrail read before relying on them."
+            "llm_instruction": "These results come from a remote index that does NOT match current local files. Verify every result with a local source read before relying on them."
         })
     }
 }

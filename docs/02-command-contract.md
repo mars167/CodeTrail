@@ -6,7 +6,7 @@
 
 ```mermaid
 flowchart TB
-  CS["codetrail"] --> L0["source facts"]
+  CS["codetrail"] --> L0["index-backed source/path facts"]
   CS --> L1["navigation facts"]
   CS --> L2["relationship candidates"]
   CS --> Ops["index / query / watch / serve / mcp"]
@@ -14,7 +14,7 @@ flowchart TB
 
   L0 --> Search["find / grep"]
   L0 --> Paths["files / find-path / glob"]
-  L0 --> Read["list / tree / read / changed / status"]
+  CS --> State["changed / status"]
   L1 --> Nav["defs / refs / symbols / routes"]
   L2 --> Calls["calls / callers"]
   Ops --> Index["index build / update / status / skipped / verify / clean / pack / unpack"]
@@ -25,9 +25,8 @@ flowchart TB
 
 | 族 | 命令 | 契约 |
 | --- | --- | --- |
-| 内容搜索 | `find`, `grep` | 返回可验证源码匹配；index 只影响速度 |
-| 路径搜索 | `files`, `find-path`, `glob` | 返回 snapshot 下的路径事实 |
-| 浏览读取 | `list`, `tree`, `read` | `read` 是编辑前验证入口 |
+| 内容搜索 | `find`, `grep` | 优先使用 text index/LanceDB 取候选；index 不可用时 live scan |
+| 路径搜索 | `files`, `find-path`, `glob` | 优先使用 indexed file catalog；index 不可用时 live scan |
 | Git 状态 | `changed`, `status` | 返回当前 workspace 与 snapshot 状态 |
 | 跳转 | `defs`, `refs`, `symbols`, `routes` | 优先 SCIP，缺失时降级为 parser/text fallback；`routes` 为 framework route parser scan |
 | 关系 | `calls`, `callers` | 永远是 `inferred_candidate` |
@@ -114,6 +113,11 @@ tree-sitter parser fallback；其他语言的关系查询主要依赖 fresh grap
 
 ## 性能契约
 
+Index-backed discovery 命令包括 `find`、`grep`、`files`、`find-path`、
+`glob`、`defs`、`refs`、`symbols`、`routes`、`calls` 和 `callers`。
+CLI/MCP 不再暴露 `list`、`tree` 或 `read`；源码验证由宿主编辑器或 Agent read
+工具按结果中的 `path` 和 `range` 完成。
+
 搜索必须先收窄候选文件，再读内容或解析 AST。固定顺序为：
 
 1. `--dir` walker roots。
@@ -147,13 +151,6 @@ public JSON 不暴露内部计时和扫描统计。
 - `files <pattern>` 和 `find-path <pattern>` 默认 literal path substring；
   `glob <pattern>` 默认 glob match，例如 `src/**/*.rs`。三者都支持
   `--mode literal|regex|wildcard|glob`。
-- `list [dir]` 和 `tree [dir]` 接受 workspace-relative 目录；省略时为 `.`。
-  目录必须存在、必须是目录，且 canonical path 不能逃出 workspace root。
-- `read <target>` 接受 `path`、`path:line` 或 `path:start-end`。小文件或同一
-  文件多处命中应优先用 `read <path>` 一次验证；大文件全文读取会受预算保护并
-  返回截断提示，调用方再用范围读取。行号从 1 开始，`0`、空行号和 start 大于
-  end 的范围非法。只有最后一个 `:` 后面全是数字或 `数字-数字` 时才按范围解析，
-  否则整个 target 按路径处理。
 - `--lang <lang>` 按扩展名映射出的语言名过滤，大小写不敏感。当前内置语言名为
   `go`、`rust`、`python`、`java`、`typescript`、`javascript`、`markdown`、
   `ruby`、`swift`、`json`、`toml`、`yaml`、`html`、`css` 和 `text`。
@@ -194,7 +191,7 @@ MCP tool result 的 `content[0].text` 使用同一 public JSON 投影。
 
 稳定字段：
 
-- `results` 是唯一的主要结果载体。每条结果只保留定位、文本、符号、关系或命令结果本身需要的字段；内部审计字段、producer、read command、index freshness 和 agent next action 不进入公开 JSON。
+- `results` 是唯一的主要结果载体。每条结果只保留定位、文本、符号、关系或命令结果本身需要的字段；内部审计字段、producer、source target、index freshness 和 agent next action 不进入公开 JSON。
 - `page.truncated` 表示本次输出被裁切或分页，调用方应缩小查询、降低 context 或使用 `page.nextCursor` 翻页。
 - `page.nextCursor` 是下一页游标；没有下一页时为 `null`。
 - `caveats` 是机器可匹配的边界说明，结构为 `{code,message,severity,category}`。`severity` 目前使用 `info`、`warning` 或 `error`；`category` 目前使用 `capability`、`risk` 或 `error`。
@@ -218,7 +215,7 @@ MCP tool result 的 `content[0].text` 使用同一 public JSON 投影。
 - `--context` 控制结果上下文；默认 `0`，不会输出 context block。
 - preview、context 和结果数量受输出预算保护；当任何层级被裁切时，`page.truncated=true` 或 `caveats` 包含 `truncated_output`。
 - 宽查询 guard 仍会返回少量样本和 caveat，避免终端与机器输出被大结果集淹没。
-- `read` 仍是编辑前验证入口；公开 JSON 不再内嵌 `readCommand`，调用方应使用结果里的 `path` 和 `range` 组合读取目标。
+- internal JSON 可包含 `sourceTarget` 和 `suggestedReads`，用于提示宿主 Agent 读取的路径或行号范围；公开 JSON 不暴露这些 agent next action 字段，调用方应使用结果里的 `path` 和 `range` 组合读取目标。
 
 ## Index Build 与语义阶段
 
@@ -250,9 +247,9 @@ MCP tool result 的 `content[0].text` 使用同一 public JSON 投影。
 
 ```mermaid
 flowchart LR
-  Source["source_fact\nfind/read/files"] --> Edit["safe evidence after read"]
+  Source["source_fact\nfind/files"] --> Verify["verify with host source read"]
   Precise["precise_fact\nSCIP defs/refs"] --> Edit
-  Parser["parser_fact\ntree-sitter fallback"] --> Verify["verify with read"]
+  Parser["parser_fact\ntree-sitter fallback"] --> Verify
   Candidate["inferred_candidate\ncalls/callers"] --> Verify
   RemoteOk["remote_verified"] --> Verify
   RemoteBad["remote_unverified"] --> Verify
@@ -264,14 +261,14 @@ flowchart LR
 - `exact=true` 只允许出现在 `source_fact` 或 `precise_fact`。
 - `parser_fact` 可以是确定性语法事实，但不能代表 precise semantic reference resolution；framework route scan 属于此层。
 - `calls` 和 `callers` 即使来自图索引，也必须标为候选。
-- remote 结果必须声明是否与本地文件 proof 对齐；`remote_verified` 仍是共享缓存结果，关键编辑前仍要 `read`。
+- remote 结果必须声明是否与本地文件 proof 对齐；`remote_verified` 仍是共享缓存结果，关键编辑前仍要用源码读取工具复核。
 - remote-only MCP 查询可以在本地源文件缺失时使用 remote archive 的 text
   content segment 返回导航线索，但这些结果不能伪装成本地编辑事实，也不能覆盖
   dirty/staged/worktree 状态。
 - MyBatis mapper XML 的 namespace、statement、resultMap、SQL fragment 和
   XML 内引用属于 `config_fact` / `source_fact` 层；它们提升召回，不代表
   SCIP precise semantic reference resolution。
-- 公开输出通过 caveats 暴露这些边界；自动化工具应先看 `severity/category`，不要把 `info/capability` 的能力说明当成风险告警。开发者修改代码前仍应对关键结果执行 `read <file[:range]>`；能放进预算的小文件应一次读取整个文件，避免用相邻范围分页。
+- 公开输出通过 caveats 暴露这些边界；自动化工具应先看 `severity/category`，不要把 `info/capability` 的能力说明当成风险告警。开发者修改代码前仍应通过宿主编辑器或 Agent read 工具读取关键结果的精确范围；能放进预算的小文件应一次读取整个文件，避免用相邻范围分页。
 
 ## Saved Query Replay
 
@@ -292,7 +289,6 @@ flowchart LR
 - 搜索结果按 `path:line  preview` 渲染。
 - `routes` 按 `METHOD routePattern  path:line` 渲染，并附带 framework 与
   handler candidate。
-- `read` 直接输出文件内容。
 - `calls`/`callers` 按 caller -> callee 关系渲染，并附带位置。
 - `index build/update/pack/unpack` 在 TTY 上显示加载进度；非 TTY 保持无
   spinner，避免污染脚本输出。

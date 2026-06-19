@@ -2,7 +2,7 @@ use std::{fs, path::Path};
 
 use serde_json::{json, Value};
 
-use super::command::{command_string_from_argv, shell_quote};
+use super::command::command_string_from_argv;
 
 pub(in crate::output) fn enrich_results(results: Value) -> Value {
     let Value::Array(values) = results else {
@@ -16,17 +16,10 @@ fn enrich_result(result: Value) -> Value {
     let Value::Object(mut object) = result else {
         return result;
     };
-    if is_readable_path_result(&object) && !object.contains_key("readCommand") {
+    if is_readable_path_result(&object) && !object.contains_key("sourceTarget") {
         if let Some(path) = object.get("path").and_then(Value::as_str) {
             let target = read_target(path, object.get("range"));
-            object.insert(
-                "readCommand".to_string(),
-                Value::String(read_command_string(None, &target)),
-            );
-            object.insert(
-                "readCommandArgv".to_string(),
-                json!(read_argv(None, target)),
-            );
+            object.insert("sourceTarget".to_string(), Value::String(target));
         }
     }
     Value::Object(object)
@@ -59,7 +52,7 @@ pub fn with_workspace_root(mut value: Value, root: &Path) -> Value {
 }
 
 fn enrich_action_with_root(action: &mut Value, root: &str) {
-    if action.get("kind").and_then(Value::as_str) == Some("read") {
+    if action.get("kind").and_then(Value::as_str) == Some("source_read") {
         return;
     }
     let Some(argv) = action.get("argv").and_then(Value::as_array) else {
@@ -89,23 +82,14 @@ fn enrich_result_with_root(result: &mut Value, root: &Path) {
         return;
     };
     if !is_readable_path_result(object) {
-        object.remove("readCommand");
-        object.remove("readCommandArgv");
+        object.remove("sourceTarget");
         return;
     }
     let Some(path) = object.get("path").and_then(Value::as_str) else {
         return;
     };
     let target = read_target_with_root(root, path, object.get("range"));
-    let root = root.to_string_lossy().to_string();
-    object.insert(
-        "readCommand".to_string(),
-        Value::String(read_command_string(Some(&root), &target)),
-    );
-    object.insert(
-        "readCommandArgv".to_string(),
-        json!(read_argv(Some(root), target)),
-    );
+    object.insert("sourceTarget".to_string(), Value::String(target));
 }
 
 fn is_readable_path_result(object: &serde_json::Map<String, Value>) -> bool {
@@ -169,7 +153,7 @@ fn read_target(path: &str, range: Option<&Value>) -> String {
 
 pub(in crate::output) fn suggested_reads(results: &Value) -> Value {
     Value::Array(
-        unique_read_commands(results)
+        unique_source_targets(results)
             .into_iter()
             .map(Value::String)
             .collect(),
@@ -183,15 +167,14 @@ pub(in crate::output) fn next_actions_from_results(results: &Value) -> Value {
         .into_iter()
         .flatten()
         .filter_map(|result| {
-            let command = result.get("readCommand").and_then(Value::as_str)?;
-            if seen.iter().any(|existing| existing == command) {
+            let target = result.get("sourceTarget").and_then(Value::as_str)?;
+            if seen.iter().any(|existing| existing == target) {
                 return None;
             }
-            seen.push(command.to_string());
+            seen.push(target.to_string());
             Some(json!({
-                "kind": "read",
-                "command": command,
-                "argv": result.get("readCommandArgv").cloned().unwrap_or(Value::Null),
+                "kind": "source_read",
+                "target": target,
                 "reason": "verify_source_before_edit"
             }))
         })
@@ -200,21 +183,21 @@ pub(in crate::output) fn next_actions_from_results(results: &Value) -> Value {
     Value::Array(actions)
 }
 
-fn unique_read_commands(results: &Value) -> Vec<String> {
-    let mut commands = Vec::<String>::new();
+fn unique_source_targets(results: &Value) -> Vec<String> {
+    let mut targets = Vec::<String>::new();
     for result in results.as_array().into_iter().flatten() {
-        let Some(command) = result.get("readCommand").and_then(Value::as_str) else {
+        let Some(target) = result.get("sourceTarget").and_then(Value::as_str) else {
             continue;
         };
-        if commands.iter().any(|existing| existing == command) {
+        if targets.iter().any(|existing| existing == target) {
             continue;
         }
-        commands.push(command.to_string());
-        if commands.len() == 5 {
+        targets.push(target.to_string());
+        if targets.len() == 5 {
             break;
         }
     }
-    commands
+    targets
 }
 
 fn non_read_next_actions(actions: &Value) -> Vec<Value> {
@@ -222,35 +205,14 @@ fn non_read_next_actions(actions: &Value) -> Vec<Value> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|action| action.get("kind").and_then(Value::as_str) != Some("read"))
+        .filter(|action| {
+            !matches!(
+                action.get("kind").and_then(Value::as_str),
+                Some("read" | "source_read")
+            )
+        })
         .cloned()
         .collect()
-}
-
-fn read_command_string(root: Option<&str>, target: &str) -> String {
-    let read_target = if target.starts_with('-') {
-        format!("-- {}", shell_quote(target))
-    } else {
-        shell_quote(target)
-    };
-    match root {
-        Some(root) => format!("codetrail --path {} read {read_target}", shell_quote(root)),
-        None => format!("codetrail read {read_target}"),
-    }
-}
-
-fn read_argv(root: Option<String>, target: String) -> Vec<String> {
-    let mut argv = vec!["codetrail".to_string()];
-    if let Some(root) = root {
-        argv.push("--path".to_string());
-        argv.push(root);
-    }
-    argv.push("read".to_string());
-    if target.starts_with('-') {
-        argv.push("--".to_string());
-    }
-    argv.push(target);
-    argv
 }
 
 #[cfg(test)]

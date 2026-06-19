@@ -708,7 +708,100 @@ pub fn hooks_install(workspace: &Workspace) -> Result<Value> {
     };
     let hooks_dir = git_root.join(".git").join("hooks");
     fs::create_dir_all(&hooks_dir)?;
-    let hooks = [
+
+    let mut installed = Vec::new();
+    for (name, script) in hook_specs() {
+        let path = hooks_dir.join(name);
+        let previous_state = hook_file_state(&path);
+        let state = if previous_state == "missing" {
+            "created"
+        } else if fs::read_to_string(&path).is_ok_and(|content| content == script) {
+            "unchanged"
+        } else {
+            "updated"
+        };
+        fs::write(&path, script)?;
+        make_executable(&path)?;
+        installed.push(json!({
+            "hook": name,
+            "path": path,
+            "installed": true,
+            "state": state,
+            "changed": state != "unchanged",
+            "previousState": previous_state
+        }));
+    }
+    Ok(Value::Array(installed))
+}
+
+pub fn hooks_uninstall(workspace: &Workspace) -> Result<Value> {
+    let Some(git_root) = &workspace.git_root else {
+        return Err(anyhow!("hooks require a git repository"));
+    };
+    let hooks_dir = git_root.join(".git").join("hooks");
+    let names = hook_names();
+    let mut removed = Vec::new();
+    for name in names {
+        let path = hooks_dir.join(name);
+        if path.exists() {
+            let content = fs::read_to_string(&path).unwrap_or_default();
+            if content.contains("codetrail index") {
+                fs::remove_file(&path)?;
+                removed.push(json!({
+                    "hook": name,
+                    "path": path,
+                    "removed": true,
+                    "state": "removed",
+                    "changed": true
+                }));
+            } else {
+                removed.push(json!({
+                    "hook": name,
+                    "path": path,
+                    "removed": false,
+                    "state": "skipped_unmanaged",
+                    "changed": false,
+                    "reason": "not_owned_by_codetrail"
+                }));
+            }
+        } else {
+            removed.push(json!({
+                "hook": name,
+                "path": path,
+                "removed": false,
+                "state": "skipped_not_installed",
+                "changed": false,
+                "reason": "missing"
+            }));
+        }
+    }
+    Ok(Value::Array(removed))
+}
+
+pub fn hooks_status(workspace: &Workspace) -> Result<Value> {
+    let Some(git_root) = &workspace.git_root else {
+        return Err(anyhow!("hooks require a git repository"));
+    };
+    let hooks_dir = git_root.join(".git").join("hooks");
+    let names = hook_names();
+    let values = names
+        .iter()
+        .map(|name| {
+            let path = hooks_dir.join(name);
+            let state = hook_file_state(&path);
+            json!({
+                "hook": name,
+                "installed": state == "installed",
+                "state": state,
+                "path": path
+            })
+        })
+        .collect();
+    Ok(Value::Array(values))
+}
+
+fn hook_specs() -> [(&'static str, &'static str); 5] {
+    [
         (
             "pre-commit",
             "#!/bin/sh\ncodetrail index build --staged >/dev/null 2>&1 || true\n",
@@ -729,72 +822,22 @@ pub fn hooks_install(workspace: &Workspace) -> Result<Value> {
             "post-rewrite",
             "#!/bin/sh\ncodetrail index update >/dev/null 2>&1 || true\n",
         ),
-    ];
-
-    let mut installed = Vec::new();
-    for (name, script) in hooks {
-        let path = hooks_dir.join(name);
-        fs::write(&path, script)?;
-        make_executable(&path)?;
-        installed.push(json!({ "hook": name, "path": path }));
-    }
-    Ok(Value::Array(installed))
+    ]
 }
 
-pub fn hooks_uninstall(workspace: &Workspace) -> Result<Value> {
-    let Some(git_root) = &workspace.git_root else {
-        return Err(anyhow!("hooks require a git repository"));
-    };
-    let hooks_dir = git_root.join(".git").join("hooks");
-    let names = [
-        "pre-commit",
-        "post-commit",
-        "post-checkout",
-        "post-merge",
-        "post-rewrite",
-    ];
-    let mut removed = Vec::new();
-    for name in names {
-        let path = hooks_dir.join(name);
-        if path.exists() {
-            let content = fs::read_to_string(&path).unwrap_or_default();
-            if content.contains("codetrail index") {
-                fs::remove_file(&path)?;
-                removed.push(json!({ "hook": name, "removed": true }));
-            } else {
-                removed.push(
-                    json!({ "hook": name, "removed": false, "reason": "not_owned_by_codetrail" }),
-                );
-            }
-        }
-    }
-    Ok(Value::Array(removed))
+fn hook_names() -> [&'static str; 5] {
+    hook_specs().map(|(name, _)| name)
 }
 
-pub fn hooks_status(workspace: &Workspace) -> Result<Value> {
-    let Some(git_root) = &workspace.git_root else {
-        return Err(anyhow!("hooks require a git repository"));
-    };
-    let hooks_dir = git_root.join(".git").join("hooks");
-    let names = [
-        "pre-commit",
-        "post-commit",
-        "post-checkout",
-        "post-merge",
-        "post-rewrite",
-    ];
-    let values = names
-        .iter()
-        .map(|name| {
-            let path = hooks_dir.join(name);
-            let installed = path.exists()
-                && fs::read_to_string(&path)
-                    .map(|content| content.contains("codetrail index"))
-                    .unwrap_or(false);
-            json!({ "hook": name, "installed": installed, "path": path })
-        })
-        .collect();
-    Ok(Value::Array(values))
+fn hook_file_state(path: &Path) -> &'static str {
+    if !path.exists() {
+        return "missing";
+    }
+    match fs::read_to_string(path) {
+        Ok(content) if content.contains("codetrail index") => "installed",
+        Ok(_) => "unmanaged",
+        Err(_) => "unreadable",
+    }
 }
 
 pub fn watch_status(workspace: &Workspace) -> Value {
@@ -1941,9 +1984,64 @@ fn write_to_lancedb(
                 .write_gram_postings(&manifest.snapshot_id, &gram_index)
                 .with_context(|| "failed to write gram postings to LanceDB")?;
         }
+
+        let config_facts = extract_xml_config_facts(workspace, records, verbose)?;
+        if !config_facts.is_empty() {
+            let file_hashes = records
+                .iter()
+                .map(|record| (record.path.clone(), record.hash.clone()))
+                .collect::<BTreeMap<_, _>>();
+            verbose.log(format!(
+                "index build: writing LanceDB config facts facts={}",
+                config_facts.len()
+            ));
+            lancedb
+                .write_config_facts(&manifest.snapshot_id, &config_facts, &file_hashes)
+                .with_context(|| "failed to write config facts to LanceDB")?;
+        }
     }
 
     Ok(())
+}
+
+fn extract_xml_config_facts(
+    workspace: &Workspace,
+    records: &[FileRecord],
+    verbose: output::VerboseLogger,
+) -> Result<Vec<crate::config_facts::ConfigFact>> {
+    let graph = match crate::project_graph::discover_project_graph(&workspace.root) {
+        Ok(graph) => graph,
+        Err(error) => {
+            verbose.log(format!(
+                "index build: skipping config facts; project graph failed: {error}"
+            ));
+            return Ok(Vec::new());
+        }
+    };
+    let mut facts = Vec::new();
+    for record in records.iter().filter(|record| record.language == "xml") {
+        let path = workspace.abs_path(&record.path);
+        let Ok(source) = fs::read_to_string(path) else {
+            continue;
+        };
+        facts.extend(crate::config_facts::extract_config_facts_for_file(
+            &record.path,
+            &source,
+            &graph,
+            crate::config_facts::ConfigFactExtractOptions::default(),
+        ));
+    }
+    facts.retain(|fact| {
+        matches!(
+            fact.fact_kind,
+            crate::config_facts::ConfigFactKind::MyBatisNamespace
+                | crate::config_facts::ConfigFactKind::MyBatisStatement
+                | crate::config_facts::ConfigFactKind::MyBatisResultMap
+                | crate::config_facts::ConfigFactKind::MyBatisSqlFragment
+                | crate::config_facts::ConfigFactKind::MyBatisReference
+        )
+    });
+    Ok(facts)
 }
 
 fn gram_index_from_materialized_files(

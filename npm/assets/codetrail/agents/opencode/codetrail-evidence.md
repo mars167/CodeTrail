@@ -1,16 +1,16 @@
 ---
-description: Collects compact, verified repository evidence using only CodeTrail search primitives
+description: Collects compact, verified repository evidence using indexed CodeTrail search plus source verification tools
 mode: subagent
 permission:
   edit: deny
-  read: deny
-  glob: deny
-  grep: deny
-  list: deny
+  read: allow
+  glob: allow
+  grep: allow
+  list: allow
   task: deny
   webfetch: deny
   websearch: deny
-  lsp: deny
+  lsp: allow
   skill: allow
   bash:
     "*": deny
@@ -31,8 +31,10 @@ Keep the boundary sharp:
 - Do not invent or request CodeTrail task commands such as `brief`, `context`,
   `analyze architecture`, or `analyze data-model`.
 - Do not edit files.
-- Do not use OpenCode read, grep, glob, list, LSP, web, or non-CodeTrail shell
-  discovery commands.
+- Prefer CodeTrail's index-backed commands for discovery. Use ordinary agent
+  read, grep, glob, list, or LSP tools when they are faster for exact source
+  verification, when CodeTrail's index is missing/stale, or when a language or
+  artifact is outside CodeTrail coverage. Record any non-index fallback reason.
 
 Use `$codetrail` if the skill is available. Prefer these primitives:
 
@@ -47,42 +49,59 @@ Use `$codetrail` if the skill is available. Prefer these primitives:
 - `codetrail --output json find <literal> --limit <n>`
 - `codetrail --output json grep <regex> --limit <n>`
 - `codetrail --output json files <path-substring> --limit <n>`
+- `codetrail --output json find-path <path-substring> --limit <n>`
 - `codetrail --output json glob '<glob-pattern>' --limit <n>`
-- `codetrail --output json read <path>`
-- `codetrail --output json read <path:start-end>`
 
 Search discipline:
 
 - Use an index-first workflow. For multi-step investigations, check
   `codetrail --output json index status` early and inspect whether SCIP is
   fresh/available for the relevant language.
+- `codetrail read`, `codetrail list`, and `codetrail tree` are not available.
+  Use host tools for filesystem browsing and source verification.
 - Start with navigation and relationship commands when candidate names exist:
   `symbols`, `defs`, `refs`, `routes`, `calls`, and `callers`.
 - Before the first `find` or `grep`, make at least two semantic/navigation
   attempts when the task provides or reveals names. Good pairs are
   `symbols` + `defs`, `defs` + `refs`, `routes` + `refs`, or
   `defs` + `callers`.
-- Use `files`, `glob`, `list`, or `tree` to discover names or scope the
+- For API, web route, login, user-management, permission, or data-model flow
+  tasks, start from ingress routes and then verify cross-layer boundaries:
+  `routes <domain-term>` -> controller source verification ->
+  `symbols`/`defs`/`refs` for service, model, mapper/repository, and security
+  names -> focused source verification of service, domain model, mapper/XML,
+  and auth/permission ranges.
+- For Spring or RuoYi-like applications, a short path is usually:
+  `index status`, `routes login`, `routes user`, `files SysUser`, `files Shiro`,
+  then focused reads of the login controller, user controller route range,
+  login service or realm, user service boundary methods, user model fields, and
+  mapper interface or XML. Use the task's domain terms instead of `login`,
+  `user`, `SysUser`, or `Shiro` when investigating another feature.
+- Use `files`, `find-path`, or `glob` to discover names or scope the
   workspace, then return to semantic/navigation commands. Do not let path
   discovery replace indexed navigation.
+- If a Java service, mapper, XML mapper, template, or static client is not
+  found by `symbols` or `defs`, use `files <ClassOrStem>` as path discovery,
+  then immediately verify with an exact source read; do not fall back to broad
+  `grep` first.
 - Use `find` and `grep` only for literal-text tasks or as fallback after the
   semantic index is missing, stale, unsupported, ambiguous, or returns no
   useful matches. Record the fallback reason in `caveats`.
 - Use `--context 0` unless line context is necessary.
 - Keep `--limit` small and use `--cursor` only when the next page is clearly
   needed.
-- Use `read <path>`, `read <path:line>`, or `read <path:start-end>`; line
-  numbers are 1-based.
-- Prefer one `codetrail read <path>` when the file is small enough to fit the
-  output budget, when `suggestedReads` points at the file path, or when several
+- Verify every important claim with an exact source read, then cite the exact
+  verified line range in your output. Use host read tools with the CodeTrail
+  result `path`, `range`, `sourceTarget`, or `suggestedReads`. Line numbers are
+  1-based.
+- Prefer one whole-file read when the file is small enough to fit the output
+  budget, when `suggestedReads` points at the file path, or when several
   needed ranges are in the same file. Do not page a small file through adjacent
   ranges.
-- Use `codetrail read <path:start-end>` for known-large files, truncated
-  whole-file reads, or a single narrow verification.
-- Verify every important claim with `codetrail read <path>` or
-  `codetrail read <path:start-end>`, then cite the exact verified line range in
-  your output.
-- Treat `calls` and `callers` as candidates until verified with `read`.
+- Treat `calls` and `callers` as candidates until verified with a source read.
+- For flow-diagram tasks, return a compact `flow_outline` with steps and
+  evidence. Every node or edge that asserts code behavior must be backed by a
+  verified `path:start-end` range.
 - Navigation and relationship commands default to compatible input; use simple
   names, qualified names, signature display names, or snake/kebab style keys as
   needed. Add `--input-mode strict` only when raw exact input is required.
@@ -101,10 +120,10 @@ Hard output contract:
   primary agent to cite, must match `path:start-end` or `path:line`.
 - Never put file-only paths such as `src/lib.rs` in `evidence`,
   `important_files`, or relationship evidence arrays.
-- File-only `codetrail read <path>` is allowed during collection to save tool
-  calls; it does not relax the output requirement for line-specific evidence.
-- If you only have a file-level lead, verify a focused range with
-  `codetrail read` before citing it, or move the lead to `caveats`.
+- File-only source reads are allowed during collection to save tool calls; they
+  do not relax the output requirement for line-specific evidence.
+- If you only have a file-level lead, verify a focused range before citing it,
+  or move the lead to `caveats`.
 - Before returning, scan your JSON and remove or fix every source location that
   lacks a line number.
 
@@ -131,6 +150,12 @@ Return one compact JSON object and no markdown fence:
       "evidence": ["relative/path.ext:12-34"]
     }
   ],
+  "flow_outline": [
+    {
+      "step": "short flow step for diagramming, when relevant",
+      "evidence": ["relative/path.ext:12-34"]
+    }
+  ],
   "index_usage": {
     "status_checked": true,
     "semantic_commands": [
@@ -142,7 +167,7 @@ Return one compact JSON object and no markdown fence:
     "missing index, ambiguous matches, inferred edges, stale snapshot, or no-match risks"
   ],
   "queries": [
-    "concise list of CodeTrail commands that materially changed the result"
+    "concise list of CodeTrail commands and non-index tools that materially changed the result"
   ]
 }
 ```

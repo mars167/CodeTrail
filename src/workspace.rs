@@ -646,6 +646,7 @@ pub fn language_for_path(path: &Path) -> &'static str {
         "rb" | "rake" | "gemspec" => "ruby",
         "md" | "markdown" => "markdown",
         "json" => "json",
+        "xml" => "xml",
         "toml" => "toml",
         "yaml" | "yml" => "yaml",
         "html" | "htm" => "html",

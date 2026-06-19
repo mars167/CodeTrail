@@ -181,6 +181,15 @@ fn raw_codetrail() -> Command {
     Command::cargo_bin("codetrail").expect("binary exists")
 }
 
+#[cfg(unix)]
+fn make_executable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).unwrap();
+}
+
 fn init_git_repo(path: &std::path::Path) {
     std::process::Command::new("git")
         .arg("init")
@@ -199,25 +208,6 @@ fn init_git_repo(path: &std::path::Path) {
         .args(["config", "user.name", "Test"])
         .output()
         .unwrap();
-}
-
-fn replay_read_result(result: &Value) -> Value {
-    let argv = result["readCommandArgv"]
-        .as_array()
-        .expect("readCommandArgv is present")
-        .iter()
-        .map(|arg| arg.as_str().expect("argv item is string").to_string())
-        .collect::<Vec<_>>();
-    assert_eq!(argv.first().map(String::as_str), Some("codetrail"));
-
-    let output = codetrail()
-        .args(argv.iter().skip(1))
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    serde_json::from_slice(&output).unwrap()
 }
 
 fn caveat_with_code<'a>(json: &'a Value, code: &str) -> &'a Value {
@@ -266,7 +256,7 @@ fn schema_contract_covers_core_commands_and_errors() {
 
     for args in [
         vec!["files", "main"],
-        vec!["read", "src/main.rs:1"],
+        vec!["glob", "**/*.rs"],
         vec!["status"],
         vec!["changed"],
         vec!["index", "status"],
@@ -326,6 +316,91 @@ fn index_build_text_output_suppresses_progress_when_stderr_is_not_tty() {
 }
 
 #[test]
+fn hooks_text_output_reports_state() {
+    let dir = tempdir().unwrap();
+    init_git_repo(dir.path());
+
+    let first_install = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "text", "hooks", "install"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let first_install = String::from_utf8(first_install).unwrap();
+    assert!(
+        first_install.contains("pre-commit: created"),
+        "unexpected hooks install output: {first_install}"
+    );
+    assert!(
+        first_install.contains(".git/hooks/pre-commit"),
+        "unexpected hooks install output: {first_install}"
+    );
+
+    let second_install = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "text", "hooks", "install"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let second_install = String::from_utf8(second_install).unwrap();
+    assert!(
+        second_install.contains("pre-commit: unchanged"),
+        "unexpected hooks reinstall output: {second_install}"
+    );
+
+    let status = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "text", "hooks", "status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let status = String::from_utf8(status).unwrap();
+    assert!(
+        status.contains("pre-commit: installed"),
+        "unexpected hooks status output: {status}"
+    );
+
+    let uninstall = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "text", "hooks", "uninstall"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let uninstall = String::from_utf8(uninstall).unwrap();
+    assert!(
+        uninstall.contains("pre-commit: removed"),
+        "unexpected hooks uninstall output: {uninstall}"
+    );
+
+    let status_after_uninstall = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "text", "hooks", "status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let status_after_uninstall = String::from_utf8(status_after_uninstall).unwrap();
+    assert!(
+        status_after_uninstall.contains("pre-commit: missing"),
+        "unexpected hooks status output after uninstall: {status_after_uninstall}"
+    );
+}
+
+#[test]
 fn index_build_reports_scip_java_install_help_with_parser_fallback() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("pom.xml"), "<project></project>\n").unwrap();
@@ -357,6 +432,107 @@ fn index_build_reports_scip_java_install_help_with_parser_fallback() {
             && item["envKey"] == "CODETRAIL_SCIP_JAVA"
             && item["fallback"] == "tree_sitter_parser"
     }));
+}
+
+#[test]
+fn index_build_exposes_mybatis_mapper_xml_as_config_facts() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("pom.xml"), "<project></project>\n").unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/com/example")).unwrap();
+    fs::write(
+        dir.path().join("src/main/java/com/example/SysUserMapper.java"),
+        "package com.example;\npublic interface SysUserMapper { SysUser selectUserByLoginName(String userName); }\nclass SysUser {}\n",
+    )
+    .unwrap();
+    fs::create_dir_all(dir.path().join("src/main/resources/mapper/system")).unwrap();
+    fs::write(
+        dir.path()
+            .join("src/main/resources/mapper/system/SysUserMapper.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<mapper namespace="com.example.SysUserMapper">
+  <resultMap id="SysUserResult" type="com.example.SysUser">
+    <id property="userId" column="user_id"/>
+  </resultMap>
+  <select id="selectUserByLoginName" parameterType="String" resultMap="SysUserResult">
+    select user_id, login_name from sys_user where login_name = #{userName}
+  </select>
+</mapper>
+"#,
+    )
+    .unwrap();
+
+    codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build", "--no-semantic"])
+        .assert()
+        .success();
+
+    let status_output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let status: Value = serde_json::from_slice(&status_output).unwrap();
+    let languages = status["results"][0]["indexedLanguages"]
+        .as_array()
+        .expect("indexed languages");
+    assert!(languages
+        .iter()
+        .any(|language| language["language"] == "xml"
+            && language["fileCount"].as_u64().unwrap_or(0) >= 1));
+
+    let symbols_output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["symbols", "SysUserMapper"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let symbols: Value = serde_json::from_slice(&symbols_output).unwrap();
+    assert!(symbols["results"].as_array().unwrap().iter().any(|result| {
+        result["path"] == "src/main/resources/mapper/system/SysUserMapper.xml"
+            && result["kind"] == "mapper_namespace"
+            && result["language"] == "xml"
+            && result["reliability"] == "config_fact"
+    }));
+
+    let defs_output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "selectUserByLoginName"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let defs: Value = serde_json::from_slice(&defs_output).unwrap();
+    assert!(defs["results"].as_array().unwrap().iter().any(|result| {
+        result["path"] == "src/main/resources/mapper/system/SysUserMapper.xml"
+            && result["kind"] == "mapper_statement"
+            && result["name"] == "com.example.SysUserMapper.selectUserByLoginName"
+            && result["role"] == "definition"
+            && result["valuePreview"] == "select"
+    }));
+
+    let text_output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "selectUserByLoginName"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(text_output).unwrap();
+    assert!(text.contains("mapper_statement com.example.SysUserMapper.selectUserByLoginName"));
+    assert!(!text.contains("mapper_statementcom.example.SysUserMapper.selectUserByLoginName"));
 }
 
 #[test]
@@ -520,6 +696,7 @@ fn public_json_keeps_only_results_page_and_caveats() {
     assert_eq!(result["path"], "sample.txt");
     assert!(result.get("readCommand").is_none());
     assert!(result.get("readCommandArgv").is_none());
+    assert!(result.get("sourceTarget").is_none());
     assert!(result.get("producer").is_none());
     assert!(result["context"][0].get("truncated").is_none());
     assert!(result["context"][0].get("truncatedReason").is_none());
@@ -659,15 +836,12 @@ fn refs_text_fallback_uses_identifier_boundaries() {
         "precise_scip_index_unavailable"
     );
     assert_eq!(json["results"][0]["range"]["start"]["line"], 1);
-    assert_eq!(json["results"][0]["readCommandArgv"][4], "src/main.rs");
+    assert_eq!(json["results"][0]["sourceTarget"], "src/main.rs");
     assert_eq!(json["results"][1]["role"], "reference_candidate");
     assert_eq!(json["results"][1]["range"]["start"]["line"], 3);
-    assert_eq!(json["results"][1]["readCommandArgv"][4], "src/main.rs");
-    let read_json = replay_read_result(&json["results"][1]);
-    assert!(read_json["results"][0]["content"]
-        .as_str()
-        .unwrap()
-        .contains("let user = User;"));
+    assert_eq!(json["results"][1]["sourceTarget"], "src/main.rs");
+    let source = fs::read_to_string(dir.path().join("src/main.rs")).unwrap();
+    assert!(source.contains("let user = User;"));
 }
 
 #[test]
@@ -808,84 +982,21 @@ fn files_is_path_substring_while_glob_is_strict_glob() {
 }
 
 #[test]
-fn list_and_tree_respect_hidden_no_ignore_and_filters() {
+fn removed_non_index_subcommands_return_usage_errors() {
     let dir = tempdir().unwrap();
-    fs::create_dir_all(dir.path().join("src")).unwrap();
-    fs::create_dir_all(dir.path().join("target/generated")).unwrap();
-    fs::create_dir_all(dir.path().join(".codetrail")).unwrap();
-    fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
-    fs::write(dir.path().join(".ignore"), "ignored.log\n").unwrap();
-    fs::write(dir.path().join(".hidden.rs"), "hidden\n").unwrap();
-    fs::write(dir.path().join("ignored.log"), "ignored\n").unwrap();
-    fs::write(dir.path().join("target/generated/out.rs"), "generated\n").unwrap();
-    fs::write(dir.path().join(".codetrail/cache"), "internal\n").unwrap();
-
-    let default_list = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["list"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let default_json: Value = serde_json::from_slice(&default_list).unwrap();
-    let default_paths: Vec<&str> = default_json["results"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|result| result["path"].as_str())
-        .collect();
-    assert!(default_paths.contains(&"src"));
-    assert!(!default_paths.contains(&".hidden.rs"));
-    assert!(!default_paths.contains(&"ignored.log"));
-    assert!(!default_paths.contains(&"target"));
-    assert!(!default_paths.contains(&".codetrail"));
-
-    let expanded_list = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .arg("--hidden")
-        .arg("--no-ignore")
-        .args(["list"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let expanded_json: Value = serde_json::from_slice(&expanded_list).unwrap();
-    let expanded_paths: Vec<&str> = expanded_json["results"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|result| result["path"].as_str())
-        .collect();
-    assert!(expanded_paths.contains(&".hidden.rs"));
-    assert!(expanded_paths.contains(&"ignored.log"));
-    assert!(expanded_paths.contains(&"target"));
-    assert!(!expanded_paths.contains(&".codetrail"));
-
-    let filtered_tree = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .arg("--include")
-        .arg("src")
-        .args(["tree"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let tree_json: Value = serde_json::from_slice(&filtered_tree).unwrap();
-    let tree_paths: Vec<&str> = tree_json["results"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|result| result["path"].as_str())
-        .collect();
-    assert!(tree_paths.contains(&"src"));
-    assert!(tree_paths.contains(&"src/main.rs"));
-    assert!(!tree_paths.contains(&"target"));
+    for command in ["list", "tree", "read"] {
+        let output = codetrail()
+            .arg("--path")
+            .arg(dir.path())
+            .arg(command)
+            .assert()
+            .failure()
+            .get_output()
+            .stdout
+            .clone();
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["error"]["code"], "cli_usage_error");
+    }
 }
 
 #[test]
@@ -1345,66 +1456,7 @@ end
 }
 
 #[test]
-fn browse_scope_filters_list_and_tree_by_language_extension_and_changed() {
-    let dir = tempdir().unwrap();
-    fs::create_dir_all(dir.path().join("src")).unwrap();
-    fs::write(dir.path().join("src/app.rb"), "class App; end\n").unwrap();
-    fs::write(dir.path().join("src/app.py"), "class App: pass\n").unwrap();
-
-    let list = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .arg("--lang")
-        .arg("ruby")
-        .args(["list", "src"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let list_json: Value = serde_json::from_slice(&list).unwrap();
-    let paths = list_json["results"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|result| result["path"].as_str().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(paths, vec!["src/app.rb"]);
-
-    init_git_repo(dir.path());
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir.path())
-        .args(["add", "."])
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir.path())
-        .args(["commit", "-m", "initial"])
-        .output()
-        .unwrap();
-    fs::write(dir.path().join("src/app.rb"), "class App\nend\n").unwrap();
-
-    let tree = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .arg("--changed")
-        .arg("--ext")
-        .arg("rb")
-        .args(["tree", "src"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let tree_json: Value = serde_json::from_slice(&tree).unwrap();
-    assert_eq!(tree_json["results"].as_array().unwrap().len(), 1);
-    assert_eq!(tree_json["results"][0]["path"], "src/app.rb");
-}
-
-#[test]
-fn swift_language_mapping_is_visible_to_files_list_read_and_index_status() {
+fn swift_language_mapping_is_visible_to_files_and_index_status() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("Sources/App")).unwrap();
     fs::create_dir_all(dir.path().join("ios/App.xcodeproj")).unwrap();
@@ -1440,18 +1492,6 @@ fn swift_language_mapping_is_visible_to_files_list_read_and_index_status() {
     let files_json: Value = serde_json::from_slice(&files).unwrap();
     assert_eq!(files_json["results"][0]["path"], "Sources/App/App.swift");
     assert_eq!(files_json["results"][0]["language"], "swift");
-
-    let read = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["read", "Sources/App/App.swift:1"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let read_json: Value = serde_json::from_slice(&read).unwrap();
-    assert_eq!(read_json["results"][0]["language"], "swift");
 
     raw_codetrail()
         .arg("--path")
@@ -2757,7 +2797,7 @@ fn text_output_parse_error_is_single_readable_line() {
 }
 
 #[test]
-fn json_output_includes_read_suggestions_and_next_actions() {
+fn json_output_includes_source_targets_and_next_actions() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(
@@ -2777,17 +2817,12 @@ fn json_output_includes_read_suggestions_and_next_actions() {
         .clone();
     let json: Value = serde_json::from_slice(&output).unwrap();
 
-    assert!(json["results"][0]["readCommand"]
-        .as_str()
-        .unwrap()
-        .contains("--path"));
-    assert_eq!(json["results"][0]["readCommandArgv"][3], "read");
-    assert_eq!(json["results"][0]["readCommandArgv"][4], "src/main.rs");
-    assert_eq!(json["suggestedReads"][0], json["results"][0]["readCommand"]);
-    assert_eq!(
-        json["nextActions"][0]["command"],
-        json["results"][0]["readCommand"]
-    );
+    assert_eq!(json["results"][0]["sourceTarget"], "src/main.rs");
+    assert!(json["results"][0].get("readCommand").is_none());
+    assert!(json["results"][0].get("readCommandArgv").is_none());
+    assert_eq!(json["suggestedReads"][0], "src/main.rs");
+    assert_eq!(json["nextActions"][0]["kind"], "source_read");
+    assert_eq!(json["nextActions"][0]["target"], "src/main.rs");
     assert_eq!(json["truncated"], false);
     assert!(json["nextCursor"].is_null());
 }
@@ -2815,23 +2850,16 @@ fn small_file_read_suggestions_prefer_one_full_file_read() {
 
     assert_eq!(json["results"].as_array().unwrap().len(), 2);
     for result in json["results"].as_array().unwrap() {
-        assert_eq!(result["readCommandArgv"][4], "src/main.rs");
+        assert_eq!(result["sourceTarget"], "src/main.rs");
     }
     assert_eq!(json["suggestedReads"].as_array().unwrap().len(), 1);
     assert_eq!(json["nextActions"].as_array().unwrap().len(), 1);
-    assert_eq!(json["suggestedReads"][0], json["results"][0]["readCommand"]);
+    assert_eq!(json["suggestedReads"][0], "src/main.rs");
+    assert_eq!(json["nextActions"][0]["target"], "src/main.rs");
 
-    let argv = json["results"][0]["readCommandArgv"].as_array().unwrap();
-    let read_output = codetrail()
-        .args(argv.iter().skip(1).map(|value| value.as_str().unwrap()))
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let read_json: Value = serde_json::from_slice(&read_output).unwrap();
+    let source = fs::read_to_string(dir.path().join("src/main.rs")).unwrap();
     assert_eq!(
-        read_json["results"][0]["content"],
+        source,
         "fn first() {\n    println!(\"needle\");\n}\nfn second() {\n    println!(\"needle\");\n}\n"
     );
 }
@@ -2861,14 +2889,14 @@ fn large_file_read_suggestions_keep_precise_ranges() {
         .clone();
     let json: Value = serde_json::from_slice(&output).unwrap();
 
-    let read_target = json["results"][0]["readCommandArgv"][4].as_str().unwrap();
-    assert!(read_target.starts_with("large.txt:"));
-    assert_ne!(read_target, "large.txt");
+    let source_target = json["results"][0]["sourceTarget"].as_str().unwrap();
+    assert!(source_target.starts_with("large.txt:"));
+    assert_ne!(source_target, "large.txt");
     assert_eq!(json["suggestedReads"].as_array().unwrap().len(), 1);
 }
 
 #[test]
-fn read_commands_are_replayable_with_path_and_spaces() {
+fn source_targets_preserve_paths_with_spaces() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src dir")).unwrap();
     fs::write(
@@ -2888,30 +2916,13 @@ fn read_commands_are_replayable_with_path_and_spaces() {
         .clone();
     let json: Value = serde_json::from_slice(&output).unwrap();
 
-    let canonical_root = fs::canonicalize(dir.path()).unwrap();
-    let argv = json["results"][0]["readCommandArgv"].as_array().unwrap();
-    assert_eq!(argv[0], "codetrail");
-    assert_eq!(argv[1], "--path");
-    assert_eq!(argv[2], canonical_root.to_string_lossy().as_ref());
-    assert_eq!(argv[3], "read");
-    assert_eq!(argv[4], "src dir/a b.rs");
-
-    let read_output = codetrail()
-        .args(argv.iter().skip(1).map(|value| value.as_str().unwrap()))
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let read_json: Value = serde_json::from_slice(&read_output).unwrap();
-    assert_eq!(
-        read_json["results"][0]["content"],
-        "fn main() { /* needle */ }\n"
-    );
+    assert_eq!(json["results"][0]["sourceTarget"], "src dir/a b.rs");
+    let source = fs::read_to_string(dir.path().join("src dir/a b.rs")).unwrap();
+    assert_eq!(source, "fn main() { /* needle */ }\n");
 }
 
 #[test]
-fn read_command_argv_handles_paths_that_look_like_flags() {
+fn source_targets_preserve_paths_that_look_like_flags() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("--odd.txt"), "needle\n").unwrap();
 
@@ -2925,47 +2936,11 @@ fn read_command_argv_handles_paths_that_look_like_flags() {
         .stdout
         .clone();
     let json: Value = serde_json::from_slice(&output).unwrap();
-    let argv = json["results"][0]["readCommandArgv"].as_array().unwrap();
-    assert_eq!(argv[4], "--");
-    assert_eq!(argv[5], "--odd.txt");
-
-    let read_output = codetrail()
-        .args(argv.iter().skip(1).map(|value| value.as_str().unwrap()))
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let read_json: Value = serde_json::from_slice(&read_output).unwrap();
-    assert_eq!(read_json["results"][0]["content"], "needle\n");
-}
-
-#[test]
-fn directory_results_do_not_emit_read_next_actions() {
-    let dir = tempdir().unwrap();
-    fs::create_dir_all(dir.path().join("src")).unwrap();
-    fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
-
-    let output = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["list"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let json: Value = serde_json::from_slice(&output).unwrap();
-    let src = json["results"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|result| result["path"] == "src")
-        .unwrap();
-    assert_eq!(src["kind"], "directory");
-    assert!(src.get("readCommand").is_none());
-    assert!(json["suggestedReads"].as_array().unwrap().is_empty());
-    assert!(json["nextActions"].as_array().unwrap().is_empty());
+    assert_eq!(json["results"][0]["sourceTarget"], "--odd.txt");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("--odd.txt")).unwrap(),
+        "needle\n"
+    );
 }
 
 #[test]
@@ -2997,7 +2972,7 @@ fn deleted_changed_files_do_not_emit_read_next_actions() {
     let json: Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(json["results"][0]["path"], "gone.txt");
     assert_eq!(json["results"][0]["worktreeStatus"], "D");
-    assert!(json["results"][0].get("readCommand").is_none());
+    assert!(json["results"][0].get("sourceTarget").is_none());
     assert!(json["suggestedReads"].as_array().unwrap().is_empty());
     assert!(json["nextActions"].as_array().unwrap().is_empty());
 }
@@ -3017,7 +2992,7 @@ fn index_status_metadata_does_not_emit_read_next_actions() {
         .stdout
         .clone();
     let json: Value = serde_json::from_slice(&output).unwrap();
-    assert!(json["results"][0].get("readCommand").is_none());
+    assert!(json["results"][0].get("sourceTarget").is_none());
     assert!(json["suggestedReads"].as_array().unwrap().is_empty());
     assert!(json["nextActions"].as_array().unwrap().is_empty());
 }
@@ -3100,6 +3075,13 @@ fn index_status_reports_semantic_status_languages_and_missing_servers() {
     assert!(text.contains("java=1"));
     assert!(text.contains("SCIP index: not_generated (enabled: false, usable: false)"));
     assert!(text.contains("java: missing (scip-java; missing: scip-java)"));
+    assert!(text.contains("Install:"));
+    assert!(text.contains("scip-java_2.13"));
+    assert!(text.contains("$HOME/.local/bin/scip-java"));
+    assert!(!text.contains("-o scip-java "));
+    assert!(text.contains("Command: scip-java index"));
+    assert!(text.contains("Override: CODETRAIL_SCIP_JAVA"));
+    assert!(text.contains("Fallback: tree-sitter parser"));
 }
 
 #[test]
@@ -3160,6 +3142,201 @@ fn index_status_reports_ruby_scip_provider_missing() {
 }
 
 #[test]
+fn index_provider_install_dry_run_reports_user_level_commands() {
+    let dir = tempdir().unwrap();
+    let path_dir = tempdir().unwrap();
+    fs::write(dir.path().join("pom.xml"), "<project />\n").unwrap();
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--output")
+        .arg("json")
+        .env("PATH", path_dir.path())
+        .env_remove("CODETRAIL_SCIP_JAVA")
+        .args(["index-provider", "install", "java", "--dry-run"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let result = &json["results"][0];
+    assert_eq!(result["language"], "java");
+    assert_eq!(result["provider"], "scip-java");
+    assert_eq!(result["status"], "planned");
+    assert_eq!(result["dryRun"], true);
+    assert!(result["installCommands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|line| line
+            .as_str()
+            .unwrap()
+            .contains("$HOME/.local/bin/scip-java")));
+    assert!(result["installCommands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|line| line
+            .as_str()
+            .unwrap()
+            .contains("bootstrap --standalone -f -o")));
+    assert!(!result["installCommands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|line| line.as_str().unwrap().contains("-o scip-java ")));
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--output")
+        .arg("text")
+        .env("PATH", path_dir.path())
+        .env_remove("CODETRAIL_SCIP_JAVA")
+        .args(["index-provider", "install", "java", "--dry-run"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+    assert!(text.contains("java: scip-java (planned)"));
+    assert!(text.contains("$HOME/.local/bin/scip-java"));
+}
+
+#[cfg(unix)]
+#[test]
+fn index_provider_install_json_keeps_child_output_on_stderr() {
+    let dir = tempdir().unwrap();
+    let path_dir = tempdir().unwrap();
+    let bundle = path_dir.path().join("bundle");
+    fs::write(
+        &bundle,
+        "#!/bin/sh\necho child-stdout\necho child-stderr >&2\nexit 0\n",
+    )
+    .unwrap();
+    make_executable(&bundle);
+
+    let path_value = format!("{}:/bin:/usr/bin", path_dir.path().display());
+    let assert = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--output")
+        .arg("json")
+        .env("PATH", path_value)
+        .env_remove("CODETRAIL_SCIP_RUBY")
+        .args(["index-provider", "install", "ruby", "--force"])
+        .assert()
+        .failure();
+    let output = assert.get_output();
+    let stdout = String::from_utf8(output.stdout.clone()).unwrap();
+    assert!(!stdout.contains("child-stdout"));
+    assert!(!stdout.contains("child-stderr"));
+
+    let json: Value = serde_json::from_str(&stdout).unwrap();
+    let result = &json["results"][0];
+    assert_eq!(result["language"], "ruby");
+    assert_eq!(result["provider"], "scip-ruby");
+    assert_eq!(result["status"], "installed_not_on_path");
+    assert_eq!(result["steps"][0]["status"], "ok");
+
+    let stderr = String::from_utf8(output.stderr.clone()).unwrap();
+    assert!(stderr.contains("child-stdout"));
+    assert!(stderr.contains("child-stderr"));
+}
+
+#[test]
+fn skill_install_supports_project_scope_and_dry_run() {
+    let dir = tempdir().unwrap();
+    let project = tempdir().unwrap();
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--output")
+        .arg("json")
+        .args([
+            "skill",
+            "install",
+            "codex",
+            "--scope",
+            "project",
+            "--path",
+            project.path().to_str().unwrap(),
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let result = &json["results"][0];
+    assert_eq!(result["target"], "codex");
+    assert_eq!(result["scope"], "project");
+    assert_eq!(result["dryRun"], true);
+    assert_eq!(result["changed"], false);
+    assert_eq!(
+        project
+            .path()
+            .join(".codex/skills/codetrail/SKILL.md")
+            .exists(),
+        false
+    );
+
+    raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args([
+            "skill",
+            "install",
+            "codex",
+            "--scope",
+            "project",
+            "--path",
+            project.path().to_str().unwrap(),
+            "--force",
+        ])
+        .assert()
+        .success();
+    assert!(project
+        .path()
+        .join(".codex/skills/codetrail/SKILL.md")
+        .exists());
+    assert!(project
+        .path()
+        .join(".codex/agents/codetrail-evidence.toml")
+        .exists());
+}
+
+#[test]
+fn skill_install_requires_target_without_interactive_terminal() {
+    let dir = tempdir().unwrap();
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--output")
+        .arg("json")
+        .args(["skill", "install", "--dry-run"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let caveat = &json["caveats"][0];
+    let message = caveat["message"].as_str().unwrap();
+    assert_eq!(json["results"].as_array().unwrap().len(), 0);
+    assert_eq!(caveat["severity"], "error");
+    assert!(message.contains("skill target is required in non-interactive mode"));
+    assert!(message.contains("codex"));
+    assert!(message.contains("openai"));
+}
+
+#[test]
 fn error_envelopes_keep_stable_output_fields() {
     let dir = tempdir().unwrap();
 
@@ -3203,7 +3380,7 @@ fn jsonl_parse_errors_are_error_events() {
 }
 
 #[test]
-fn compact_json_omits_large_fields_but_keeps_read_command() {
+fn compact_json_omits_internal_source_target() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(
@@ -3233,6 +3410,7 @@ fn compact_json_omits_large_fields_but_keeps_read_command() {
     assert_eq!(json["results"][0]["path"], "src/main.rs");
     assert!(json["results"][0].get("readCommand").is_none());
     assert!(json["results"][0].get("readCommandArgv").is_none());
+    assert!(json["results"][0].get("sourceTarget").is_none());
     assert!(json.get("schemaVersion").is_none());
 }
 
@@ -3279,56 +3457,27 @@ fn cli_parse_errors_use_json_error_schema() {
 }
 
 #[test]
-fn dynamic_error_details_do_not_change_error_code() {
+fn removed_subcommands_share_cli_usage_error_code() {
     let dir = tempdir().unwrap();
 
-    let first = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["read", "missing-one.txt"])
-        .assert()
-        .failure()
-        .get_output()
-        .stdout
-        .clone();
-    let second = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["read", "missing-two.txt"])
-        .assert()
-        .failure()
-        .get_output()
-        .stdout
-        .clone();
-
-    let first_json: Value = serde_json::from_slice(&first).unwrap();
-    let second_json: Value = serde_json::from_slice(&second).unwrap();
-    assert_eq!(first_json["error"]["code"], "read_failed");
-    assert_eq!(first_json["error"]["code"], second_json["error"]["code"]);
-
-    let first = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["list", "missing-one"])
-        .assert()
-        .failure()
-        .get_output()
-        .stdout
-        .clone();
-    let second = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["list", "missing-two"])
-        .assert()
-        .failure()
-        .get_output()
-        .stdout
-        .clone();
-
-    let first_json: Value = serde_json::from_slice(&first).unwrap();
-    let second_json: Value = serde_json::from_slice(&second).unwrap();
-    assert_eq!(first_json["error"]["code"], "directory_does_not_exist");
-    assert_eq!(first_json["error"]["code"], second_json["error"]["code"]);
+    for args in [
+        &["read", "missing-one.txt"][..],
+        &["read", "missing-two.txt"][..],
+        &["list", "missing-one"][..],
+        &["tree", "missing-two"][..],
+    ] {
+        let output = codetrail()
+            .arg("--path")
+            .arg(dir.path())
+            .args(args)
+            .assert()
+            .failure()
+            .get_output()
+            .stdout
+            .clone();
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(json["error"]["code"], "cli_usage_error");
+    }
 }
 
 #[test]
@@ -3348,132 +3497,6 @@ fn dynamic_warning_details_do_not_change_warning_code() {
         .clone();
     let json: Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(json["warnings"][0]["code"], "partial_parse_syntax_errors");
-}
-
-#[test]
-fn read_returns_exact_line_range() {
-    let dir = tempdir().unwrap();
-    fs::write(dir.path().join("sample.txt"), "one\ntwo\nthree\n").unwrap();
-
-    let output = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["read", "sample.txt:2-3"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let json: Value = serde_json::from_slice(&output).unwrap();
-
-    assert_eq!(json["results"][0]["content"], "two\nthree");
-    assert_eq!(json["results"][0]["exact"], true);
-}
-
-#[test]
-fn read_rejects_invalid_ranges_with_structured_errors() {
-    let dir = tempdir().unwrap();
-    fs::write(dir.path().join("sample.txt"), "one\ntwo\nthree\n").unwrap();
-
-    for target in ["sample.txt:0", "sample.txt:3-2", "sample.txt:2-"] {
-        let output = codetrail()
-            .arg("--path")
-            .arg(dir.path())
-            .args(["read", target])
-            .assert()
-            .failure()
-            .get_output()
-            .stdout
-            .clone();
-        let json: Value = serde_json::from_slice(&output).unwrap();
-        assert_eq!(json["error"]["code"], "invalid_line_range");
-    }
-}
-
-#[test]
-fn read_blocks_paths_outside_workspace() {
-    let workspace = tempdir().unwrap();
-    let outside = tempdir().unwrap();
-    fs::write(outside.path().join("secret.txt"), "secret\n").unwrap();
-    let target = format!(
-        "../{}/secret.txt",
-        outside.path().file_name().unwrap().to_string_lossy()
-    );
-
-    let output = codetrail()
-        .arg("--path")
-        .arg(workspace.path())
-        .args(["read", &target])
-        .assert()
-        .failure()
-        .get_output()
-        .stdout
-        .clone();
-    let json: Value = serde_json::from_slice(&output).unwrap();
-    assert_eq!(json["error"]["code"], "path_escapes_workspace_root");
-}
-
-#[test]
-fn read_binary_file_returns_warning_without_content() {
-    let dir = tempdir().unwrap();
-    fs::write(dir.path().join("blob.bin"), b"abc\0def").unwrap();
-
-    let output = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["read", "blob.bin"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let json: Value = serde_json::from_slice(&output).unwrap();
-    assert_eq!(json["reliability"]["exact"], false);
-    assert_eq!(json["results"][0]["binary"], true);
-    assert_eq!(json["results"][0]["content"], "");
-    assert_eq!(json["results"][0]["exact"], false);
-    assert!(json["results"][0].get("readCommand").is_none());
-    assert!(json["nextActions"].as_array().unwrap().is_empty());
-    assert_eq!(json["warnings"][0]["code"], "binary_file_not_displayed");
-}
-
-#[test]
-fn read_large_file_truncates_full_read_but_allows_range() {
-    let dir = tempdir().unwrap();
-    let content = (0..7000)
-        .map(|idx| format!("line {idx}\n"))
-        .collect::<String>();
-    fs::write(dir.path().join("large.txt"), content).unwrap();
-
-    let output = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["read", "large.txt"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let json: Value = serde_json::from_slice(&output).unwrap();
-    assert_eq!(json["reliability"]["exact"], false);
-    assert_eq!(json["results"][0]["truncated"], true);
-    assert_eq!(json["results"][0]["exact"], false);
-    assert!(json["results"][0].get("readCommand").is_none());
-    assert!(json["nextActions"].as_array().unwrap().is_empty());
-    assert_eq!(json["warnings"][0]["code"], "large_file_truncated");
-
-    let output = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["read", "large.txt:6999-7000"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let json: Value = serde_json::from_slice(&output).unwrap();
-    assert_eq!(json["results"][0]["content"], "line 6998\nline 6999");
-    assert_eq!(json["results"][0]["truncated"], false);
 }
 
 #[test]
@@ -4578,12 +4601,9 @@ fn prebuilt_json_scip_index_drives_precise_defs_refs_and_symbols() {
     assert_eq!(defs_json["results"][0]["symbolName"], "needle");
     assert_eq!(defs_json["results"][0]["role"], "definition");
     assert_eq!(defs_json["results"][0]["range"]["start"]["line"], 1);
-    assert_eq!(defs_json["results"][0]["readCommandArgv"][4], "src/lib.rs");
-    let defs_read_json = replay_read_result(&defs_json["results"][0]);
-    assert!(defs_read_json["results"][0]["content"]
-        .as_str()
-        .unwrap()
-        .contains("fn needle()"));
+    assert_eq!(defs_json["results"][0]["sourceTarget"], "src/lib.rs");
+    let source = fs::read_to_string(dir.path().join("src/lib.rs")).unwrap();
+    assert!(source.contains("fn needle()"));
 
     let refs = codetrail()
         .arg("--path")
@@ -4600,12 +4620,8 @@ fn prebuilt_json_scip_index_drives_precise_defs_refs_and_symbols() {
     assert_eq!(refs_json["results"][0]["symbolName"], "needle");
     assert_eq!(refs_json["results"][0]["role"], "reference");
     assert_eq!(refs_json["results"][0]["range"]["start"]["line"], 2);
-    assert_eq!(refs_json["results"][0]["readCommandArgv"][4], "src/lib.rs");
-    let refs_read_json = replay_read_result(&refs_json["results"][0]);
-    assert!(refs_read_json["results"][0]["content"]
-        .as_str()
-        .unwrap()
-        .contains("needle();"));
+    assert_eq!(refs_json["results"][0]["sourceTarget"], "src/lib.rs");
+    assert!(source.contains("needle();"));
 
     let symbols = codetrail()
         .arg("--path")
@@ -4622,10 +4638,7 @@ fn prebuilt_json_scip_index_drives_precise_defs_refs_and_symbols() {
     assert_eq!(symbols_json["results"][0]["symbolName"], "needle");
     assert_eq!(symbols_json["results"][0]["role"], "definition");
     assert_eq!(symbols_json["results"][0]["range"]["start"]["line"], 1);
-    assert_eq!(
-        symbols_json["results"][0]["readCommandArgv"][4],
-        "src/lib.rs"
-    );
+    assert_eq!(symbols_json["results"][0]["sourceTarget"], "src/lib.rs");
 }
 
 #[test]
@@ -4661,7 +4674,7 @@ fn defs_falls_back_to_parser_after_plain_index_build_without_scip() {
         "precise_scip_index_unavailable"
     );
     assert_eq!(defs_json["results"][0]["range"]["start"]["line"], 1);
-    assert_eq!(defs_json["results"][0]["readCommandArgv"][4], "src/lib.rs");
+    assert_eq!(defs_json["results"][0]["sourceTarget"], "src/lib.rs");
 }
 
 #[test]
@@ -4701,14 +4714,12 @@ fn defs_falls_back_to_parser_for_java_classes() {
     );
     assert_eq!(defs_json["results"][0]["range"]["start"]["line"], 3);
     assert_eq!(
-        defs_json["results"][0]["readCommandArgv"][4],
+        defs_json["results"][0]["sourceTarget"],
         "src/main/java/example/SampleService.java"
     );
-    let read_json = replay_read_result(&defs_json["results"][0]);
-    assert!(read_json["results"][0]["content"]
-        .as_str()
-        .unwrap()
-        .contains("public class SampleService"));
+    let source =
+        fs::read_to_string(dir.path().join("src/main/java/example/SampleService.java")).unwrap();
+    assert!(source.contains("public class SampleService"));
     assert!(defs_json["warnings"]
         .as_array()
         .unwrap()
@@ -4756,7 +4767,7 @@ fn parser_defs_read_closure_covers_python_typescript_and_javascript() {
         assert_eq!(json["results"][0]["role"], "definition");
         assert_eq!(json["results"][0]["language"], language);
         assert_eq!(json["results"][0]["range"]["start"]["line"], line);
-        assert_eq!(json["results"][0]["readCommandArgv"][4], path);
+        assert_eq!(json["results"][0]["sourceTarget"], path);
     }
 }
 
@@ -5635,40 +5646,11 @@ fn mcp_stdio_find_matches_cli_core_json_and_read_flow() {
             "arguments": { "text": "needle" }
         }
     });
-    let first_output = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .arg("mcp")
-        .write_stdin(format!("{find_request}\n"))
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let first_stdout = String::from_utf8(first_output).unwrap();
-    let first_line: Value = serde_json::from_str(first_stdout.lines().next().unwrap()).unwrap();
-    let first_find: Value =
-        serde_json::from_str(first_line["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
-    let read_path = first_find["results"][0]["path"].as_str().unwrap();
-    let read_line = first_find["results"][0]["range"]["start"]["line"]
-        .as_u64()
-        .unwrap();
-    let read_target = format!("{read_path}:{read_line}");
-    let read_request = json!({
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "tools/call",
-        "params": {
-            "name": "codetrail_read",
-            "arguments": { "target": read_target }
-        }
-    });
-    let stdin = format!("{find_request}\n{read_request}\n");
     let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("mcp")
-        .write_stdin(stdin)
+        .write_stdin(format!("{find_request}\n"))
         .assert()
         .success()
         .get_output()
@@ -5693,14 +5675,7 @@ fn mcp_stdio_find_matches_cli_core_json_and_read_flow() {
         cli_json["results"][0]["range"]
     );
     assert!(mcp_find["results"][0].get("readCommandArgv").is_none());
-
-    let mcp_read: Value =
-        serde_json::from_str(lines[1]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
-    assert!(mcp_read.get("command").is_none());
-    assert!(mcp_read["results"][0]["content"]
-        .as_str()
-        .unwrap()
-        .contains("needle"));
+    assert!(mcp_find["results"][0].get("sourceTarget").is_none());
 }
 
 // ---------------------------------------------------------------------------

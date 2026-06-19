@@ -182,53 +182,6 @@ fn tool_definitions() -> Vec<ToolDef> {
             })),
         },
         ToolDef {
-            name: "codetrail_list".to_string(),
-            description:
-                "List directory contents in the workspace. Returns path facts with file/directory metadata."
-                    .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "dir": { "type": "string", "default": ".", "description": "Directory to list relative to the workspace root" },
-                    "recursive": { "type": "boolean", "default": false, "description": "List recursively" },
-                    "include": { "type": "array", "items": { "type": "string" }, "description": "Path substrings to include" },
-                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Path substrings to exclude" },
-                    "limit": { "type": "integer", "minimum": 0, "default": 100, "description": "Max results" }
-                },
-                "required": []
-            }),
-        },
-        ToolDef {
-            name: "codetrail_tree".to_string(),
-            description:
-                "Return a recursive tree view for a workspace directory."
-                    .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "dir": { "type": "string", "default": ".", "description": "Directory to traverse relative to the workspace root" },
-                    "depth": { "type": "integer", "minimum": 0, "maximum": 255, "description": "Maximum traversal depth" },
-                    "include": { "type": "array", "items": { "type": "string" }, "description": "Path substrings to include" },
-                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Path substrings to exclude" },
-                    "limit": { "type": "integer", "minimum": 0, "default": 100, "description": "Max results" }
-                },
-                "required": []
-            }),
-        },
-        ToolDef {
-            name: "codetrail_read".to_string(),
-            description:
-                "Read file contents. Pass `path` to read a whole small file in one call; use `path:1-10` for large files or focused verification. Returns content with metadata."
-                    .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "target": { "type": "string", "description": "File path, optionally with `:start-end`; omit the range for whole-file reads when the file is small" }
-                },
-                "required": ["target"]
-            }),
-        },
-        ToolDef {
             name: "codetrail_defs".to_string(),
             description:
                 "Find definitions of a given identifier. Prefers SCIP precise index; falls back to tree-sitter parser."
@@ -593,20 +546,6 @@ impl Server {
                 let mode = optional_pattern_mode_arg(args, SearchPatternMode::Glob)?;
                 self.service.files_with_mode("glob", pattern, mode, &opts)
             }
-            "codetrail_list" => {
-                let dir = optional_str(args, "dir");
-                let recursive = optional_bool(args, "recursive").unwrap_or(false);
-                self.service.list(dir, recursive, &opts)
-            }
-            "codetrail_tree" => {
-                let dir = optional_str(args, "dir");
-                let depth = optional_depth(args)?;
-                self.service.tree(dir, depth, &opts)
-            }
-            "codetrail_read" => {
-                let target = required_str(args, "target")?;
-                self.service.read_file(target)
-            }
             "codetrail_defs" => {
                 let identifier = required_str(args, "identifier")?;
                 self.service.defs(identifier, &opts)
@@ -688,32 +627,6 @@ fn optional_pattern_mode_arg(
         return Ok(default);
     };
     optional_pattern_mode(obj, &["mode"], default)
-}
-
-fn optional_bool(args: Option<&Value>, field: &str) -> Option<bool> {
-    args.and_then(Value::as_object)?
-        .get(field)
-        .and_then(Value::as_bool)
-}
-
-fn optional_depth(args: Option<&Value>) -> Result<Option<u8>> {
-    let Some(depth_value) = args
-        .and_then(Value::as_object)
-        .and_then(|obj| obj.get("depth"))
-    else {
-        return Ok(None);
-    };
-    let Some(depth) = depth_value.as_u64() else {
-        return Err(anyhow::anyhow!(
-            "invalid_mcp_argument: depth must be an integer between 0 and 255"
-        ));
-    };
-    if depth > u8::MAX as u64 {
-        return Err(anyhow::anyhow!(
-            "invalid_mcp_argument: depth must be between 0 and 255"
-        ));
-    }
-    Ok(Some(depth as u8))
 }
 
 /// Parse [`QueryOptions`] from the tool arguments JSON object.
@@ -964,12 +877,13 @@ mod tests {
                 let names: Vec<&str> = list.tools.iter().map(|t| t.name.as_str()).collect();
                 assert!(names.contains(&"codetrail_find"));
                 assert!(names.contains(&"codetrail_defs"));
-                assert!(names.contains(&"codetrail_list"));
-                assert!(names.contains(&"codetrail_tree"));
+                assert!(!names.contains(&"codetrail_list"));
+                assert!(!names.contains(&"codetrail_tree"));
+                assert!(!names.contains(&"codetrail_read"));
                 assert!(names.contains(&"codetrail_routes"));
                 assert!(names.contains(&"codetrail_status"));
                 // All core CLI-backed tools should be present.
-                assert_eq!(list.tools.len(), 15);
+                assert_eq!(list.tools.len(), 12);
             }
             _ => panic!("expected success response"),
         }
@@ -1163,94 +1077,6 @@ mod tests {
     }
 
     #[test]
-    fn tools_call_list_and_tree_reuse_cli_envelope_contract() {
-        let dir = tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("src/nested")).unwrap();
-        fs::write(dir.path().join("src/nested/lib.rs"), "fn helper() {}\n").unwrap();
-        fs::write(dir.path().join("src/nested/readme.txt"), "notes\n").unwrap();
-        let server = Server::new(dir.path()).unwrap();
-
-        let list = call_tool_json(
-            &server,
-            "codetrail_list",
-            json!({ "dir": "src", "recursive": false }),
-        );
-        assert!(list.get("ok").is_none());
-        assert!(list.get("command").is_none());
-        assert!(list["results"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|entry| entry["path"] == "src/nested" && entry["kind"] == "directory"));
-
-        let tree = call_tool_json(
-            &server,
-            "codetrail_tree",
-            json!({ "dir": "src", "depth": 2 }),
-        );
-        assert!(tree.get("ok").is_none());
-        assert!(tree.get("command").is_none());
-        assert!(tree["results"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|entry| entry["path"] == "src/nested/lib.rs"));
-    }
-
-    #[test]
-    fn tools_call_list_and_tree_support_scope_and_reject_bad_depth() {
-        let dir = tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("src")).unwrap();
-        fs::write(dir.path().join("src/lib.rs"), "fn helper() {}\n").unwrap();
-        fs::write(dir.path().join("src/app.rb"), "class App\nend\n").unwrap();
-        fs::write(dir.path().join("src/readme.txt"), "notes\n").unwrap();
-        let server = Server::new(dir.path()).unwrap();
-
-        let lang_result = call_tool_json(
-            &server,
-            "codetrail_list",
-            json!({ "dir": "src", "lang": ["ruby"] }),
-        );
-        let lang_entries = lang_result["results"].as_array().unwrap();
-        assert_eq!(lang_entries.len(), 1);
-        assert_eq!(lang_entries[0]["path"], "src/app.rb");
-
-        let ext_result = call_tool_json(
-            &server,
-            "codetrail_tree",
-            json!({ "dir": "src", "ext": ["rb"] }),
-        );
-        let ext_entries = ext_result["results"].as_array().unwrap();
-        assert!(ext_entries
-            .iter()
-            .any(|entry| entry["path"] == "src/app.rb"));
-        assert!(!ext_entries
-            .iter()
-            .any(|entry| entry["path"] == "src/readme.txt"));
-
-        let depth_result = call_tool(
-            &server,
-            "codetrail_tree",
-            json!({ "dir": "src", "depth": 256 }),
-        );
-        assert!(depth_result.is_error);
-        let depth_error: Value = serde_json::from_str(&depth_result.content[0].text).unwrap();
-        assert!(has_caveat(&depth_error, "invalid_mcp_argument"));
-
-        for invalid_depth in [json!(-1), json!(1.5)] {
-            let invalid_result = call_tool(
-                &server,
-                "codetrail_tree",
-                json!({ "dir": "src", "depth": invalid_depth }),
-            );
-            assert!(invalid_result.is_error);
-            let invalid_error: Value =
-                serde_json::from_str(&invalid_result.content[0].text).unwrap();
-            assert!(has_caveat(&invalid_error, "invalid_mcp_argument"));
-        }
-    }
-
-    #[test]
     fn tools_call_routes_scans_framework_routes() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("config")).unwrap();
@@ -1308,7 +1134,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_call_find_to_read_flow_returns_verifiable_source_range() {
+    fn tools_call_find_returns_verifiable_source_range() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("src")).unwrap();
         fs::write(
@@ -1326,18 +1152,8 @@ mod tests {
         assert!(found.get("ok").is_none());
         assert_eq!(found["results"][0]["path"], "src/main.rs");
         assert!(found["results"][0].get("readCommandArgv").is_none());
-        let path = found["results"][0]["path"].as_str().unwrap();
-        let line = found["results"][0]["range"]["start"]["line"]
-            .as_u64()
-            .unwrap();
-        let target = format!("{path}:{line}");
-
-        let read = call_tool_json(&server, "codetrail_read", json!({ "target": target }));
-        assert!(read.get("ok").is_none());
-        assert!(read["results"][0]["content"]
-            .as_str()
-            .unwrap()
-            .contains("needle"));
+        assert!(found["results"][0].get("sourceTarget").is_none());
+        assert_eq!(found["results"][0]["range"]["start"]["line"], 2);
     }
 
     #[test]

@@ -72,6 +72,7 @@ function doctorTarget(id, options = {}) {
 
 module.exports = {
   listTargets,
+  planTarget,
   installTarget,
   removeTarget,
   doctorTarget

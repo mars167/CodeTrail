@@ -34,7 +34,7 @@ fn init_git_repo(path: &std::path::Path) {
 }
 
 #[test]
-fn tree_dot_in_git_workspace_uses_one_canonical_path_form() {
+fn glob_in_git_workspace_uses_one_canonical_path_form() {
     let dir = tempdir().unwrap();
     init_git_repo(dir.path());
     fs::create_dir_all(dir.path().join("src")).unwrap();
@@ -43,7 +43,7 @@ fn tree_dot_in_git_workspace_uses_one_canonical_path_form() {
     let output = codetrail()
         .arg("--path")
         .arg(dir.path())
-        .args(["tree", "."])
+        .args(["glob", "**/*"])
         .assert()
         .success()
         .get_output()
@@ -57,6 +57,6 @@ fn tree_dot_in_git_workspace_uses_one_canonical_path_form() {
         .filter_map(|result| result["path"].as_str())
         .collect();
 
-    assert!(paths.contains(&"src"));
     assert!(paths.contains(&"src/main.rs"));
+    assert!(!paths.iter().any(|path| path.starts_with("./")));
 }

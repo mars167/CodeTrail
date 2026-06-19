@@ -95,20 +95,24 @@ pub fn requirement_for_language(language: &ProjectLanguage) -> ProviderRequireme
             install: InstallHelp {
                 macos: &[
                     "brew install coursier/formulas/coursier",
-                    "coursier bootstrap --standalone -o scip-java com.sourcegraph:scip-java_2.13:0.12.3 --main com.sourcegraph.scip_java.ScipJava",
+                    "mkdir -p \"$HOME/.local/bin\"",
+                    "coursier bootstrap --standalone -f -o \"$HOME/.local/bin/scip-java\" com.sourcegraph:scip-java_2.13:0.12.3 --main com.sourcegraph.scip_java.ScipJava",
                 ],
                 linux: &[
-                    "curl -fLo coursier https://git.io/coursier-cli",
-                    "chmod +x coursier",
-                    "./coursier bootstrap --standalone -o scip-java com.sourcegraph:scip-java_2.13:0.12.3 --main com.sourcegraph.scip_java.ScipJava",
+                    "mkdir -p \"$HOME/.local/bin\"",
+                    "curl -fLo /tmp/coursier https://git.io/coursier-cli",
+                    "chmod +x /tmp/coursier",
+                    "/tmp/coursier bootstrap --standalone -f -o \"$HOME/.local/bin/scip-java\" com.sourcegraph:scip-java_2.13:0.12.3 --main com.sourcegraph.scip_java.ScipJava",
                 ],
                 windows: &[
-                    "bitsadmin /transfer downloadCoursierCli https://git.io/coursier-cli \"%cd%\\coursier\"",
-                    "bitsadmin /transfer downloadCoursierBat https://git.io/coursier-bat \"%cd%\\coursier.bat\"",
-                    "coursier bootstrap --standalone -o scip-java com.sourcegraph:scip-java_2.13:0.12.3 --main com.sourcegraph.scip_java.ScipJava",
+                    "mkdir \"%USERPROFILE%\\.local\\bin\"",
+                    "bitsadmin /transfer downloadCoursierCli https://git.io/coursier-cli \"%TEMP%\\coursier\"",
+                    "bitsadmin /transfer downloadCoursierBat https://git.io/coursier-bat \"%TEMP%\\coursier.bat\"",
+                    "\"%TEMP%\\coursier.bat\" bootstrap --standalone -f -o \"%USERPROFILE%\\.local\\bin\\scip-java.bat\" com.sourcegraph:scip-java_2.13:0.12.3 --main com.sourcegraph.scip_java.ScipJava",
                 ],
                 notes: &[
                     "Set CODETRAIL_SCIP_JAVA to override the scip-java command.",
+                    "Ensure the target bin directory is on PATH before running codetrail index build.",
                     "scip-java supports Gradle, Maven, sbt, Bazel, and Mill workflows with different setup levels.",
                 ],
             },
@@ -171,6 +175,10 @@ pub fn requirement_for_language(language: &ProjectLanguage) -> ProviderRequireme
     }
 }
 
+pub fn requirement_for_language_name(language: &str) -> Option<ProviderRequirement> {
+    parse_project_language(language).map(|language| requirement_for_language(&language))
+}
+
 pub fn install_help_for_semantic_report(report: &SemanticBuildReport) -> Vec<ProviderInstallHelp> {
     let mut by_language = BTreeMap::<String, ProviderInstallHelp>::new();
     for language in &report.languages {
@@ -231,7 +239,7 @@ fn install_help_reason(language: &crate::lsp::scip_gen::SemanticLanguageReport) 
     })
 }
 
-fn current_platform_install(install: &InstallHelp) -> Option<&'static str> {
+pub fn current_platform_install_commands(install: &InstallHelp) -> &'static [&'static str] {
     #[cfg(target_os = "macos")]
     let commands = install.macos;
     #[cfg(target_os = "linux")]
@@ -241,7 +249,11 @@ fn current_platform_install(install: &InstallHelp) -> Option<&'static str> {
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     let commands = install.macos;
 
-    commands.first().copied()
+    commands
+}
+
+fn current_platform_install(install: &InstallHelp) -> Option<&'static str> {
+    current_platform_install_commands(install).first().copied()
 }
 
 fn parse_project_language(language: &str) -> Option<ProjectLanguage> {
@@ -336,6 +348,16 @@ mod tests {
             .macos
             .iter()
             .any(|line| line.contains("scip-java_2.13")));
+        assert!(requirement
+            .install
+            .macos
+            .iter()
+            .any(|line| line.contains("$HOME/.local/bin/scip-java")));
+        assert!(!requirement
+            .install
+            .macos
+            .iter()
+            .any(|line| line.contains("-o scip-java ")));
     }
 
     #[test]

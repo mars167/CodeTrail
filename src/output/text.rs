@@ -143,7 +143,7 @@ fn render_text_result(result: &Value, out: &mut dyn Write) -> io::Result<()> {
                 .get("kind")
                 .and_then(Value::as_str)
                 .unwrap_or("symbol");
-            writeln!(out, "{kind:<12}{name}")?;
+            writeln!(out, "{kind:<12} {name}")?;
             writeln!(out, "  {location}")?;
             return Ok(());
         }
