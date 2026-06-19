@@ -78,6 +78,24 @@ pub struct ScipOccurrence {
     pub producer: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct ConfigFactRow {
+    pub snapshot_id: String,
+    pub file_path: String,
+    pub fact_kind: String,
+    pub key_path: Option<String>,
+    pub name: Option<String>,
+    pub value_preview: Option<String>,
+    pub preview_masked: bool,
+    pub producer: String,
+    pub reliability: String,
+    pub range_start_line: u32,
+    pub range_start_col: u32,
+    pub range_end_line: u32,
+    pub range_end_col: u32,
+    pub file_hash: String,
+}
+
 pub fn lancedb_root(workspace_root: &Path) -> PathBuf {
     workspace_root.join(".codetrail").join("index.lance")
 }
@@ -193,7 +211,14 @@ impl LanceDbStore {
 
     pub fn delete_snapshot_rows(&self, snapshot_id: &str) -> Result<()> {
         let filter = format!("snapshot_id = '{}'", escape_filter(snapshot_id));
-        for table_name in ["snapshots", "file_catalog", "file_proofs", "gram_postings"] {
+        for table_name in [
+            "snapshots",
+            "file_catalog",
+            "file_proofs",
+            "gram_postings",
+            "config_facts",
+            "config_dependency_edges",
+        ] {
             let table = block_on(self.db.open_table(table_name).execute())
                 .with_context(|| format!("failed to open {table_name} table"))?;
             block_on(table.delete(&filter))
@@ -499,6 +524,107 @@ impl LanceDbStore {
         Ok(())
     }
 
+    pub fn write_config_facts(
+        &self,
+        snapshot_id: &str,
+        facts: &[crate::config_facts::ConfigFact],
+        file_hashes: &BTreeMap<String, String>,
+    ) -> Result<()> {
+        if facts.is_empty() {
+            return Ok(());
+        }
+
+        use arrow::array::{BooleanArray, StringArray, UInt32Array, UInt64Array};
+        use arrow::record_batch::RecordBatch;
+
+        let n = facts.len();
+        let mut snapshot_ids = Vec::with_capacity(n);
+        let mut file_paths = Vec::with_capacity(n);
+        let mut fact_kinds = Vec::with_capacity(n);
+        let mut key_paths = Vec::with_capacity(n);
+        let mut names = Vec::with_capacity(n);
+        let mut value_previews = Vec::with_capacity(n);
+        let mut preview_masked = Vec::with_capacity(n);
+        let mut producers = Vec::with_capacity(n);
+        let mut reliabilities = Vec::with_capacity(n);
+        let mut affected_root_ids = Vec::with_capacity(n);
+        let mut dependency_edge_kinds = Vec::with_capacity(n);
+        let mut dependency_edge_refs = Vec::with_capacity(n);
+        let mut caveats = Vec::with_capacity(n);
+        let mut range_start_lines = Vec::with_capacity(n);
+        let mut range_start_cols = Vec::with_capacity(n);
+        let mut range_end_lines = Vec::with_capacity(n);
+        let mut range_end_cols = Vec::with_capacity(n);
+        let mut file_hash_values = Vec::with_capacity(n);
+        let mut cached_at = Vec::with_capacity(n);
+        let now = now_ms();
+
+        for fact in facts {
+            snapshot_ids.push(snapshot_id.to_string());
+            file_paths.push(fact.path.clone());
+            fact_kinds.push(enum_name(&fact.fact_kind)?);
+            key_paths.push(fact.key_path.clone());
+            names.push(fact.name.clone());
+            value_previews.push(fact.value_preview.clone());
+            preview_masked.push(fact.preview_masked);
+            producers.push(fact.producer.clone());
+            reliabilities.push(enum_name(&fact.reliability)?);
+            affected_root_ids.push(serde_json::to_string(&fact.affected_root_ids)?);
+            dependency_edge_kinds.push(
+                fact.dependency_edge_kind
+                    .as_ref()
+                    .map(enum_name)
+                    .transpose()?,
+            );
+            dependency_edge_refs.push(serde_json::to_string(&fact.dependency_edge_refs)?);
+            caveats.push(serde_json::to_string(&fact.caveats)?);
+            range_start_lines.push(fact.range.start_line);
+            range_start_cols.push(fact.range.start_column);
+            range_end_lines.push(fact.range.end_line);
+            range_end_cols.push(fact.range.end_column);
+            file_hash_values.push(
+                file_hashes
+                    .get(&fact.path)
+                    .cloned()
+                    .unwrap_or_else(|| "blake3:missing_proof".to_string()),
+            );
+            cached_at.push(now as u64);
+        }
+
+        let schema = config_facts_schema();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                std::sync::Arc::new(StringArray::from(snapshot_ids)),
+                std::sync::Arc::new(StringArray::from(file_paths)),
+                std::sync::Arc::new(StringArray::from(fact_kinds)),
+                std::sync::Arc::new(StringArray::from(key_paths)),
+                std::sync::Arc::new(StringArray::from(names)),
+                std::sync::Arc::new(StringArray::from(value_previews)),
+                std::sync::Arc::new(BooleanArray::from(preview_masked)),
+                std::sync::Arc::new(StringArray::from(producers)),
+                std::sync::Arc::new(StringArray::from(reliabilities)),
+                std::sync::Arc::new(StringArray::from(affected_root_ids)),
+                std::sync::Arc::new(StringArray::from(dependency_edge_kinds)),
+                std::sync::Arc::new(StringArray::from(dependency_edge_refs)),
+                std::sync::Arc::new(StringArray::from(caveats)),
+                std::sync::Arc::new(UInt32Array::from(range_start_lines)),
+                std::sync::Arc::new(UInt32Array::from(range_start_cols)),
+                std::sync::Arc::new(UInt32Array::from(range_end_lines)),
+                std::sync::Arc::new(UInt32Array::from(range_end_cols)),
+                std::sync::Arc::new(StringArray::from(file_hash_values)),
+                std::sync::Arc::new(UInt64Array::from(cached_at)),
+            ],
+        )
+        .context("failed to create config_facts RecordBatch")?;
+
+        let batches = single_batch_reader(batch, schema);
+        let table = block_on(self.db.open_table("config_facts").execute())
+            .context("failed to open config_facts table")?;
+        block_on(table.add(batches).execute()).context("failed to add config_facts rows")?;
+        Ok(())
+    }
+
     pub fn read_scip_occurrences(&self, snapshot_id: &str) -> Result<Vec<ScipOccurrence>> {
         let table = block_on(self.db.open_table("scip_occurrences").execute())
             .with_context(|| "failed to open scip_occurrences table")?;
@@ -588,6 +714,52 @@ impl LanceDbStore {
                         producer: prod.value(i).to_string(),
                     });
                 }
+            }
+        }
+        Ok(rows)
+    }
+
+    pub fn read_config_facts(&self, snapshot_id: &str) -> Result<Vec<ConfigFactRow>> {
+        let table = block_on(self.db.open_table("config_facts").execute())
+            .with_context(|| "failed to open config_facts table")?;
+        let filter = format!("snapshot_id = \'{}\'", escape_filter(snapshot_id));
+        let mut stream = block_on(table.query().only_if(&filter).limit(READ_LIMIT).execute())
+            .with_context(|| "failed to query config_facts")?;
+        let mut rows = Vec::new();
+        while let Some(batch_result) = block_on(stream.next()) {
+            let batch = batch_result.with_context(|| "failed to read config_facts batch")?;
+            let col_sid = column_as::<arrow::array::StringArray>(&batch, "snapshot_id")?;
+            let col_fp = column_as::<arrow::array::StringArray>(&batch, "file_path")?;
+            let col_kind = column_as::<arrow::array::StringArray>(&batch, "fact_kind")?;
+            let col_key = column_as::<arrow::array::StringArray>(&batch, "key_path")?;
+            let col_name = column_as::<arrow::array::StringArray>(&batch, "name")?;
+            let col_value = column_as::<arrow::array::StringArray>(&batch, "value_preview")?;
+            let col_masked = column_as::<arrow::array::BooleanArray>(&batch, "preview_masked")?;
+            let col_producer = column_as::<arrow::array::StringArray>(&batch, "producer")?;
+            let col_reliability = column_as::<arrow::array::StringArray>(&batch, "reliability")?;
+            let col_rsl = column_as::<arrow::array::UInt32Array>(&batch, "range_start_line")?;
+            let col_rsc = column_as::<arrow::array::UInt32Array>(&batch, "range_start_col")?;
+            let col_rel = column_as::<arrow::array::UInt32Array>(&batch, "range_end_line")?;
+            let col_rec = column_as::<arrow::array::UInt32Array>(&batch, "range_end_col")?;
+            let col_fh = column_as::<arrow::array::StringArray>(&batch, "file_hash")?;
+
+            for i in 0..batch.num_rows() {
+                rows.push(ConfigFactRow {
+                    snapshot_id: col_sid.value(i).to_string(),
+                    file_path: col_fp.value(i).to_string(),
+                    fact_kind: col_kind.value(i).to_string(),
+                    key_path: optional_string(col_key, i),
+                    name: optional_string(col_name, i),
+                    value_preview: optional_string(col_value, i),
+                    preview_masked: col_masked.value(i),
+                    producer: col_producer.value(i).to_string(),
+                    reliability: col_reliability.value(i).to_string(),
+                    range_start_line: col_rsl.value(i),
+                    range_start_col: col_rsc.value(i),
+                    range_end_line: col_rel.value(i),
+                    range_end_col: col_rec.value(i),
+                    file_hash: col_fh.value(i).to_string(),
+                });
             }
         }
         Ok(rows)
@@ -877,6 +1049,29 @@ fn decode_gram_hex(value: &str) -> Option<[u8; 3]> {
 fn line_offsets_json(path: &Path) -> Result<String> {
     let content = std::fs::read(path)?;
     Ok(crate::workspace::line_offsets_json_for_content(&content))
+}
+
+fn enum_name<T: serde::Serialize>(value: &T) -> Result<String> {
+    let value = serde_json::to_value(value)?;
+    value
+        .as_str()
+        .map(ToString::to_string)
+        .ok_or_else(|| anyhow!("expected enum to serialize as string"))
+}
+
+fn optional_string(array: &arrow::array::StringArray, row: usize) -> Option<String> {
+    if array.is_null(row) {
+        None
+    } else {
+        Some(array.value(row).to_string())
+    }
+}
+
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
 }
 
 fn snapshots_schema() -> SchemaRef {

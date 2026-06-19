@@ -12,8 +12,8 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use crate::{
-    graph, output,
-    query_input::{compatible_input_needs_expansion, InputMode, InputPlan},
+    config_index, graph, output,
+    query_input::{InputMode, InputPlan},
     routes, scip_index, search,
     search_pattern::SearchPatternMode,
     syntax,
@@ -297,10 +297,35 @@ impl QueryService {
         let scan = opts.to_scan_options();
 
         // 1. Try SCIP precise index first.
-        if let Some(precise) = scip_index::defs(&self.workspace, &scan, identifier)? {
-            if has_results(&precise.results)
-                || !compatible_input_needs_expansion(identifier, scan.input_mode)
-            {
+        let precise_empty = if let Some(precise) =
+            scip_index::defs(&self.workspace, &scan, identifier)?
+        {
+            if has_results(&precise.results) {
+                return Ok(self.finalize(output::response_with_index(
+                    "defs",
+                    "defs",
+                    scoped_query(
+                        json!({ "identifier": identifier, "producer": "scip" }),
+                        &scan,
+                    ),
+                    &self.workspace.snapshot_id,
+                    output::precise_fact(),
+                    output::IndexedResponseParts::new(precise.index, precise.results, Vec::new()),
+                )));
+            }
+            Some(precise)
+        } else {
+            None
+        };
+
+        // 2. Fall back to tree-sitter parser.
+        let (mut results, warnings) = syntax::defs(&self.workspace, &scan, identifier)?;
+        let parser_had_results = has_results(&results);
+        if let Some(config) = config_index::defs(&self.workspace, &scan, identifier)? {
+            append_results(&mut results, config.results);
+        }
+        if !has_results(&results) {
+            if let Some(precise) = precise_empty {
                 return Ok(self.finalize(output::response_with_index(
                     "defs",
                     "defs",
@@ -314,9 +339,6 @@ impl QueryService {
                 )));
             }
         }
-
-        // 2. Fall back to tree-sitter parser.
-        let (results, warnings) = syntax::defs(&self.workspace, &scan, identifier)?;
         Ok(self.finalize(output::response(
             "defs",
             "defs",
@@ -325,7 +347,7 @@ impl QueryService {
                 &scan,
             ),
             &self.workspace.snapshot_id,
-            output::parser_fact(),
+            parser_reliability(parser_had_results, &results),
             results,
             merge_warnings(
                 warnings,
@@ -342,10 +364,10 @@ impl QueryService {
         let scan = opts.to_scan_options();
 
         // 1. Try SCIP precise index first.
-        if let Some(precise) = scip_index::refs(&self.workspace, &scan, identifier)? {
-            if has_results(&precise.results)
-                || !compatible_input_needs_expansion(identifier, scan.input_mode)
-            {
+        let precise_empty = if let Some(precise) =
+            scip_index::refs(&self.workspace, &scan, identifier)?
+        {
+            if has_results(&precise.results) {
                 return Ok(self.finalize(output::response_with_index(
                     "refs",
                     "refs",
@@ -358,7 +380,10 @@ impl QueryService {
                     output::IndexedResponseParts::new(precise.index, precise.results, Vec::new()),
                 )));
             }
-        }
+            Some(precise)
+        } else {
+            None
+        };
 
         // 2. Fall back to identifier-boundary text search.
         let mut qo = search::find(
@@ -376,6 +401,26 @@ impl QueryService {
             identifier,
             &definition_ranges,
         );
+        let source_had_results = has_results(&qo.results);
+        if let Some(config) = config_index::refs(&self.workspace, &scan, identifier)? {
+            append_results(&mut qo.results, config.results);
+            append_config_index(&mut qo.index, config.index);
+        }
+        if !has_results(&qo.results) {
+            if let Some(precise) = precise_empty {
+                return Ok(self.finalize(output::response_with_index(
+                    "refs",
+                    "refs",
+                    scoped_query(
+                        json!({ "identifier": identifier, "producer": "scip" }),
+                        &scan,
+                    ),
+                    &self.workspace.snapshot_id,
+                    output::precise_fact(),
+                    output::IndexedResponseParts::new(precise.index, precise.results, Vec::new()),
+                )));
+            }
+        }
         let response = output::response_with_index(
             "refs",
             "refs",
@@ -384,7 +429,7 @@ impl QueryService {
                 &scan,
             ),
             &self.workspace.snapshot_id,
-            output::source_fact(),
+            source_reliability(source_had_results, &qo.results),
             output::IndexedResponseParts::new(
                 qo.index.clone(),
                 qo.results.clone(),
@@ -400,40 +445,59 @@ impl QueryService {
         let scan = opts.to_scan_options();
 
         // 1. Try SCIP precise index first.
-        if let Some(precise) = scip_index::symbols(&self.workspace, &scan, query)? {
-            if has_results(&precise.results)
-                || !compatible_input_needs_expansion(query, scan.input_mode)
-            {
-                let page = search::page_results(
-                    precise.results,
-                    &scan,
-                    "symbols",
-                    json!({ "query": query, "producer": "scip" }),
-                    &self.workspace.snapshot_id,
-                )?;
-                let response = output::response_with_index(
+        let precise_empty =
+            if let Some(precise) = scip_index::symbols(&self.workspace, &scan, query)? {
+                if has_results(&precise.results) {
+                    let page = search::page_results(
+                        precise.results,
+                        &scan,
+                        "symbols",
+                        json!({ "query": query, "producer": "scip" }),
+                        &self.workspace.snapshot_id,
+                    )?;
+                    let response = output::response_with_index(
+                        "symbols",
+                        "symbols",
+                        scoped_query(json!({ "query": query, "producer": "scip" }), &scan),
+                        &self.workspace.snapshot_id,
+                        output::precise_fact(),
+                        output::IndexedResponseParts::new(
+                            precise.index,
+                            page.results.clone(),
+                            Vec::new(),
+                        ),
+                    );
+                    return Ok(self.finalize(output::with_page_meta(
+                        response,
+                        page.truncated,
+                        page.next_cursor,
+                        page.facets,
+                    )));
+                }
+                Some(precise)
+            } else {
+                None
+            };
+
+        // 2. Fall back to tree-sitter.
+        let (mut results, warnings) = syntax::symbols(&self.workspace, &scan, query)?;
+        let parser_had_results = has_results(&results);
+        if let Some(config) = config_index::symbols(&self.workspace, &scan, query)? {
+            append_results(&mut results, config.results);
+        }
+        let fallback_had_results = has_results(&results);
+        if !fallback_had_results {
+            if let Some(precise) = precise_empty {
+                return Ok(self.finalize(output::response_with_index(
                     "symbols",
                     "symbols",
                     scoped_query(json!({ "query": query, "producer": "scip" }), &scan),
                     &self.workspace.snapshot_id,
                     output::precise_fact(),
-                    output::IndexedResponseParts::new(
-                        precise.index,
-                        page.results.clone(),
-                        Vec::new(),
-                    ),
-                );
-                return Ok(self.finalize(output::with_page_meta(
-                    response,
-                    page.truncated,
-                    page.next_cursor,
-                    page.facets,
+                    output::IndexedResponseParts::new(precise.index, precise.results, Vec::new()),
                 )));
             }
         }
-
-        // 2. Fall back to tree-sitter.
-        let (results, warnings) = syntax::symbols(&self.workspace, &scan, query)?;
         let page = search::page_results(
             results,
             &scan,
@@ -449,7 +513,7 @@ impl QueryService {
                 &scan,
             ),
             &self.workspace.snapshot_id,
-            output::parser_fact(),
+            parser_reliability(parser_had_results, &page.results),
             page.results.clone(),
             merge_warnings(
                 warnings,
@@ -658,6 +722,37 @@ fn page_response(value: Value, page: search::QueryOutput) -> Value {
 
 fn has_results(value: &Value) -> bool {
     value.as_array().is_some_and(|results| !results.is_empty())
+}
+
+fn append_results(target: &mut Value, extra: Value) {
+    let Some(target_items) = target.as_array_mut() else {
+        return;
+    };
+    if let Value::Array(mut extra_items) = extra {
+        target_items.append(&mut extra_items);
+    }
+}
+
+fn append_config_index(target: &mut Value, config_index: Value) {
+    if let Some(object) = target.as_object_mut() {
+        object.insert("configFacts".to_string(), config_index);
+    }
+}
+
+fn parser_reliability(parser_had_results: bool, results: &Value) -> output::Reliability {
+    if !parser_had_results && has_results(results) {
+        output::config_fact()
+    } else {
+        output::parser_fact()
+    }
+}
+
+fn source_reliability(source_had_results: bool, results: &Value) -> output::Reliability {
+    if !source_had_results && has_results(results) {
+        output::config_fact()
+    } else {
+        output::source_fact()
+    }
 }
 
 fn path_mode_label(command: &str, mode: SearchPatternMode) -> &'static str {

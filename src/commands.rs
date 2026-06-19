@@ -7,10 +7,10 @@ use crate::{
         Cli, Command, HooksCommand, IndexCommand, IndexProviderCommand, OutputFormat, QueryCommand,
         SkillCommand,
     },
-    completions, graph, index,
+    completions, config_index, graph, index,
     install::{IndexProviderInstallOptions, SkillInstallOptions},
     output,
-    query_input::{compatible_input_needs_expansion, InputPlan},
+    query_input::InputPlan,
     routes, saved_query, scip_index, search,
     search_pattern::SearchPatternMode,
     syntax,
@@ -237,10 +237,56 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             )
         }
         Command::Refs { identifier } => {
-            if let Some(precise) = scip_index::refs(&workspace, &scan_opts, identifier)? {
-                if has_results(&precise.results)
-                    || !compatible_input_needs_expansion(identifier, scan_opts.input_mode)
-                {
+            let precise_empty =
+                if let Some(precise) = scip_index::refs(&workspace, &scan_opts, identifier)? {
+                    if has_results(&precise.results) {
+                        return emit_response(
+                            &cli.output,
+                            output::response_with_index(
+                                "refs",
+                                "refs",
+                                scoped_query(
+                                    json!({ "identifier": identifier, "producer": "scip" }),
+                                    &scan_opts,
+                                ),
+                                &workspace.snapshot_id,
+                                output::precise_fact(),
+                                output::IndexedResponseParts::new(
+                                    precise.index,
+                                    precise.results,
+                                    scope_warnings.clone(),
+                                ),
+                            ),
+                            &workspace,
+                            cli.save_query.as_deref(),
+                        );
+                    }
+                    Some(precise)
+                } else {
+                    None
+                };
+            let mut query_output = search::find(
+                &workspace,
+                &scan_opts,
+                identifier,
+                SearchPatternMode::Literal,
+                cli.context,
+                true,
+            )?;
+            let definition_ranges =
+                syntax::definition_ranges(&workspace, &scan_opts, identifier).unwrap_or_default();
+            query_output.results = search::annotate_identifier_refs_with_definitions(
+                query_output.results,
+                identifier,
+                &definition_ranges,
+            );
+            let source_had_results = has_results(&query_output.results);
+            if let Some(config) = config_index::refs(&workspace, &scan_opts, identifier)? {
+                append_results(&mut query_output.results, config.results);
+                append_config_index(&mut query_output.index, config.index);
+            }
+            if !has_results(&query_output.results) {
+                if let Some(precise) = precise_empty {
                     return emit_response(
                         &cli.output,
                         output::response_with_index(
@@ -263,28 +309,13 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                     );
                 }
             }
-            let mut query_output = search::find(
-                &workspace,
-                &scan_opts,
-                identifier,
-                SearchPatternMode::Literal,
-                cli.context,
-                true,
-            )?;
-            let definition_ranges =
-                syntax::definition_ranges(&workspace, &scan_opts, identifier).unwrap_or_default();
-            query_output.results = search::annotate_identifier_refs_with_definitions(
-                query_output.results,
-                identifier,
-                &definition_ranges,
-            );
             exit_code = output::no_match_exit(&query_output.results);
             page_response(output::response_with_index(
                 "refs",
                 "refs",
                 scoped_query(json!({ "identifier": identifier, "mode": "identifier_boundary_text_search" }), &scan_opts),
                 &workspace.snapshot_id,
-                output::source_fact(),
+                source_reliability(source_had_results, &query_output.results),
                 output::IndexedResponseParts::new(
                     query_output.index.clone(),
                     query_output.results.clone(),
@@ -296,45 +327,73 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             ), query_output)
         }
         Command::Symbols { query } => {
-            if let Some(precise) = scip_index::symbols(&workspace, &scan_opts, query)? {
-                if has_results(&precise.results)
-                    || !compatible_input_needs_expansion(query, scan_opts.input_mode)
-                {
-                    let page = search::page_results(
-                        precise.results,
-                        &scan_opts,
-                        "symbols",
-                        json!({ "query": query, "producer": "scip" }),
-                        &workspace.snapshot_id,
-                    )?;
+            let precise_empty =
+                if let Some(precise) = scip_index::symbols(&workspace, &scan_opts, query)? {
+                    if has_results(&precise.results) {
+                        let page = search::page_results(
+                            precise.results,
+                            &scan_opts,
+                            "symbols",
+                            json!({ "query": query, "producer": "scip" }),
+                            &workspace.snapshot_id,
+                        )?;
+                        return emit_response(
+                            &cli.output,
+                            output::with_page_meta(
+                                output::response_with_index(
+                                    "symbols",
+                                    "symbols",
+                                    scoped_query(
+                                        json!({ "query": query, "producer": "scip" }),
+                                        &scan_opts,
+                                    ),
+                                    &workspace.snapshot_id,
+                                    output::precise_fact(),
+                                    output::IndexedResponseParts::new(
+                                        precise.index,
+                                        page.results.clone(),
+                                        scope_warnings.clone(),
+                                    ),
+                                ),
+                                page.truncated,
+                                page.next_cursor,
+                                page.facets,
+                            ),
+                            &workspace,
+                            cli.save_query.as_deref(),
+                        );
+                    }
+                    Some(precise)
+                } else {
+                    None
+                };
+            let (mut results, warnings) = syntax::symbols(&workspace, &scan_opts, query)?;
+            let parser_had_results = has_results(&results);
+            if let Some(config) = config_index::symbols(&workspace, &scan_opts, query)? {
+                append_results(&mut results, config.results);
+            }
+            let fallback_had_results = has_results(&results);
+            if !fallback_had_results {
+                if let Some(precise) = precise_empty {
                     return emit_response(
                         &cli.output,
-                        output::with_page_meta(
-                            output::response_with_index(
-                                "symbols",
-                                "symbols",
-                                scoped_query(
-                                    json!({ "query": query, "producer": "scip" }),
-                                    &scan_opts,
-                                ),
-                                &workspace.snapshot_id,
-                                output::precise_fact(),
-                                output::IndexedResponseParts::new(
-                                    precise.index,
-                                    page.results.clone(),
-                                    scope_warnings.clone(),
-                                ),
+                        output::response_with_index(
+                            "symbols",
+                            "symbols",
+                            scoped_query(json!({ "query": query, "producer": "scip" }), &scan_opts),
+                            &workspace.snapshot_id,
+                            output::precise_fact(),
+                            output::IndexedResponseParts::new(
+                                precise.index,
+                                precise.results,
+                                scope_warnings.clone(),
                             ),
-                            page.truncated,
-                            page.next_cursor,
-                            page.facets,
                         ),
                         &workspace,
                         cli.save_query.as_deref(),
                     );
                 }
             }
-            let (results, warnings) = syntax::symbols(&workspace, &scan_opts, query)?;
             let page = search::page_results(
                 results,
                 &scan_opts,
@@ -352,7 +411,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                         &scan_opts,
                     ),
                     &workspace.snapshot_id,
-                    output::parser_fact(),
+                    result_reliability(parser_had_results, &page.results),
                     page.results.clone(),
                     merge_warnings(
                         warnings,
@@ -371,10 +430,41 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             )
         }
         Command::Defs { identifier } => {
-            if let Some(precise) = scip_index::defs(&workspace, &scan_opts, identifier)? {
-                if has_results(&precise.results)
-                    || !compatible_input_needs_expansion(identifier, scan_opts.input_mode)
-                {
+            let precise_empty =
+                if let Some(precise) = scip_index::defs(&workspace, &scan_opts, identifier)? {
+                    if has_results(&precise.results) {
+                        return emit_response(
+                            &cli.output,
+                            output::response_with_index(
+                                "defs",
+                                "defs",
+                                scoped_query(
+                                    json!({ "identifier": identifier, "producer": "scip" }),
+                                    &scan_opts,
+                                ),
+                                &workspace.snapshot_id,
+                                output::precise_fact(),
+                                output::IndexedResponseParts::new(
+                                    precise.index,
+                                    precise.results,
+                                    scope_warnings.clone(),
+                                ),
+                            ),
+                            &workspace,
+                            cli.save_query.as_deref(),
+                        );
+                    }
+                    Some(precise)
+                } else {
+                    None
+                };
+            let (mut results, warnings) = syntax::defs(&workspace, &scan_opts, identifier)?;
+            let parser_had_results = has_results(&results);
+            if let Some(config) = config_index::defs(&workspace, &scan_opts, identifier)? {
+                append_results(&mut results, config.results);
+            }
+            if !has_results(&results) {
+                if let Some(precise) = precise_empty {
                     return emit_response(
                         &cli.output,
                         output::response_with_index(
@@ -397,7 +487,6 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                     );
                 }
             }
-            let (results, warnings) = syntax::defs(&workspace, &scan_opts, identifier)?;
             exit_code = output::no_match_exit(&results);
             output::response(
                 "defs",
@@ -407,7 +496,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                     &scan_opts,
                 ),
                 &workspace.snapshot_id,
-                output::parser_fact(),
+                result_reliability(parser_had_results, &results),
                 results,
                 merge_warnings(
                     warnings,
@@ -1095,6 +1184,37 @@ fn page_response(value: Value, page: search::QueryOutput) -> Value {
 
 fn has_results(value: &Value) -> bool {
     value.as_array().is_some_and(|results| !results.is_empty())
+}
+
+fn append_results(target: &mut Value, extra: Value) {
+    let Some(target_items) = target.as_array_mut() else {
+        return;
+    };
+    if let Value::Array(mut extra_items) = extra {
+        target_items.append(&mut extra_items);
+    }
+}
+
+fn append_config_index(target: &mut Value, config_index: Value) {
+    if let Some(object) = target.as_object_mut() {
+        object.insert("configFacts".to_string(), config_index);
+    }
+}
+
+fn result_reliability(parser_had_results: bool, results: &Value) -> output::Reliability {
+    if !parser_had_results && has_results(results) {
+        output::config_fact()
+    } else {
+        output::parser_fact()
+    }
+}
+
+fn source_reliability(source_had_results: bool, results: &Value) -> output::Reliability {
+    if !source_had_results && has_results(results) {
+        output::config_fact()
+    } else {
+        output::source_fact()
+    }
 }
 
 fn path_mode_label(command: &str, mode: SearchPatternMode) -> &'static str {

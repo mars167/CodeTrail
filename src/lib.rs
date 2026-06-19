@@ -5,6 +5,7 @@ pub mod cli;
 pub mod commands;
 pub mod completions;
 pub mod config_facts;
+pub mod config_index;
 pub mod diff_proof;
 pub mod generation_manifest;
 pub mod index;

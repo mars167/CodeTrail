@@ -445,6 +445,107 @@ fn index_build_reports_scip_java_install_help_with_parser_fallback() {
 }
 
 #[test]
+fn index_build_exposes_mybatis_mapper_xml_as_config_facts() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("pom.xml"), "<project></project>\n").unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/com/example")).unwrap();
+    fs::write(
+        dir.path().join("src/main/java/com/example/SysUserMapper.java"),
+        "package com.example;\npublic interface SysUserMapper { SysUser selectUserByLoginName(String userName); }\nclass SysUser {}\n",
+    )
+    .unwrap();
+    fs::create_dir_all(dir.path().join("src/main/resources/mapper/system")).unwrap();
+    fs::write(
+        dir.path()
+            .join("src/main/resources/mapper/system/SysUserMapper.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<mapper namespace="com.example.SysUserMapper">
+  <resultMap id="SysUserResult" type="com.example.SysUser">
+    <id property="userId" column="user_id"/>
+  </resultMap>
+  <select id="selectUserByLoginName" parameterType="String" resultMap="SysUserResult">
+    select user_id, login_name from sys_user where login_name = #{userName}
+  </select>
+</mapper>
+"#,
+    )
+    .unwrap();
+
+    codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build", "--no-semantic"])
+        .assert()
+        .success();
+
+    let status_output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "status"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let status: Value = serde_json::from_slice(&status_output).unwrap();
+    let languages = status["results"][0]["indexedLanguages"]
+        .as_array()
+        .expect("indexed languages");
+    assert!(languages
+        .iter()
+        .any(|language| language["language"] == "xml"
+            && language["fileCount"].as_u64().unwrap_or(0) >= 1));
+
+    let symbols_output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["symbols", "SysUserMapper"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let symbols: Value = serde_json::from_slice(&symbols_output).unwrap();
+    assert!(symbols["results"].as_array().unwrap().iter().any(|result| {
+        result["path"] == "src/main/resources/mapper/system/SysUserMapper.xml"
+            && result["kind"] == "mapper_namespace"
+            && result["language"] == "xml"
+            && result["reliability"] == "config_fact"
+    }));
+
+    let defs_output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "selectUserByLoginName"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let defs: Value = serde_json::from_slice(&defs_output).unwrap();
+    assert!(defs["results"].as_array().unwrap().iter().any(|result| {
+        result["path"] == "src/main/resources/mapper/system/SysUserMapper.xml"
+            && result["kind"] == "mapper_statement"
+            && result["name"] == "com.example.SysUserMapper.selectUserByLoginName"
+            && result["role"] == "definition"
+            && result["valuePreview"] == "select"
+    }));
+
+    let text_output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "selectUserByLoginName"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(text_output).unwrap();
+    assert!(text.contains("mapper_statement com.example.SysUserMapper.selectUserByLoginName"));
+    assert!(!text.contains("mapper_statementcom.example.SysUserMapper.selectUserByLoginName"));
+}
+
+#[test]
 fn verbose_index_build_emits_diagnostics_to_stderr() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();

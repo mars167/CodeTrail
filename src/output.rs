@@ -104,6 +104,16 @@ pub fn parser_fact() -> Reliability {
     }
 }
 
+pub fn config_fact() -> Reliability {
+    Reliability {
+        level: "config_fact",
+        source: "configuration_parser",
+        exact: false,
+        llm_instruction:
+            "These results come from configuration files and are not precise semantic reference resolution. Verify the source range with codetrail read before editing.",
+    }
+}
+
 pub fn precise_fact() -> Reliability {
     Reliability {
         level: "precise_fact",

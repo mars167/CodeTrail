@@ -1984,9 +1984,64 @@ fn write_to_lancedb(
                 .write_gram_postings(&manifest.snapshot_id, &gram_index)
                 .with_context(|| "failed to write gram postings to LanceDB")?;
         }
+
+        let config_facts = extract_xml_config_facts(workspace, records, verbose)?;
+        if !config_facts.is_empty() {
+            let file_hashes = records
+                .iter()
+                .map(|record| (record.path.clone(), record.hash.clone()))
+                .collect::<BTreeMap<_, _>>();
+            verbose.log(format!(
+                "index build: writing LanceDB config facts facts={}",
+                config_facts.len()
+            ));
+            lancedb
+                .write_config_facts(&manifest.snapshot_id, &config_facts, &file_hashes)
+                .with_context(|| "failed to write config facts to LanceDB")?;
+        }
     }
 
     Ok(())
+}
+
+fn extract_xml_config_facts(
+    workspace: &Workspace,
+    records: &[FileRecord],
+    verbose: output::VerboseLogger,
+) -> Result<Vec<crate::config_facts::ConfigFact>> {
+    let graph = match crate::project_graph::discover_project_graph(&workspace.root) {
+        Ok(graph) => graph,
+        Err(error) => {
+            verbose.log(format!(
+                "index build: skipping config facts; project graph failed: {error}"
+            ));
+            return Ok(Vec::new());
+        }
+    };
+    let mut facts = Vec::new();
+    for record in records.iter().filter(|record| record.language == "xml") {
+        let path = workspace.abs_path(&record.path);
+        let Ok(source) = fs::read_to_string(path) else {
+            continue;
+        };
+        facts.extend(crate::config_facts::extract_config_facts_for_file(
+            &record.path,
+            &source,
+            &graph,
+            crate::config_facts::ConfigFactExtractOptions::default(),
+        ));
+    }
+    facts.retain(|fact| {
+        matches!(
+            fact.fact_kind,
+            crate::config_facts::ConfigFactKind::MyBatisNamespace
+                | crate::config_facts::ConfigFactKind::MyBatisStatement
+                | crate::config_facts::ConfigFactKind::MyBatisResultMap
+                | crate::config_facts::ConfigFactKind::MyBatisSqlFragment
+                | crate::config_facts::ConfigFactKind::MyBatisReference
+        )
+    });
+    Ok(facts)
 }
 
 fn gram_index_from_materialized_files(
