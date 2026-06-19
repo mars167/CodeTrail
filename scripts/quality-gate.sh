@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_TEST_REPO="$ROOT/../RuoYi"
 TEST_REPO="${TEST_REPO:-$DEFAULT_TEST_REPO}"
 CS_BIN="${CS_BIN:-$ROOT/target/release/codetrail}"
+CARGO_BIN="${CARGO_BIN:-}"
 
 PASS=0
 FAIL=0
@@ -28,6 +29,7 @@ Environment:
   REQUIRE_TEST_REPO
              When set to 1, missing TEST_REPO fails smoke/bench gates.
   CS_BIN     codetrail binary path. Defaults to target/release/codetrail.
+  CARGO_BIN  Cargo binary path. Defaults to `rustup which cargo` when available.
 USAGE
 }
 
@@ -70,6 +72,32 @@ require_tool() {
   fi
 }
 
+resolve_rust_tool() {
+  local tool="$1"
+
+  if command -v rustup >/dev/null 2>&1; then
+    local resolved
+    if resolved="$(rustup which "$tool" 2>/dev/null)"; then
+      printf '%s\n' "$resolved"
+      return 0
+    fi
+  fi
+
+  if command -v "$tool" >/dev/null 2>&1; then
+    command -v "$tool"
+    return 0
+  fi
+
+  return 1
+}
+
+run_cargo() {
+  if [[ -z "$CARGO_BIN" ]]; then
+    CARGO_BIN="$(resolve_rust_tool cargo)"
+  fi
+  "$CARGO_BIN" "$@"
+}
+
 run_codetrail_json() {
   "$CS_BIN" --output json --path "$TEST_REPO" "$@"
 }
@@ -96,10 +124,10 @@ assert_codetrail() {
 run_pr() {
   note "PR quality gate"
   cd "$ROOT"
-  run_step "cargo fmt --check" cargo fmt --check
+  run_step "cargo fmt --check" run_cargo fmt --check
   run_step "git diff --check" git diff --check
   run_step "installer smoke tests" "$ROOT/scripts/test-installers.sh"
-  run_step "cargo test --all-targets --locked --no-fail-fast" cargo test --all-targets --locked --no-fail-fast
+  run_step "cargo test --all-targets --locked --no-fail-fast" run_cargo test --all-targets --locked --no-fail-fast
 }
 
 run_ruoyi_smoke() {
@@ -150,7 +178,7 @@ run_main() {
   note "main quality gate"
   cd "$ROOT"
   run_pr
-  run_step "cargo build --release --locked" cargo build --release --locked --bin codetrail
+  run_step "cargo build --release --locked" run_cargo build --release --locked --bin codetrail
   run_ruoyi_smoke
 }
 
@@ -162,7 +190,7 @@ run_bench() {
   require_tool bc
   # Reuse release binary if already built (e.g. from 'full' gate)
   if [[ ! -x "$CS_BIN" ]]; then
-    run_step "cargo build --release --locked" cargo build --release --locked --bin codetrail
+    run_step "cargo build --release --locked" run_cargo build --release --locked --bin codetrail
   fi
   if [[ ! -d "$TEST_REPO" ]]; then
     if [[ "${REQUIRE_TEST_REPO:-0}" == "1" ]]; then
