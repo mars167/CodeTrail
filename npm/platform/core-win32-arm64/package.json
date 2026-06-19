@@ -1,1 +1,1 @@
-{"name":"@codetrail/core-win32-arm64","version":"0.1.7-beta.2","license":"MIT","os":["win32"],"cpu":["arm64"],"files":["bin/","package.json"],"publishConfig":{"access":"public","provenance":true}}
+{"name":"@codetrail/core-win32-arm64","version":"0.1.7-beta.3","license":"MIT","os":["win32"],"cpu":["arm64"],"files":["bin/","package.json"],"publishConfig":{"access":"public","provenance":true}}

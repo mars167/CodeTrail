@@ -1,1 +1,1 @@
-{"name":"@codetrail/core-darwin-x64","version":"0.1.7-beta.2","license":"MIT","os":["darwin"],"cpu":["x64"],"files":["bin/","package.json"],"publishConfig":{"access":"public","provenance":true}}
+{"name":"@codetrail/core-darwin-x64","version":"0.1.7-beta.3","license":"MIT","os":["darwin"],"cpu":["x64"],"files":["bin/","package.json"],"publishConfig":{"access":"public","provenance":true}}

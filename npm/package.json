@@ -1,6 +1,6 @@
 {
   "name": "codetrail",
-  "version": "0.1.7-beta.2",
+  "version": "0.1.7-beta.3",
   "description": "CodeTrail: deterministic-first code search with reliability-labeled evidence",
   "license": "MIT",
   "bin": {
@@ -19,12 +19,12 @@
     "smoke": "node ../scripts/npm/smoke.js"
   },
   "optionalDependencies": {
-    "@codetrail/core-darwin-arm64": "0.1.7-beta.2",
-    "@codetrail/core-darwin-x64": "0.1.7-beta.2",
-    "@codetrail/core-linux-arm64": "0.1.7-beta.2",
-    "@codetrail/core-linux-x64": "0.1.7-beta.2",
-    "@codetrail/core-win32-arm64": "0.1.7-beta.2",
-    "@codetrail/core-win32-x64": "0.1.7-beta.2"
+    "@codetrail/core-darwin-arm64": "0.1.7-beta.3",
+    "@codetrail/core-darwin-x64": "0.1.7-beta.3",
+    "@codetrail/core-linux-arm64": "0.1.7-beta.3",
+    "@codetrail/core-linux-x64": "0.1.7-beta.3",
+    "@codetrail/core-win32-arm64": "0.1.7-beta.3",
+    "@codetrail/core-win32-x64": "0.1.7-beta.3"
   },
   "engines": {
     "node": ">=20"
