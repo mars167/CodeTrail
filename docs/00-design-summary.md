@@ -27,7 +27,8 @@ CodeTrail 是本地优先、Git 优先的代码搜索与跳转工具，目标是
 
 它提供：
 
-- 内容搜索、路径搜索、目录浏览和范围读取。
+- 可利用索引的内容搜索、路径搜索和代码跳转。
+- 文件系统目录浏览和范围读取，用于验证源码证据。
 - 定义、引用、符号、调用候选和变更状态。
 - 本地索引、Git hook、watcher、saved query、remote pack/unpack 和 MCP 入口。
 - 每个响应的 snapshot、producer、freshness 与 reliability 信息。
@@ -72,8 +73,9 @@ flowchart TB
 索引是加速层，不是事实源。事实源始终是本地源码、Git 状态、文件 hash 和可读取的 range。
 
 任务意图、查询顺序和停止条件属于 Agent 层。CodeTrail 的 CLI/MCP 只执行
-可组合的搜索、跳转、读取、索引和状态原语；subagent 可以使用这些原语完成
-多步调查，并把结果压缩为主 Agent 可消费的证据包。
+可组合的 index-backed 搜索/跳转、索引和状态原语；目录浏览与读取是
+filesystem/source verification 边界。subagent 可以结合这些原语和普通
+Agent 源码读取工具完成多步调查，并把结果压缩为主 Agent 可消费的证据包。
 
 ## 可靠性
 

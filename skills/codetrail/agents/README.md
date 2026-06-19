@@ -3,15 +3,16 @@
 This directory contains agent-layer templates that use CodeTrail as a search
 tool. They are intentionally separate from the CLI/MCP command surface.
 
-CodeTrail owns:
+CodeTrail owns indexed discovery and reliability metadata:
 
-- source, path, symbol, reference, call-candidate, status, and freshness facts;
+- text, path, symbol, reference, call-candidate, status, and freshness facts;
 - output budgets, pagination, caveats, and reliability labels;
-- exact range reads for verification.
+- optional exact range reads for verification when the host agent does not
+  provide a better read tool.
 
 Subagents own:
 
-- deciding which CodeTrail primitive to call next;
+- deciding which CodeTrail primitive or host verification tool to call next;
 - stopping multi-step investigations;
 - compressing evidence into a compact package for a primary agent;
 - adapting generic evidence collection to architecture, data model, debugging,
@@ -41,9 +42,10 @@ and read output in the primary session.
 
 The subagent uses an index-first workflow: check `codetrail index status`, try
 semantic/navigation commands (`symbols`, `defs`, `refs`, `routes`, `calls`,
-`callers`), then verify focused ranges with `read`. Content search (`find` or
-`grep`) is a fallback for literal text, missing/stale/unsupported indexes,
-ambiguous results, or no useful semantic matches.
+`callers`), use indexed path/content commands (`files`, `find-path`, `glob`,
+`find`, `grep`) for scoped discovery, then verify focused ranges with normal
+source-read tools or `codetrail read`. `list`, `tree`, and `read` are not
+counted as indexed discovery commands.
 
 ## OpenCode
 
@@ -71,6 +73,7 @@ output in the primary session.
 
 The subagent uses an index-first workflow: check `codetrail index status`, try
 semantic/navigation commands (`symbols`, `defs`, `refs`, `routes`, `calls`,
-`callers`), then verify focused ranges with `read`. Content search (`find` or
-`grep`) is a fallback for literal text, missing/stale/unsupported indexes,
-ambiguous results, or no useful semantic matches.
+`callers`), use indexed path/content commands (`files`, `find-path`, `glob`,
+`find`, `grep`) for scoped discovery, then verify focused ranges with normal
+source-read tools or `codetrail read`. `list`, `tree`, and `read` are not
+counted as indexed discovery commands.

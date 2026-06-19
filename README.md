@@ -48,10 +48,10 @@ An exit code of `-1073741515` (`0xC0000135`, STATUS_DLL_NOT_FOUND) means the Win
 ```bash
 codetrail index build
 codetrail find "TODO"
-codetrail read README.md:1-40
+codetrail defs main
 ```
 
-Default output is concise text. For machine consumption, use `--output json` or `--output jsonl`. For full argument details, run `codetrail --help` and check `src/cli.rs`.
+Default output is concise text. For machine consumption, use `--output json` or `--output jsonl`. Use your editor, agent read tool, or `codetrail read <path:start-end>` to verify the exact source range before editing. For full argument details, run `codetrail --help` and check `src/cli.rs`.
 
 ## Common Commands
 
@@ -64,13 +64,13 @@ codetrail files "README"
 codetrail glob "src/**/*.rs"
 ```
 
-Range read and symbol lookup:
+Symbol lookup and source verification:
 
 ```bash
-codetrail read README.md:1-40
 codetrail defs main
 codetrail refs main
 codetrail symbols query
+codetrail read README.md:1-40
 ```
 
 Indexing and saved query:
@@ -140,6 +140,7 @@ Core boundaries:
 
 - Snapshot is the truth boundary: results must declare whether they come from commit, staged, or worktree state; different sources must not be merged into one untraceable answer.
 - Local index is the acceleration layer: when index data is missing, stale, or partial, queries should fall back to live scanning, dirty overlay, or return clear caveats.
+- Index-backed discovery is limited to search/navigation commands such as `find`, `grep`, `files`, `find-path`, `glob`, `defs`, `refs`, `symbols`, `routes`, `calls`, and `callers`; `list`, `tree`, and `read` are filesystem/source verification helpers.
 - Query service is the integration boundary: CLI, MCP, saved query replay, and remote snapshots all share the same public JSON/text projection.
 - Reliability is an interface contract: text hits, exact occurrences, parser fallbacks, call candidates, and remote results must use different reliability levels; key edits should still be rechecked with `read`.
 - Remote and saved query are not ground truth: remote is only confidence-boosting when aligned with local proof; saved query stores only replay metadata, never full result payloads.
@@ -172,8 +173,10 @@ skills/codetrail/agents/opencode/codetrail-evidence.md
 
 into `.opencode/agents/` or `~/.config/opencode/agents/`. The subagent owns
 task-aware query sequencing and evidence compression; CodeTrail itself remains
-the search/navigation tool layer. Do not add task-specific CLI commands such as
-`brief`, `context`, or `analyze-*`.
+the index-backed search/navigation tool layer. The subagent may use normal
+source-read tools for verification and should not be forced to use CodeTrail
+for every file read. Do not add task-specific CLI commands such as `brief`,
+`context`, or `analyze-*`.
 
 For benchmark-backed guidance on when to use the CLI directly and when to
 delegate to the subagent, see

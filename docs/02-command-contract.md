@@ -6,7 +6,8 @@
 
 ```mermaid
 flowchart TB
-  CS["codetrail"] --> L0["source facts"]
+  CS["codetrail"] --> L0["index-backed source/path facts"]
+  CS --> FS["filesystem verification"]
   CS --> L1["navigation facts"]
   CS --> L2["relationship candidates"]
   CS --> Ops["index / query / watch / serve / mcp"]
@@ -14,7 +15,8 @@ flowchart TB
 
   L0 --> Search["find / grep"]
   L0 --> Paths["files / find-path / glob"]
-  L0 --> Read["list / tree / read / changed / status"]
+  FS --> Read["list / tree / read"]
+  FS --> State["changed / status"]
   L1 --> Nav["defs / refs / symbols / routes"]
   L2 --> Calls["calls / callers"]
   Ops --> Index["index build / update / status / skipped / verify / clean / pack / unpack"]
@@ -25,9 +27,9 @@ flowchart TB
 
 | 族 | 命令 | 契约 |
 | --- | --- | --- |
-| 内容搜索 | `find`, `grep` | 返回可验证源码匹配；index 只影响速度 |
-| 路径搜索 | `files`, `find-path`, `glob` | 返回 snapshot 下的路径事实 |
-| 浏览读取 | `list`, `tree`, `read` | `read` 是编辑前验证入口 |
+| 内容搜索 | `find`, `grep` | 优先使用 text index/LanceDB 取候选；index 不可用时 live scan |
+| 路径搜索 | `files`, `find-path`, `glob` | 优先使用 indexed file catalog；index 不可用时 live scan |
+| 浏览读取 | `list`, `tree`, `read` | 文件系统/源码验证命令，不算 index-backed discovery；`read` 是编辑前验证入口 |
 | Git 状态 | `changed`, `status` | 返回当前 workspace 与 snapshot 状态 |
 | 跳转 | `defs`, `refs`, `symbols`, `routes` | 优先 SCIP，缺失时降级为 parser/text fallback；`routes` 为 framework route parser scan |
 | 关系 | `calls`, `callers` | 永远是 `inferred_candidate` |
@@ -114,6 +116,11 @@ tree-sitter parser fallback；其他语言的关系查询主要依赖 fresh grap
 
 ## 性能契约
 
+Index-backed discovery 命令包括 `find`、`grep`、`files`、`find-path`、
+`glob`、`defs`、`refs`、`symbols`、`routes`、`calls` 和 `callers`。
+`list`、`tree` 和 `read` 不属于 index-backed discovery：它们用于目录浏览和
+源码验证，可以使用 filesystem live state。
+
 搜索必须先收窄候选文件，再读内容或解析 AST。固定顺序为：
 
 1. `--dir` walker roots。
@@ -149,11 +156,13 @@ public JSON 不暴露内部计时和扫描统计。
   `--mode literal|regex|wildcard|glob`。
 - `list [dir]` 和 `tree [dir]` 接受 workspace-relative 目录；省略时为 `.`。
   目录必须存在、必须是目录，且 canonical path 不能逃出 workspace root。
+  它们是 filesystem browse，不承诺使用 index。
 - `read <target>` 接受 `path`、`path:line` 或 `path:start-end`。小文件或同一
   文件多处命中应优先用 `read <path>` 一次验证；大文件全文读取会受预算保护并
   返回截断提示，调用方再用范围读取。行号从 1 开始，`0`、空行号和 start 大于
   end 的范围非法。只有最后一个 `:` 后面全是数字或 `数字-数字` 时才按范围解析，
-  否则整个 target 按路径处理。
+  否则整个 target 按路径处理。`read` 始终是 source verification，不是 indexed
+  search。
 - `--lang <lang>` 按扩展名映射出的语言名过滤，大小写不敏感。当前内置语言名为
   `go`、`rust`、`python`、`java`、`typescript`、`javascript`、`markdown`、
   `ruby`、`swift`、`json`、`toml`、`yaml`、`html`、`css` 和 `text`。
@@ -218,7 +227,7 @@ MCP tool result 的 `content[0].text` 使用同一 public JSON 投影。
 - `--context` 控制结果上下文；默认 `0`，不会输出 context block。
 - preview、context 和结果数量受输出预算保护；当任何层级被裁切时，`page.truncated=true` 或 `caveats` 包含 `truncated_output`。
 - 宽查询 guard 仍会返回少量样本和 caveat，避免终端与机器输出被大结果集淹没。
-- `read` 仍是编辑前验证入口；公开 JSON 不再内嵌 `readCommand`，调用方应使用结果里的 `path` 和 `range` 组合读取目标。
+- `read` 仍是编辑前验证入口，但不属于 indexed discovery；公开 JSON 不再内嵌 `readCommand`，调用方应使用结果里的 `path` 和 `range` 组合读取目标。
 
 ## Index Build 与语义阶段
 
@@ -250,7 +259,8 @@ MCP tool result 的 `content[0].text` 使用同一 public JSON 投影。
 
 ```mermaid
 flowchart LR
-  Source["source_fact\nfind/read/files"] --> Edit["safe evidence after read"]
+  Source["source_fact\nfind/files"] --> Verify["verify with read"]
+  Read["source_fact\nread"] --> Edit["safe evidence after source verification"]
   Precise["precise_fact\nSCIP defs/refs"] --> Edit
   Parser["parser_fact\ntree-sitter fallback"] --> Verify["verify with read"]
   Candidate["inferred_candidate\ncalls/callers"] --> Verify

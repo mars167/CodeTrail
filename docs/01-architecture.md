@@ -70,7 +70,7 @@ flowchart LR
 flowchart TD
   Cmd["command"] --> Kind{"query family"}
 
-  Kind -->|find / grep / files / glob| Text["fresh text/path index"]
+  Kind -->|find / grep / files / find-path / glob| Text["fresh text/path index"]
   Text -->|fresh| Verify["candidate verification"]
   Text -->|missing or stale| Scan["live scan"]
   Text -->|partially stale| Overlay["per-file live overlay"]
@@ -90,7 +90,10 @@ flowchart TD
   Candidate --> Json
 ```
 
-`read` 是验证入口：搜索和图结果帮助定位，真正进入编辑前应读取精确范围。
+`find`、`grep`、`files`、`find-path` 和 `glob` 是 index-backed discovery
+路径；`list`、`tree` 和 `read` 是 filesystem/source verification 路径，不作为
+索引查询核心。`read` 是验证入口：搜索和图结果帮助定位，真正进入编辑前应读取
+精确范围。
 
 ## Watcher 和 Hook
 
