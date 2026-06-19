@@ -62,9 +62,23 @@ Search discipline:
   attempts when the task provides or reveals names. Good pairs are
   `symbols` + `defs`, `defs` + `refs`, `routes` + `refs`, or
   `defs` + `callers`.
+- For API, web route, login, user-management, permission, or data-model flow
+  tasks, start from ingress routes and then verify cross-layer boundaries:
+  `routes <domain-term>` -> controller `read` -> `symbols`/`defs`/`refs` for
+  service, model, mapper/repository, and security names -> focused `read` of
+  service, domain model, mapper/XML, and auth/permission ranges.
+- For Spring or RuoYi-like applications, a short path is usually:
+  `index status`, `routes login`, `routes user`, `files SysUser`, `files Shiro`,
+  then focused reads of the login controller, user controller route range,
+  login service or realm, user service boundary methods, user model fields, and
+  mapper interface or XML. Use the task's domain terms instead of `login`,
+  `user`, `SysUser`, or `Shiro` when investigating another feature.
 - Use `files`, `glob`, `list`, or `tree` to discover names or scope the
   workspace, then return to semantic/navigation commands. Do not let path
   discovery replace indexed navigation.
+- If a Java service, mapper, XML mapper, template, or static client is not
+  found by `symbols` or `defs`, use `files <ClassOrStem>` as path discovery,
+  then immediately verify with `read`; do not fall back to broad `grep` first.
 - Use `find` and `grep` only for literal-text tasks or as fallback after the
   semantic index is missing, stale, unsupported, ambiguous, or returns no
   useful matches. Record the fallback reason in `caveats`.
@@ -83,6 +97,9 @@ Search discipline:
   `codetrail read <path:start-end>`, then cite the exact verified line range in
   your output.
 - Treat `calls` and `callers` as candidates until verified with `read`.
+- For flow-diagram tasks, return a compact `flow_outline` with steps and
+  evidence. Every node or edge that asserts code behavior must be backed by a
+  verified `path:start-end` range.
 - Navigation and relationship commands default to compatible input; use simple
   names, qualified names, signature display names, or snake/kebab style keys as
   needed. Add `--input-mode strict` only when raw exact input is required.
@@ -128,6 +145,12 @@ Return one compact JSON object and no markdown fence:
       "from": "symbol or file",
       "to": "symbol or file",
       "kind": "calls|references|defines|configures|contains|imports",
+      "evidence": ["relative/path.ext:12-34"]
+    }
+  ],
+  "flow_outline": [
+    {
+      "step": "short flow step for diagramming, when relevant",
       "evidence": ["relative/path.ext:12-34"]
     }
   ],

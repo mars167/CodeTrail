@@ -82,6 +82,62 @@ candidate names are available. Good default pairs are `symbols` + `defs`,
 names are known, use a narrow path command to discover names, then return to
 semantic/navigation commands.
 
+## Fast Path Playbooks
+
+Use these playbooks to keep common agent investigations short. They do not
+replace verification with `read`; they define the shortest useful query order.
+
+### API And Domain Flow Investigations
+
+Use this path for tasks such as analyzing login, user management, permissions,
+or other web/API flows and producing a design summary or flow diagram.
+
+1. Check index readiness once with `codetrail --output json index status`.
+2. Locate ingress routes before content search:
+   - `codetrail --output json routes login --limit 30`
+   - `codetrail --output json routes user --limit 50`
+   - Add one route term for each domain term from the task.
+3. Read only the route controller ranges that own the selected endpoints.
+4. From controller fields, imports, parameters, annotations, and method calls,
+   extract service, model, mapper/repository, security, and view/client names.
+5. Resolve those names with semantic/navigation commands first:
+   - `codetrail --output json symbols <ModelOrControllerName> --limit 20`
+   - `codetrail --output json defs <serviceOrMapperMethod> --limit 20`
+   - `codetrail --output json refs <routeOrServiceMethod> --limit 20`
+6. If a Java service, mapper, XML mapper, template, or static client name is
+   not found by symbols/defs, use `codetrail --output json files <ClassOrStem>
+   --limit 40` as path discovery, then immediately verify with `read`.
+7. Verify only cross-layer boundaries needed for the answer:
+   - route/controller methods and annotations;
+   - authentication realm, filter, or login service;
+   - service methods that enforce validation, permissions, or transactions;
+   - domain/model fields relevant to the task;
+   - mapper/repository interface and SQL/XML for persistence;
+   - templates or static API clients only when the user asks about UI behavior.
+8. Stop once the evidence covers ingress, business decision points,
+   persistence, model shape, and authorization/authentication boundaries.
+   Do not read every getter, route variant, or helper after the flow is proven.
+9. For diagrams, build Mermaid or another flow only from verified ranges.
+   Every node or edge that asserts code behavior must map back to a
+   `path:start-end` citation.
+
+For a RuoYi-like Spring/Shiro task about user management and login, the
+shortest useful query chain is:
+
+```bash
+codetrail --output json index status
+codetrail --output json routes login --limit 30
+codetrail --output json routes user --limit 50
+codetrail --output json files SysUser --limit 40
+codetrail --output json files Shiro --limit 40
+codetrail --output json read <login-controller>
+codetrail --output json read <user-controller-routes-range>
+codetrail --output json read <login-service-or-realm>
+codetrail --output json read <user-service-boundary-range>
+codetrail --output json read <user-model-range>
+codetrail --output json read <user-mapper-interface-or-xml-range>
+```
+
 ## Command Input Quick Reference
 
 Search and navigation inputs have a few command-specific formats that are not
