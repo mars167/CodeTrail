@@ -1,5 +1,6 @@
 # CodeTrail
 [![GitHub release](https://img.shields.io/github/v/release/mars167/CodeTrail?label=release)](https://github.com/mars167/CodeTrail/releases)
+[![npm](https://img.shields.io/npm/v/%40mars167/codetrail?label=npm)](https://www.npmjs.com/package/@mars167/codetrail)
 
 [中文](README.zh-CN.md)
 
@@ -8,6 +9,12 @@ A local-index-first code search tool for fast, verifiable source evidence.
 CodeTrail's core promise is not to "understand the code"—it is to return verifiable evidence quickly. Search, symbol location, range reading, definitions, references, call candidates, index status, and MCP output are all organized around readable results, pagination, and caveats.
 
 ## Installation
+
+NPM:
+
+```bash
+npm install -g @mars167/codetrail
+```
 
 macOS/Linux:
 

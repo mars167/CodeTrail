@@ -10,12 +10,12 @@ const {
 } = require("../lib/core-binary");
 
 test("maps supported platforms to optional platform packages", () => {
-  assert.equal(packageNameForPlatform("darwin", "arm64"), "@codetrail/core-darwin-arm64");
-  assert.equal(packageNameForPlatform("darwin", "x64"), "@codetrail/core-darwin-x64");
-  assert.equal(packageNameForPlatform("linux", "arm64"), "@codetrail/core-linux-arm64");
-  assert.equal(packageNameForPlatform("linux", "x64"), "@codetrail/core-linux-x64");
-  assert.equal(packageNameForPlatform("win32", "arm64"), "@codetrail/core-win32-arm64");
-  assert.equal(packageNameForPlatform("win32", "x64"), "@codetrail/core-win32-x64");
+  assert.equal(packageNameForPlatform("darwin", "arm64"), "@mars167/core-darwin-arm64");
+  assert.equal(packageNameForPlatform("darwin", "x64"), "@mars167/core-darwin-x64");
+  assert.equal(packageNameForPlatform("linux", "arm64"), "@mars167/core-linux-arm64");
+  assert.equal(packageNameForPlatform("linux", "x64"), "@mars167/core-linux-x64");
+  assert.equal(packageNameForPlatform("win32", "arm64"), "@mars167/core-win32-arm64");
+  assert.equal(packageNameForPlatform("win32", "x64"), "@mars167/core-win32-x64");
 });
 
 test("uses executable extension only on Windows", () => {

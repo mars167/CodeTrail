@@ -1,6 +1,6 @@
 [package]
 name = "codetrail"
-version = "0.1.7-beta.2"
+version = "0.1.7-beta.5"
 edition = "2021"
 description = "CodeTrail: deterministic-first code search CLI with reliability labels."
 license = "MIT"
