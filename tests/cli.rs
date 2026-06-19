@@ -181,6 +181,15 @@ fn raw_codetrail() -> Command {
     Command::cargo_bin("codetrail").expect("binary exists")
 }
 
+#[cfg(unix)]
+fn make_executable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).unwrap();
+}
+
 fn init_git_repo(path: &std::path::Path) {
     std::process::Command::new("git")
         .arg("init")
@@ -3195,6 +3204,47 @@ fn index_provider_install_dry_run_reports_user_level_commands() {
     let text = String::from_utf8(output).unwrap();
     assert!(text.contains("java: scip-java (planned)"));
     assert!(text.contains("$HOME/.local/bin/scip-java"));
+}
+
+#[cfg(unix)]
+#[test]
+fn index_provider_install_json_keeps_child_output_on_stderr() {
+    let dir = tempdir().unwrap();
+    let path_dir = tempdir().unwrap();
+    let bundle = path_dir.path().join("bundle");
+    fs::write(
+        &bundle,
+        "#!/bin/sh\necho child-stdout\necho child-stderr >&2\nexit 0\n",
+    )
+    .unwrap();
+    make_executable(&bundle);
+
+    let path_value = format!("{}:/bin:/usr/bin", path_dir.path().display());
+    let assert = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--output")
+        .arg("json")
+        .env("PATH", path_value)
+        .env_remove("CODETRAIL_SCIP_RUBY")
+        .args(["index-provider", "install", "ruby", "--force"])
+        .assert()
+        .failure();
+    let output = assert.get_output();
+    let stdout = String::from_utf8(output.stdout.clone()).unwrap();
+    assert!(!stdout.contains("child-stdout"));
+    assert!(!stdout.contains("child-stderr"));
+
+    let json: Value = serde_json::from_str(&stdout).unwrap();
+    let result = &json["results"][0];
+    assert_eq!(result["language"], "ruby");
+    assert_eq!(result["provider"], "scip-ruby");
+    assert_eq!(result["status"], "installed_not_on_path");
+    assert_eq!(result["steps"][0]["status"], "ok");
+
+    let stderr = String::from_utf8(output.stderr.clone()).unwrap();
+    assert!(stderr.contains("child-stdout"));
+    assert!(stderr.contains("child-stderr"));
 }
 
 #[test]

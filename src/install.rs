@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     env, fs,
+    io::{self, Write},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -280,16 +281,31 @@ impl CommandResult {
 }
 
 fn run_shell_command(command: &str, cwd: &Path) -> CommandResult {
-    let output = shell_command(command).current_dir(cwd).status();
+    let output = shell_command(command).current_dir(cwd).output();
     match output {
-        Ok(status) => CommandResult {
-            success: status.success(),
-            exit_code: status.code(),
-        },
+        Ok(output) => {
+            forward_command_output(&output.stdout);
+            forward_command_output(&output.stderr);
+            CommandResult {
+                success: output.status.success(),
+                exit_code: output.status.code(),
+            }
+        }
         Err(_) => CommandResult {
             success: false,
             exit_code: None,
         },
+    }
+}
+
+fn forward_command_output(bytes: &[u8]) {
+    if bytes.is_empty() {
+        return;
+    }
+    let mut stderr = io::stderr().lock();
+    let _ = stderr.write_all(bytes);
+    if !bytes.ends_with(b"\n") {
+        let _ = stderr.write_all(b"\n");
     }
 }
 

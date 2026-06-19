@@ -5,7 +5,7 @@ description: Use when searching, navigating, validating, or documenting the Code
 
 # CodeTrail
 
-Use `codetrail` for narrow, verifiable source evidence in this repository. Prefer JSON output for agent work, and verify important matches with `read` before editing.
+Use `codetrail` for narrow, verifiable source evidence in this repository. Prefer JSON output for agent work, use indexed commands for discovery, and verify important matches with an exact source read before editing.
 
 ## Boundary
 
@@ -17,7 +17,9 @@ For a single narrow lookup, call the CLI directly. For multi-step repository
 investigations, delegate to a CodeTrail evidence subagent when one is
 available, then use its compact evidence package in the main task. The
 subagent owns query sequencing and compression; CodeTrail still only returns
-source, navigation, relationship, status, and freshness facts.
+source, navigation, relationship, status, and freshness facts. The subagent may
+also use ordinary agent read/search tools for verification or gap-filling; do
+not force it to use CodeTrail for every file read.
 
 ## Command Prefix
 
@@ -38,9 +40,11 @@ Use `--path <dir>` when searching from outside the repository root or when the u
 ## Core Workflow
 
 Use an index-first workflow for repository investigations. CodeTrail's design
-is to use indexed navigation evidence to shrink the search space, then use
-`read` as the verification surface. Do not let a multi-step investigation
-degrade into broad `grep` plus repeated `read` unless the index is missing,
+is to use indexed navigation, text, and path evidence to shrink the search
+space, then use host source reads as the verification surface. CodeTrail no
+longer exposes `read`, `list`, or `tree`; use the host agent or editor for
+filesystem browsing and exact source verification. Do not let a multi-step investigation
+degrade into broad `grep` plus repeated reads unless the index is missing,
 stale, unsupported for the language, or the task is explicitly literal-text
 or path-only.
 
@@ -57,11 +61,10 @@ or path-only.
    - `codetrail routes <pattern>`
    - `codetrail calls <caller-name>`
    - `codetrail callers <callee-name>`
-4. Use path commands to scope navigation, not as a replacement for it:
+4. Use indexed path commands to scope navigation, not as a replacement for it:
    - `codetrail files <substring>`
+   - `codetrail find-path <substring>`
    - `codetrail glob '<pattern>'`
-   - `codetrail list <dir>`
-   - `codetrail tree <dir>`
 5. Use `find` and `grep` as fallbacks or for literal-text questions:
    - `codetrail find <literal>`
    - `codetrail grep <regex>`
@@ -69,23 +72,27 @@ or path-only.
 6. Inspect `reliability`, `index`, `warnings`, `suggestedReads`, and `nextActions`.
    - Treat `severity=info, category=capability` as an expected capability-level note, not a risk warning.
    - Treat `severity=warning, category=risk` and `severity=error, category=error` as requiring narrowing, verification, or remediation.
-7. Before editing or making a strong claim, verify source with `codetrail read <path[:start-end]>`.
-   - Prefer `codetrail read <path>` when the file is small enough to fit the output budget, or when you need several ranges from the same file. CodeTrail reads small files whole and truncates large whole-file reads.
-   - Use `codetrail read <path:start-end>` for known-large files, truncated full reads, or a single narrow verification.
+7. Before editing or making a strong claim, verify source with an exact file
+   read. Use the host agent's read tool or editor, using the result `path`,
+   `range`, `sourceTarget`, or `suggestedReads` as the target.
+   - Prefer one whole-file read when the file is small enough to fit the output
+     budget, or when you need several ranges from the same file.
+   - Use `path:start-end` for known-large files, truncated full reads, or a
+     single narrow verification.
 8. Treat `calls` and `callers` as `inferred_candidate`; inspect the returned ranges before relying on them.
-9. Treat `remote_unverified` as a lead only; verify with local `read`.
+9. Treat `remote_unverified` as a lead only; verify with a local source read.
 
 For architecture, data-model, refactor, debugging, and review tasks, make at
 least two semantic/navigation attempts before the first content search when
 candidate names are available. Good default pairs are `symbols` + `defs`,
 `defs` + `refs`, `routes` + `refs`, or `defs` + `callers`. If no candidate
-names are known, use a narrow path command to discover names, then return to
+names are known, use an indexed path command to discover names, then return to
 semantic/navigation commands.
 
 ## Fast Path Playbooks
 
 Use these playbooks to keep common agent investigations short. They do not
-replace verification with `read`; they define the shortest useful query order.
+replace source verification; they define the shortest useful query order.
 
 ### API And Domain Flow Investigations
 
@@ -106,7 +113,7 @@ or other web/API flows and producing a design summary or flow diagram.
    - `codetrail --output json refs <routeOrServiceMethod> --limit 20`
 6. If a Java service, mapper, XML mapper, template, or static client name is
    not found by symbols/defs, use `codetrail --output json files <ClassOrStem>
-   --limit 40` as path discovery, then immediately verify with `read`.
+   --limit 40` as path discovery, then immediately verify with an exact source read.
 7. Verify only cross-layer boundaries needed for the answer:
    - route/controller methods and annotations;
    - authentication realm, filter, or login service;
@@ -130,12 +137,8 @@ codetrail --output json routes login --limit 30
 codetrail --output json routes user --limit 50
 codetrail --output json files SysUser --limit 40
 codetrail --output json files Shiro --limit 40
-codetrail --output json read <login-controller>
-codetrail --output json read <user-controller-routes-range>
-codetrail --output json read <login-service-or-realm>
-codetrail --output json read <user-service-boundary-range>
-codetrail --output json read <user-model-range>
-codetrail --output json read <user-mapper-interface-or-xml-range>
+# Verify the selected controller/service/model/mapper ranges with the host
+# read tool.
 ```
 
 ## Command Input Quick Reference
@@ -147,17 +150,13 @@ obvious from the CLI argument names:
   regex search. Content search accepts `--mode literal|regex|wildcard`.
 - `files <pattern>` and `find-path <pattern>` default to path literal
   substring matching. `glob <pattern>` defaults to glob syntax such as
-  `src/**/*.rs`. Path commands accept `--mode literal|regex|wildcard|glob`.
+  `src/**/*.rs`. These indexed path commands accept `--mode
+  literal|regex|wildcard|glob`.
 - Use `--dir`, `--ext`, `--file-pattern`, and `--file-mode` to scope before
   scanning file contents or parsing symbols. Matching is ignore-case by
   default; add `--case-sensitive` when exact case matters.
-- `list [dir]` and `tree [dir]` take workspace-relative directories and reject
-  paths outside the workspace. Omitted `dir` means `.`.
-- `read <target>` accepts `path`, `path:line`, or `path:start-end`. Omit the
-  range to read a whole small file in one call; use ranges for large files or
-  when a full read returns `large_file_truncated`. Line numbers are 1-based;
-  `0`, empty ranges, and descending ranges are invalid. If the text after the
-  final `:` is not a line or range, the whole target is treated as a path.
+- `list`, `tree`, and `read` are not CodeTrail CLI/MCP commands. Use normal
+  agent or editor tools for filesystem browsing and source verification.
 
 Navigation and relationship commands take one string argument. They default to
 `--input-mode compatible`, so simple names, `Class.method`, signature display
@@ -204,8 +203,8 @@ return only:
 - a short answer-oriented summary;
 - path and line-range evidence;
 - caveats about missing, ambiguous, stale, or inferred results;
-- whether the semantic index was checked and which indexed/navigation commands
-  were tried before text search;
+- whether the semantic index was checked and which index-backed commands were
+  tried before text search;
 - a concise query trace.
 
 Every evidence location returned by the subagent must include a line number or
@@ -265,12 +264,12 @@ Primary semantic providers:
 
 If a provider is missing, failed, or timed out, continue with parser/text
 fallback only as `parser_fact` or `inferred_candidate`, and verify with
-`codetrail read` before editing. Do not describe fallback results as precise
+a host source read before editing. Do not describe fallback results as precise
 semantic facts.
 
 ## Reliability Levels
 
-- `source_fact`: filesystem, text/path, Git, or `read`; usable as evidence after range verification.
+- `source_fact`: filesystem, text/path, Git, or source reads; usable as evidence after range verification.
 - `precise_fact`: SCIP occurrence result; still verify before editing.
 - `parser_fact`: tree-sitter syntax fact; useful syntax evidence, not semantic proof.
 - `inferred_candidate`: heuristic or graph candidate; must verify.
