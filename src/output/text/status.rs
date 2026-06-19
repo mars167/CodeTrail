@@ -136,14 +136,19 @@ fn render_semantic_status(result: &Value, out: &mut dyn Write) -> io::Result<()>
         }
     }
 
-    let Some(servers) = status.get("languageServers").and_then(Value::as_array) else {
-        return Ok(());
-    };
+    let (servers, label) =
+        if let Some(providers) = status.get("semanticProviders").and_then(Value::as_array) {
+            (providers, "Semantic providers")
+        } else if let Some(servers) = status.get("languageServers").and_then(Value::as_array) {
+            (servers, "Language servers")
+        } else {
+            return Ok(());
+        };
     if servers.is_empty() {
-        writeln!(out, "Language servers: none required by discovered roots")?;
+        writeln!(out, "{label}: none required by discovered roots")?;
         return Ok(());
     }
-    writeln!(out, "Language servers:")?;
+    writeln!(out, "{label}:")?;
     for server in servers {
         let language = server
             .get("language")

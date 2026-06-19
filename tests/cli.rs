@@ -326,6 +326,40 @@ fn index_build_text_output_suppresses_progress_when_stderr_is_not_tty() {
 }
 
 #[test]
+fn index_build_reports_scip_java_install_help_with_parser_fallback() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("pom.xml"), "<project></project>\n").unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/example")).unwrap();
+    fs::write(
+        dir.path().join("src/main/java/example/App.java"),
+        "package example; class App { void run() {} }\n",
+    )
+    .unwrap();
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .env("PATH", "")
+        .env_remove("CODETRAIL_SCIP_JAVA")
+        .args(["--output", "json", "index", "build"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let help = json["results"][0]["index"]["semantic"]["providerInstallHelp"]
+        .as_array()
+        .expect("provider install help");
+    assert!(help.iter().any(|item| {
+        item["language"] == "java"
+            && item["provider"] == "scip-java"
+            && item["envKey"] == "CODETRAIL_SCIP_JAVA"
+            && item["fallback"] == "tree_sitter_parser"
+    }));
+}
+
+#[test]
 fn verbose_index_build_emits_diagnostics_to_stderr() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
@@ -1124,7 +1158,7 @@ fn routes_handles_utf8_near_java_annotation_window() {
 @RequestMapping("/demo")
 class DemoController {{
   @GetMapping("/window")
-  /* {padding}窗 marker */
+  /* {padding}é marker */
   public String window() {{ return ""; }}
 }}
 "#
@@ -1418,12 +1452,12 @@ fn swift_language_mapping_is_visible_to_files_list_read_and_index_status() {
         .iter()
         .any(|language| language["language"] == "swift"
             && language["fileCount"].as_u64().unwrap_or(0) >= 1));
-    let swift_server = status["semanticStatus"]["languageServers"]
+    let swift_server = status["semanticStatus"]["semanticProviders"]
         .as_array()
         .unwrap()
         .iter()
         .find(|server| server["language"] == "swift")
-        .expect("swift server status");
+        .expect("swift provider status");
     assert_eq!(swift_server["status"], "missing");
     assert_eq!(swift_server["defaultCommand"], "sourcekit-lsp");
     assert_eq!(swift_server["envKey"], "CODETRAIL_LSP_SWIFT");
@@ -2975,7 +3009,7 @@ fn index_status_reports_semantic_status_languages_and_missing_servers() {
         .arg("--path")
         .arg(dir.path())
         .env("PATH", path_dir.path())
-        .env_remove("CODETRAIL_LSP_JAVA")
+        .env_remove("CODETRAIL_SCIP_JAVA")
         .args(["index", "build", "--no-semantic"])
         .assert()
         .success();
@@ -2986,7 +3020,7 @@ fn index_status_reports_semantic_status_languages_and_missing_servers() {
         .arg("--output")
         .arg("json")
         .env("PATH", path_dir.path())
-        .env_remove("CODETRAIL_LSP_JAVA")
+        .env_remove("CODETRAIL_SCIP_JAVA")
         .args(["index", "status"])
         .assert()
         .success()
@@ -3007,14 +3041,17 @@ fn index_status_reports_semantic_status_languages_and_missing_servers() {
         status["semanticStatus"]["scipIndex"]["state"],
         "not_generated"
     );
-    let java_server = status["semanticStatus"]["languageServers"]
+    let java_server = status["semanticStatus"]["semanticProviders"]
         .as_array()
         .unwrap()
         .iter()
         .find(|server| server["language"] == "java")
-        .expect("java server status");
+        .expect("java provider status");
     assert_eq!(java_server["status"], "missing");
-    assert_eq!(java_server["missingDependencies"][0], "jdtls");
+    assert_eq!(java_server["provider"], "scip-java");
+    assert_eq!(java_server["envKey"], "CODETRAIL_SCIP_JAVA");
+    assert_eq!(java_server["fallback"], "tree_sitter_parser");
+    assert_eq!(java_server["missingDependencies"][0], "scip-java");
 
     let output = raw_codetrail()
         .arg("--path")
@@ -3022,7 +3059,7 @@ fn index_status_reports_semantic_status_languages_and_missing_servers() {
         .arg("--output")
         .arg("text")
         .env("PATH", path_dir.path())
-        .env_remove("CODETRAIL_LSP_JAVA")
+        .env_remove("CODETRAIL_SCIP_JAVA")
         .args(["index", "status"])
         .assert()
         .success()
@@ -3033,11 +3070,11 @@ fn index_status_reports_semantic_status_languages_and_missing_servers() {
     assert!(text.contains("Indexed languages:"));
     assert!(text.contains("java=1"));
     assert!(text.contains("SCIP index: not_generated (enabled: false, usable: false)"));
-    assert!(text.contains("java: missing (jdtls; missing: jdtls)"));
+    assert!(text.contains("java: missing (scip-java; missing: scip-java)"));
 }
 
 #[test]
-fn index_status_reports_ruby_lsp_missing_with_shopify_default() {
+fn index_status_reports_ruby_scip_provider_missing() {
     let dir = tempdir().unwrap();
     let path_dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("app/models")).unwrap();
@@ -3052,7 +3089,7 @@ fn index_status_reports_ruby_lsp_missing_with_shopify_default() {
         .arg("--path")
         .arg(dir.path())
         .env("PATH", path_dir.path())
-        .env_remove("CODETRAIL_LSP_RUBY")
+        .env_remove("CODETRAIL_SCIP_RUBY")
         .args(["index", "build", "--no-semantic"])
         .assert()
         .success();
@@ -3063,7 +3100,7 @@ fn index_status_reports_ruby_lsp_missing_with_shopify_default() {
         .arg("--output")
         .arg("json")
         .env("PATH", path_dir.path())
-        .env_remove("CODETRAIL_LSP_RUBY")
+        .env_remove("CODETRAIL_SCIP_RUBY")
         .args(["index", "status"])
         .assert()
         .success()
@@ -3078,16 +3115,19 @@ fn index_status_reports_ruby_lsp_missing_with_shopify_default() {
         .unwrap()
         .iter()
         .any(|language| language["language"] == "ruby"));
-    let ruby_server = status["semanticStatus"]["languageServers"]
+    let ruby_server = status["semanticStatus"]["semanticProviders"]
         .as_array()
         .unwrap()
         .iter()
         .find(|server| server["language"] == "ruby")
-        .expect("ruby server status");
+        .expect("ruby provider status");
     assert_eq!(ruby_server["status"], "missing");
-    assert_eq!(ruby_server["defaultCommand"], "ruby-lsp");
-    assert_eq!(ruby_server["envKey"], "CODETRAIL_LSP_RUBY");
-    assert_eq!(ruby_server["missingDependencies"][0], "ruby-lsp");
+    assert_eq!(ruby_server["provider"], "scip-ruby");
+    assert_eq!(ruby_server["defaultCommand"], "scip-ruby");
+    assert_eq!(ruby_server["defaultArgs"][0], ".");
+    assert_eq!(ruby_server["envKey"], "CODETRAIL_SCIP_RUBY");
+    assert_eq!(ruby_server["fallback"], "tree_sitter_parser");
+    assert_eq!(ruby_server["missingDependencies"][0], "scip-ruby");
 }
 
 #[test]

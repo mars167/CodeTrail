@@ -47,12 +47,13 @@ flowchart TB
   Manual --> BenchJob["Benchmark Gate\nscripts/quality-gate.sh bench"]
   AnyPush["push branch/tag"] --> Mirror["Mirror to GitHub"]
   Tag["release tag"] --> Release["GitHub release build + asset publish"]
+  Release --> Npm["npm platform packages + main package"]
   Release --> Sync["Gitea release asset sync"]
 ```
 
 - `.gitea/workflows/quality-gate.yml` 调度质量门禁。
 - `.gitea/workflows/mirror-github.yml` 负责 GitHub mirror；mirror 失败不等同于 PR quality gate 失败。
-- `.github/workflows/release.yml` 负责 release artifact 构建、`SHA256SUMS` 生成和 GitHub release asset 发布；配置 GitHub repository secret `GITEA_TOKEN` 后，也可直接发布到 Gitea release。
+- `.github/workflows/release.yml` 负责 release artifact 构建、`SHA256SUMS` 生成和 GitHub release asset 发布；配置 GitHub repository secret `GITEA_TOKEN` 后，也可直接发布到 Gitea release。npm publish job 在 Rust 平台产物就绪后运行，先发布 `@codetrail/core-*` 平台包，再发布主包 `codetrail`。预发布版本使用 npm dist-tag `next`，稳定版本使用 `latest`。
 - `.gitea/workflows/release-assets.yml` 在 tag 推送后等待 GitHub release assets 就绪，再用 Gitea Actions 内置 `GITEA_TOKEN` 把同一批 assets 同步回 Gitea release。
 - CI 入口复用 `scripts/quality-gate.sh`，避免本地和远端门禁漂移。
 

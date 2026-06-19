@@ -250,6 +250,11 @@ pub fn build(
             crate::graph::GraphStore::open(workspace).and_then(|mut store| store.build(workspace));
     }
 
+    let provider_install_help = crate::provider_help::install_help_for_semantic_report(&semantic);
+    let mut semantic_json = crate::lsp::scip_gen::semantic_summary_json(&semantic);
+    semantic_json["providerInstallHelp"] =
+        serde_json::to_value(&provider_install_help).unwrap_or_else(|_| json!([]));
+
     let root = storage_root(workspace);
     Ok(json!({
         "index": {
@@ -264,7 +269,15 @@ pub fn build(
             "force": force,
             "path": root,
             "storageBackend": "lancedb",
-            "semantic": crate::lsp::scip_gen::semantic_summary_json(&semantic),
+            "semantic": semantic_json,
+            "stages": {
+                "scan": records.len(),
+                "proof": records.len(),
+                "skipped": skipped_count,
+                "semanticAttempted": semantic.attempted,
+                "semanticSkipped": semantic.skipped,
+                "graphAttempted": !staged
+            },
             "skipped": {
                 "count": skipped_count,
                 "path": skipped_log_path

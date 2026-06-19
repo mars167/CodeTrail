@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SWE-bench搜索效率对比分析脚本"""
+"""SWE-bench search efficiency comparison script."""
 import json, sys
 
 def load_results(path):

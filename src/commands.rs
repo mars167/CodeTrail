@@ -1,3 +1,5 @@
+use std::io::IsTerminal;
+
 use serde_json::{json, Value};
 
 use crate::{
@@ -677,22 +679,58 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 no_semantic,
             } => {
                 let semantic_enabled = !*no_semantic;
-                let result = with_progress(
-                    &cli.output,
-                    "Building index",
-                    "Index build complete",
-                    || {
-                        index::build(
-                            &workspace,
-                            &scan_opts,
-                            *staged,
-                            *changed,
-                            *force,
-                            semantic_enabled,
-                            verbose,
-                        )
-                    },
-                )?;
+                let started = std::time::Instant::now();
+                let result = with_progress(&cli.output, "Building index", "", || {
+                    index::build(
+                        &workspace,
+                        &scan_opts,
+                        *staged,
+                        *changed,
+                        *force,
+                        semantic_enabled,
+                        verbose,
+                    )
+                })?;
+                if cli.output == OutputFormat::Text && std::io::stderr().is_terminal() {
+                    let stages = result
+                        .get("index")
+                        .and_then(|index| index.get("stages"))
+                        .cloned()
+                        .unwrap_or_else(|| json!({}));
+                    let finish_message = output::stage_summary_line(
+                        "index build",
+                        &[
+                            (
+                                "scan",
+                                stages
+                                    .get("scan")
+                                    .and_then(Value::as_u64)
+                                    .map(|value| value as usize),
+                            ),
+                            (
+                                "proof",
+                                stages
+                                    .get("proof")
+                                    .and_then(Value::as_u64)
+                                    .map(|value| value as usize),
+                            ),
+                            (
+                                "skipped",
+                                stages
+                                    .get("skipped")
+                                    .and_then(Value::as_u64)
+                                    .map(|value| value as usize),
+                            ),
+                            ("semantic", None),
+                            ("graph", None),
+                        ],
+                        started.elapsed(),
+                    );
+                    eprintln!("{finish_message}");
+                    for line in provider_install_lines_from_result(&result) {
+                        eprintln!("{line}");
+                    }
+                }
                 output::response(
                     "index build",
                     "index build",
@@ -854,6 +892,57 @@ where
     let result = work();
     progress.finish(if result.is_ok() { finish_message } else { "" });
     result
+}
+
+fn provider_install_lines_from_result(result: &Value) -> Vec<String> {
+    let Some(help) = result
+        .pointer("/index/semantic/providerInstallHelp")
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    help.iter()
+        .map(|item| {
+            let language = item
+                .get("language")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let provider = item
+                .get("provider")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let env_key = item
+                .get("envKey")
+                .and_then(Value::as_str)
+                .unwrap_or("CODETRAIL_SCIP_*");
+            let install = item
+                .pointer(provider_install_pointer())
+                .and_then(Value::as_str)
+                .unwrap_or(provider);
+            format!(
+                "codetrail: semantic provider missing for {language} ({provider}). Install: {install}. Fallback: tree-sitter parser. Override with {env_key}."
+            )
+        })
+        .collect()
+}
+
+fn provider_install_pointer() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "/install/macos/0"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "/install/linux/0"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "/install/windows/0"
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        "/install/macos/0"
+    }
 }
 
 fn attach_saved_query(

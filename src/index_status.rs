@@ -8,10 +8,11 @@ use serde_json::{json, Value};
 use crate::{
     generation_manifest::{GenerationManifest, ManifestState},
     index::scip_root,
-    lsp::registry::{resolve_binary, resolve_server},
+    lsp::registry::resolve_binary,
     project_graph::{
         discover_project_graph, ProjectGraph, ProjectLanguage, ProjectRoot, ProjectRootKind,
     },
+    provider_help::{requirement_for_language, ProviderRequirement},
     scip,
     workspace::{FileRecord, Workspace},
 };
@@ -40,8 +41,8 @@ pub(crate) fn semantic_status(
     let (scip_languages, scip_symbol_count, scip_read_error) = scip_language_summary(&db_path);
 
     let graph = discover_project_graph(&workspace.root);
-    let (roots, language_servers, graph_error) = match graph {
-        Ok(graph) => semantic_roots_and_servers(workspace, &graph, manifests),
+    let (roots, semantic_providers, graph_error) = match graph {
+        Ok(graph) => semantic_roots_and_providers(workspace, &graph, manifests),
         Err(error) => (
             Vec::new(),
             Vec::new(),
@@ -67,7 +68,8 @@ pub(crate) fn semantic_status(
         "indexedLanguages": indexed_languages(records),
         "scipIndex": scip_index,
         "roots": roots,
-        "languageServers": language_servers,
+        "semanticProviders": semantic_providers.clone(),
+        "languageServers": semantic_providers,
     });
     if let Some(error) = graph_error {
         status["projectGraphError"] = Value::String(error);
@@ -101,7 +103,7 @@ fn scip_language_summary(db_path: &Path) -> (Value, usize, Option<String>) {
     )
 }
 
-fn semantic_roots_and_servers(
+fn semantic_roots_and_providers(
     workspace: &Workspace,
     graph: &ProjectGraph,
     manifests: &[GenerationManifest],
@@ -126,7 +128,7 @@ fn semantic_roots_and_servers(
                     .unwrap_or("not_generated"),
                 "provider": manifest
                     .map(|manifest| manifest.provider_name.as_str())
-                    .unwrap_or(default_lsp_command(&root.language)),
+                    .unwrap_or(requirement_for_language(&root.language).provider),
                 "partialReasons": manifest
                     .map(|manifest| manifest.partial_reasons.clone())
                     .unwrap_or_default(),
@@ -142,12 +144,12 @@ fn semantic_roots_and_servers(
     for root in &graph.roots {
         languages.insert(root.language.clone());
     }
-    let language_servers = languages
+    let semantic_providers = languages
         .iter()
-        .map(language_server_status)
+        .map(semantic_provider_status)
         .collect::<Vec<_>>();
 
-    (root_values, language_servers, None)
+    (root_values, semantic_providers, None)
 }
 
 fn swift_config_status(workspace: &Workspace, root: &ProjectRoot) -> Option<Value> {
@@ -192,81 +194,66 @@ fn swift_config_status(workspace: &Workspace, root: &ProjectRoot) -> Option<Valu
     }
 }
 
-fn language_server_status(language: &ProjectLanguage) -> Value {
-    let env_key = lsp_env_key(language);
-    let env_override = std::env::var(env_key).ok();
-    let default_command = default_lsp_command(language);
-    let spec = resolve_server(language);
-    match spec {
-        Some(spec) => {
-            let available = lsp_program_available(&spec.program);
-            let missing_dependencies = if available {
-                Vec::new()
-            } else {
-                vec![spec.program.clone()]
-            };
-            let mut value = json!({
-                "language": language.to_string(),
-                "required": true,
-                "status": if available { "available" } else { "missing" },
-                "available": available,
-                "provider": spec.provider_id,
-                "program": spec.program,
-                "args": spec.args,
-                "envKey": env_key,
-                "defaultCommand": default_command,
-                "missingDependencies": missing_dependencies,
-            });
-            if let Some(env_override) = env_override {
-                value["envOverride"] = Value::String(env_override);
-            }
-            value
-        }
-        None => {
-            let mut value = json!({
-                "language": language.to_string(),
-                "required": true,
-                "status": "missing",
-                "available": false,
-                "provider": default_command,
-                "program": Value::Null,
-                "args": Vec::<String>::new(),
-                "envKey": env_key,
-                "defaultCommand": default_command,
-                "missingDependencies": [default_command],
-            });
-            if let Some(env_override) = env_override {
-                value["envOverride"] = Value::String(env_override);
-            }
-            value
-        }
+fn semantic_provider_status(language: &ProjectLanguage) -> Value {
+    let requirement = requirement_for_language(language);
+    let env_override = std::env::var(requirement.env_key)
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let program = provider_program(&requirement);
+    let available = program.is_some();
+    let mut value = json!({
+        "language": language.to_string(),
+        "required": true,
+        "status": if available { "available" } else { "missing" },
+        "available": available,
+        "provider": requirement.provider,
+        "kind": requirement.kind,
+        "program": program,
+        "args": requirement.args,
+        "envKey": requirement.env_key,
+        "defaultCommand": requirement.command,
+        "defaultArgs": requirement.args,
+        "fallback": requirement.fallback,
+        "missingDependencies": if available {
+            Vec::<&str>::new()
+        } else {
+            vec![requirement.provider]
+        },
+    });
+    if let Some(env_override) = env_override {
+        value["envOverride"] = Value::String(env_override);
     }
+    value
 }
 
-fn lsp_program_available(program: &str) -> bool {
-    resolve_binary(program).is_some()
+fn provider_program(requirement: &ProviderRequirement) -> Option<String> {
+    if let Some(override_value) = std::env::var(requirement.env_key)
+        .ok()
+        .and_then(|value| first_shell_word(&value))
+    {
+        return resolve_binary(&override_value);
+    }
+    resolve_binary(requirement.command)
 }
 
-const fn default_lsp_command(language: &ProjectLanguage) -> &'static str {
-    match language {
-        ProjectLanguage::Go => "gopls",
-        ProjectLanguage::Rust => "rust-analyzer",
-        ProjectLanguage::Java => "jdtls",
-        ProjectLanguage::TypeScript => "typescript-language-server",
-        ProjectLanguage::Ruby => "ruby-lsp",
-        ProjectLanguage::Swift => "sourcekit-lsp",
+fn first_shell_word(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
     }
-}
-
-const fn lsp_env_key(language: &ProjectLanguage) -> &'static str {
-    match language {
-        ProjectLanguage::Go => "CODETRAIL_LSP_GO",
-        ProjectLanguage::Rust => "CODETRAIL_LSP_RUST",
-        ProjectLanguage::Java => "CODETRAIL_LSP_JAVA",
-        ProjectLanguage::TypeScript => "CODETRAIL_LSP_TYPESCRIPT",
-        ProjectLanguage::Ruby => "CODETRAIL_LSP_RUBY",
-        ProjectLanguage::Swift => "CODETRAIL_LSP_SWIFT",
+    if let Some(rest) = trimmed.strip_prefix('"') {
+        return rest
+            .find('"')
+            .map(|end| rest[..end].to_string())
+            .filter(|word| !word.is_empty());
     }
+    if let Some(rest) = trimmed.strip_prefix('\'') {
+        return rest
+            .find('\'')
+            .map(|end| rest[..end].to_string())
+            .filter(|word| !word.is_empty());
+    }
+    trimmed.split_whitespace().next().map(ToString::to_string)
 }
 
 fn aggregate_semantic_state(

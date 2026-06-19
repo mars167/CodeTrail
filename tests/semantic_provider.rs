@@ -355,7 +355,7 @@ fn start_failure_marks_only_that_root_partial() {
 
     let mut scheduler = SemanticScheduler::default();
     scheduler.register_provider(Box::new(FakeProvider::new(
-        "gopls-fake",
+        "scip-go-fake",
         ProjectLanguage::Go,
         FakeBehavior::StartFailure,
     )));

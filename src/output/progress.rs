@@ -66,6 +66,25 @@ fn should_show_progress(format: &OutputFormat, stderr_is_terminal: bool) -> bool
     *format == OutputFormat::Text && stderr_is_terminal
 }
 
+pub fn stage_summary_line(
+    label: &str,
+    stages: &[(&str, Option<usize>)],
+    elapsed: std::time::Duration,
+) -> String {
+    let rendered = stages
+        .iter()
+        .map(|(name, count)| match count {
+            Some(count) => format!("{name}={count}"),
+            None => (*name).to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "{label} complete ({rendered}) in {:.2}s",
+        elapsed.as_secs_f64()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,5 +96,19 @@ mod tests {
         assert!(!should_show_progress(&OutputFormat::Json, true));
         assert!(!should_show_progress(&OutputFormat::CompactJson, true));
         assert!(!should_show_progress(&OutputFormat::Jsonl, true));
+    }
+
+    #[test]
+    fn progress_stage_line_includes_elapsed_and_counts() {
+        let line = stage_summary_line(
+            "index build",
+            &[("scan", Some(12)), ("proof", Some(12)), ("semantic", None)],
+            std::time::Duration::from_millis(1250),
+        );
+        assert!(line.contains("index build complete"));
+        assert!(line.contains("scan=12"));
+        assert!(line.contains("proof=12"));
+        assert!(line.contains("semantic"));
+        assert!(line.contains("1.25s"));
     }
 }

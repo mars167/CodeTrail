@@ -23,7 +23,7 @@ use projection::public_response;
 use text::render_text;
 
 pub use enrichment::{no_match_exit, with_workspace_root};
-pub use progress::ProgressIndicator;
+pub use progress::{stage_summary_line, ProgressIndicator};
 pub use projection::public_response_value;
 
 pub const SCHEMA_VERSION: &str = "1.0";
@@ -80,7 +80,7 @@ pub fn source_fact() -> Reliability {
         source: "text_path_git_filesystem",
         exact: true,
         llm_instruction:
-            "这些结果是可验证源码事实。小文件或同文件多处命中应优先用 codetrail read <path> 一次读完；大文件再读取精确范围。",
+            "These results are verifiable source facts. For small files or multiple hits in the same file, prefer codetrail read <path>; for large files, read the exact source range.",
     }
 }
 
@@ -90,7 +90,7 @@ pub fn source_fact_inexact() -> Reliability {
         source: "text_path_git_filesystem",
         exact: false,
         llm_instruction:
-            "这些结果来自源码文件，但内容被省略或截断。需要使用更小范围的 codetrail read 验证。",
+            "These results come from source files, but content was omitted or truncated. Use a narrower codetrail read range for verification.",
     }
 }
 
@@ -100,7 +100,7 @@ pub fn parser_fact() -> Reliability {
         source: "tree_sitter_ast",
         exact: false,
         llm_instruction:
-            "这些结果是 parser fact，不能等同于 precise semantic reference resolution。",
+            "These results are parser facts and must not be treated as precise semantic reference resolution.",
     }
 }
 
@@ -110,7 +110,7 @@ pub fn precise_fact() -> Reliability {
         source: "scip_occurrence_index",
         exact: true,
         llm_instruction:
-            "这些结果来自 precise code intelligence index。小文件可用 codetrail read <path> 一次验证上下文；大文件再读取源码范围。",
+            "These results come from a precise code intelligence index. For small files, verify context with codetrail read <path>; for large files, read the source range.",
     }
 }
 
@@ -120,7 +120,7 @@ pub fn inferred_candidate() -> Reliability {
         source: "tree_sitter_ast_heuristic",
         exact: false,
         llm_instruction:
-            "这些结果只能作为候选关系，不是完整调用图。推理前必须用 codetrail read 验证每个匹配。",
+            "These results are candidate relationships, not a complete call graph. Verify each match with codetrail read before reasoning from it.",
     }
 }
 
@@ -129,7 +129,8 @@ pub fn freshness() -> Reliability {
         level: "freshness",
         source: "index_manifest_git_status",
         exact: false,
-        llm_instruction: "这些结果描述缓存新鲜度和 watcher 状态，不提升代码事实准确性。",
+        llm_instruction:
+            "These results describe cache freshness and watcher state; they do not increase code fact accuracy.",
     }
 }
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# codetrail 性能基准采集和对比脚本
+# codetrail performance benchmark collection and comparison script
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,9 +11,6 @@ BASELINE_FILE="$SCRIPT_DIR/baseline.json"
 BASELINE_VALUES_DIR="$SCRIPT_DIR/baseline_values"
 RESULTS_DIR="$SCRIPT_DIR/bench_results"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-
-: "${CODETRAIL_LSP_JAVA_READY_TIMEOUT_MS:=5000}"
-export CODETRAIL_LSP_JAVA_READY_TIMEOUT_MS
 
 mkdir -p "$RESULTS_DIR"
 

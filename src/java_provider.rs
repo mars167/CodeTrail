@@ -1,19 +1,18 @@
-//! Java JDT LS provider adapter protocol.
+//! Java semantic provider metadata.
 //!
 //! Java semantics depend on classpath, Maven/Gradle, annotation processors,
-//! generated sources, and JDK. Eclipse JDT LS provides mature project import
-//! and semantic model access via LSP.
+//! generated sources, and JDK. CodeTrail uses the native SCIP Java indexer for
+//! precise Java facts.
 //!
-//! The adapter starts a JDT LS session per project root, waits for Maven/Gradle
-//! import ready, then batch-processes class/interface/method/constructor
-//! candidates. JDK, wrapper, classpath, annotation processors, and generated
-//! source producers enter the environment/config proof.
+//! The adapter records Java provider identity and proof inputs. JDK, wrapper,
+//! classpath, annotation processors, and generated source producers enter the
+//! environment/config proof.
 
 use serde::{Deserialize, Serialize};
 
 use crate::semantic_provider::{ProviderCapabilities, SemanticProviderVersion};
 
-pub const JAVA_PROVIDER_NAME: &str = "jdtls";
+pub const JAVA_PROVIDER_NAME: &str = "scip-java";
 pub const JAVA_PROTOCOL_VERSION: u32 = 1;
 
 // ── Adapter configuration ───────────────────────────────────────────────────

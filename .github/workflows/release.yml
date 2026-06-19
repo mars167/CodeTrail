@@ -215,3 +215,67 @@ jobs:
           TARGET_SHA: ${{ steps.release-target.outputs.sha }}
         shell: bash
         run: scripts/upload-gitea-release-assets.sh dist
+
+  publish-npm:
+    name: Publish npm packages
+    runs-on: ubuntu-latest
+    needs: [build, publish]
+    if: startsWith(github.event.inputs.tag || github.ref_name, 'v')
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'npm'
+          cache-dependency-path: npm/package.json
+
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Prepare npm platform packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/npm/check-versions.js
+          node scripts/npm/build-packages.js dist
+          node --test npm/test/*.test.js
+          node scripts/npm/smoke.js
+
+      - name: Resolve npm dist tag
+        id: npm-tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./npm/package.json').version")"
+          if [[ "$version" == *-* ]]; then
+            echo "tag=next" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish platform packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          for package_dir in npm/platform/*; do
+            (cd "$package_dir" && npm publish --tag "${{ steps.npm-tag.outputs.tag }}" --provenance)
+          done
+
+      - name: Publish main package
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd npm && npm publish --tag "${{ steps.npm-tag.outputs.tag }}" --provenance)

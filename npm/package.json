@@ -1,0 +1,36 @@
+{
+  "name": "codetrail",
+  "version": "0.1.7-beta.2",
+  "description": "CodeTrail: deterministic-first code search with reliability-labeled evidence",
+  "license": "MIT",
+  "bin": {
+    "codetrail": "bin/codetrail.js",
+    "codetrail-skills": "bin/codetrail.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "assets/",
+    "package.json"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check:versions": "node ../scripts/npm/check-versions.js",
+    "smoke": "node ../scripts/npm/smoke.js"
+  },
+  "optionalDependencies": {
+    "@codetrail/core-darwin-arm64": "0.1.7-beta.2",
+    "@codetrail/core-darwin-x64": "0.1.7-beta.2",
+    "@codetrail/core-linux-arm64": "0.1.7-beta.2",
+    "@codetrail/core-linux-x64": "0.1.7-beta.2",
+    "@codetrail/core-win32-arm64": "0.1.7-beta.2",
+    "@codetrail/core-win32-x64": "0.1.7-beta.2"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}
