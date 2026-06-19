@@ -6,6 +6,7 @@ const { spawnSync } = require("node:child_process");
 const { isJsonOutput } = require("./args");
 
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const REGISTRY_TIMEOUT_MS = 2500;
 const REGISTRY_URL = "https://registry.npmjs.org/codetrail/latest";
 
 function isTruthyEnv(value) {
@@ -57,10 +58,30 @@ function compareVersions(left, right) {
   return a.prerelease < b.prerelease ? -1 : 1;
 }
 
-function defaultFetchJson(url) {
+function defaultFetchJson(url, options = {}) {
+  const transport = options.transport || https;
+  const timeoutMs = options.timeoutMs ?? REGISTRY_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
-    https
-      .get(url, { headers: { accept: "application/json", "user-agent": "codetrail-update-check" } }, (response) => {
+    let settled = false;
+    let timer = null;
+
+    function finishError(error) {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      reject(error);
+    }
+
+    function finishOk(value) {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(value);
+    }
+
+    let request;
+    try {
+      request = transport.get(url, { headers: { accept: "application/json", "user-agent": "codetrail-update-check" } }, (response) => {
         let body = "";
         response.setEncoding("utf8");
         response.on("data", (chunk) => {
@@ -68,13 +89,28 @@ function defaultFetchJson(url) {
         });
         response.on("end", () => {
           if (response.statusCode < 200 || response.statusCode >= 300) {
-            reject(new Error(`npm registry returned ${response.statusCode}`));
+            finishError(new Error(`npm registry returned ${response.statusCode}`));
             return;
           }
-          resolve(JSON.parse(body));
+          try {
+            finishOk(JSON.parse(body));
+          } catch (error) {
+            finishError(error);
+          }
         });
-      })
-      .on("error", reject);
+      });
+    } catch (error) {
+      finishError(error);
+      return;
+    }
+
+    request.on("error", finishError);
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        request.destroy(new Error(`npm registry request timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      if (typeof timer.unref === "function") timer.unref();
+    }
   });
 }
 
@@ -162,6 +198,7 @@ module.exports = {
   readCache,
   writeCache,
   compareVersions,
+  defaultFetchJson,
   fetchLatestVersion,
   maybePrintUpdateNotice,
   buildInstallArgs,

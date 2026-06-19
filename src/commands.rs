@@ -916,7 +916,7 @@ fn provider_install_lines_from_result(result: &Value) -> Vec<String> {
                 .and_then(Value::as_str)
                 .unwrap_or("CODETRAIL_SCIP_*");
             let install = item
-                .pointer("/install/macos/0")
+                .pointer(provider_install_pointer())
                 .and_then(Value::as_str)
                 .unwrap_or(provider);
             format!(
@@ -924,6 +924,25 @@ fn provider_install_lines_from_result(result: &Value) -> Vec<String> {
             )
         })
         .collect()
+}
+
+fn provider_install_pointer() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "/install/macos/0"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "/install/linux/0"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "/install/windows/0"
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        "/install/macos/0"
+    }
 }
 
 fn attach_saved_query(

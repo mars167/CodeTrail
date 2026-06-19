@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { EventEmitter } = require("node:events");
 const os = require("node:os");
 const path = require("node:path");
 const {
@@ -8,6 +9,7 @@ const {
   updateCachePath,
   buildInstallArgs,
   canUseGlobalNpm,
+  defaultFetchJson,
   installVersion,
   packageTagForVersion
 } = require("../lib/update");
@@ -41,6 +43,40 @@ test("builds npm install command args", () => {
 test("uses next dist tag for prerelease and latest for stable", () => {
   assert.equal(packageTagForVersion("0.2.0"), "latest");
   assert.equal(packageTagForVersion("0.2.0-beta.1"), "next");
+});
+
+test("registry fetch has a timeout and aborts the request", async () => {
+  let timeoutMs = 0;
+  let destroyed = false;
+  const request = new EventEmitter();
+  request.destroy = (error) => {
+    destroyed = true;
+    request.emit("error", error);
+  };
+  const transport = {
+    get(_url, _options, _callback) {
+      return request;
+    }
+  };
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  global.setTimeout = (callback, ms) => {
+    timeoutMs = ms;
+    callback();
+    return { unref() {} };
+  };
+  global.clearTimeout = () => {};
+  try {
+    await assert.rejects(
+      defaultFetchJson("https://registry.example.invalid/latest", { transport, timeoutMs: 25 }),
+      /timed out after 25ms/
+    );
+  } finally {
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+  assert.equal(timeoutMs, 25);
+  assert.equal(destroyed, true);
 });
 
 test("checks npm global environment before installing", () => {
