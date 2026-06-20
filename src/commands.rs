@@ -7,6 +7,7 @@ use crate::{
         Cli, Command, HooksCommand, IndexCommand, IndexProviderCommand, OutputFormat, QueryCommand,
         SkillCommand,
     },
+    code_context::{self, CodeContextOptions},
     completions, config_index, graph, index,
     install::{IndexProviderInstallOptions, SkillInstallOptions},
     output,
@@ -279,7 +280,14 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 ),
             ), query_output)
         }
-        Command::Symbols { query } => {
+        Command::Symbols {
+            query,
+            include_code,
+            code_context,
+            code_max_lines,
+        } => {
+            let code_options =
+                CodeContextOptions::new(*include_code, *code_context, *code_max_lines);
             let precise_empty =
                 if let Some(precise) = scip_index::symbols(&workspace, &scan_opts, query)? {
                     if has_results(&precise.results) {
@@ -287,17 +295,24 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                             precise.results,
                             &scan_opts,
                             "symbols",
-                            json!({ "query": query, "producer": "scip" }),
+                            code_context::query_with_code_options(
+                                json!({ "query": query, "producer": "scip" }),
+                                &code_options,
+                            ),
                             &workspace.snapshot_id,
                         )?;
-                        return emit_response(
-                            &cli.output,
+                        let response = code_context::enrich_response(
+                            &workspace,
+                            &scan_opts,
                             output::with_page_meta(
                                 output::response_with_index(
                                     "symbols",
                                     "symbols",
                                     scoped_query(
-                                        json!({ "query": query, "producer": "scip" }),
+                                        code_context::query_with_code_options(
+                                            json!({ "query": query, "producer": "scip" }),
+                                            &code_options,
+                                        ),
                                         &scan_opts,
                                     ),
                                     &workspace.snapshot_id,
@@ -312,6 +327,11 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                                 page.next_cursor,
                                 page.facets,
                             ),
+                            &code_options,
+                        )?;
+                        return emit_response(
+                            &cli.output,
+                            response,
                             &workspace,
                             cli.save_query.as_deref(),
                         );
@@ -328,12 +348,19 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             let fallback_had_results = has_results(&results);
             if !fallback_had_results {
                 if let Some(precise) = precise_empty {
-                    return emit_response(
-                        &cli.output,
+                    let response = code_context::enrich_response(
+                        &workspace,
+                        &scan_opts,
                         output::response_with_index(
                             "symbols",
                             "symbols",
-                            scoped_query(json!({ "query": query, "producer": "scip" }), &scan_opts),
+                            scoped_query(
+                                code_context::query_with_code_options(
+                                    json!({ "query": query, "producer": "scip" }),
+                                    &code_options,
+                                ),
+                                &scan_opts,
+                            ),
                             &workspace.snapshot_id,
                             output::precise_fact(),
                             output::IndexedResponseParts::new(
@@ -342,6 +369,11 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                                 scope_warnings.clone(),
                             ),
                         ),
+                        &code_options,
+                    )?;
+                    return emit_response(
+                        &cli.output,
+                        response,
                         &workspace,
                         cli.save_query.as_deref(),
                     );
@@ -351,48 +383,70 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 results,
                 &scan_opts,
                 "symbols",
-                json!({ "query": query, "producer": "tree_sitter_parser" }),
+                code_context::query_with_code_options(
+                    json!({ "query": query, "producer": "tree_sitter_parser" }),
+                    &code_options,
+                ),
                 &workspace.snapshot_id,
             )?;
             exit_code = output::no_match_exit(&page.results);
-            output::with_page_meta(
-                output::response(
-                    "symbols",
-                    "symbols",
-                    scoped_query(
-                        json!({ "query": query, "producer": "tree_sitter_parser" }),
-                        &scan_opts,
-                    ),
-                    &workspace.snapshot_id,
-                    result_reliability(parser_had_results, &page.results),
-                    page.results.clone(),
-                    merge_warnings(
-                        warnings,
+            code_context::enrich_response(
+                &workspace,
+                &scan_opts,
+                output::with_page_meta(
+                    output::response(
+                        "symbols",
+                        "symbols",
+                        scoped_query(
+                            code_context::query_with_code_options(
+                                json!({ "query": query, "producer": "tree_sitter_parser" }),
+                                &code_options,
+                            ),
+                            &scan_opts,
+                        ),
+                        &workspace.snapshot_id,
+                        result_reliability(parser_had_results, &page.results),
+                        page.results.clone(),
                         merge_warnings(
-                            vec![
-                                "precise_scip_index_unavailable: using tree-sitter parser fallback"
-                                    .to_string(),
-                            ],
-                            scope_warnings.clone(),
+                            warnings,
+                            merge_warnings(
+                                vec![
+                                    "precise_scip_index_unavailable: using tree-sitter parser fallback"
+                                        .to_string(),
+                                ],
+                                scope_warnings.clone(),
+                            ),
                         ),
                     ),
+                    page.truncated,
+                    page.next_cursor,
+                    page.facets,
                 ),
-                page.truncated,
-                page.next_cursor,
-                page.facets,
-            )
+                &code_options,
+            )?
         }
-        Command::Defs { identifier } => {
+        Command::Defs {
+            identifier,
+            include_code,
+            code_context,
+            code_max_lines,
+        } => {
+            let code_options =
+                CodeContextOptions::new(*include_code, *code_context, *code_max_lines);
             let precise_empty =
                 if let Some(precise) = scip_index::defs(&workspace, &scan_opts, identifier)? {
                     if has_results(&precise.results) {
-                        return emit_response(
-                            &cli.output,
+                        let response = code_context::enrich_response(
+                            &workspace,
+                            &scan_opts,
                             output::response_with_index(
                                 "defs",
                                 "defs",
                                 scoped_query(
-                                    json!({ "identifier": identifier, "producer": "scip" }),
+                                    code_context::query_with_code_options(
+                                        json!({ "identifier": identifier, "producer": "scip" }),
+                                        &code_options,
+                                    ),
                                     &scan_opts,
                                 ),
                                 &workspace.snapshot_id,
@@ -403,6 +457,11 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                                     scope_warnings.clone(),
                                 ),
                             ),
+                            &code_options,
+                        )?;
+                        return emit_response(
+                            &cli.output,
+                            response,
                             &workspace,
                             cli.save_query.as_deref(),
                         );
@@ -418,13 +477,17 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             }
             if !has_results(&results) {
                 if let Some(precise) = precise_empty {
-                    return emit_response(
-                        &cli.output,
+                    let response = code_context::enrich_response(
+                        &workspace,
+                        &scan_opts,
                         output::response_with_index(
                             "defs",
                             "defs",
                             scoped_query(
-                                json!({ "identifier": identifier, "producer": "scip" }),
+                                code_context::query_with_code_options(
+                                    json!({ "identifier": identifier, "producer": "scip" }),
+                                    &code_options,
+                                ),
                                 &scan_opts,
                             ),
                             &workspace.snapshot_id,
@@ -435,33 +498,46 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                                 scope_warnings.clone(),
                             ),
                         ),
+                        &code_options,
+                    )?;
+                    return emit_response(
+                        &cli.output,
+                        response,
                         &workspace,
                         cli.save_query.as_deref(),
                     );
                 }
             }
             exit_code = output::no_match_exit(&results);
-            output::response(
-                "defs",
-                "defs",
-                scoped_query(
-                    json!({ "identifier": identifier, "producer": "tree_sitter_parser_fallback", "fallbackReason": "precise_scip_index_unavailable" }),
-                    &scan_opts,
-                ),
-                &workspace.snapshot_id,
-                result_reliability(parser_had_results, &results),
-                results,
-                merge_warnings(
-                    warnings,
+            code_context::enrich_response(
+                &workspace,
+                &scan_opts,
+                output::response(
+                    "defs",
+                    "defs",
+                    scoped_query(
+                        code_context::query_with_code_options(
+                            json!({ "identifier": identifier, "producer": "tree_sitter_parser_fallback", "fallbackReason": "precise_scip_index_unavailable" }),
+                            &code_options,
+                        ),
+                        &scan_opts,
+                    ),
+                    &workspace.snapshot_id,
+                    result_reliability(parser_had_results, &results),
+                    results,
                     merge_warnings(
-                        vec![
-                            "precise_scip_index_unavailable: using tree-sitter parser fallback"
-                                .to_string(),
-                        ],
-                        scope_warnings.clone(),
+                        warnings,
+                        merge_warnings(
+                            vec![
+                                "precise_scip_index_unavailable: using tree-sitter parser fallback"
+                                    .to_string(),
+                            ],
+                            scope_warnings.clone(),
+                        ),
                     ),
                 ),
-            )
+                &code_options,
+            )?
         }
         Command::Routes {
             pattern,

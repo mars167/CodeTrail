@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use crate::{
     cli::ReplaySnapshot,
-    output,
+    code_context, output,
     query::{QueryOptions, QueryService},
     query_input::InputMode,
     search_pattern::SearchPatternMode,
@@ -123,8 +123,16 @@ pub fn replay(workspace: &Workspace, name: &str, mode: &ReplaySnapshot) -> Resul
             )?
         }
         "refs" => service.refs(required_str(query, "identifier")?, &opts)?,
-        "defs" => service.defs(required_str(query, "identifier")?, &opts)?,
-        "symbols" => service.symbols(required_str(query, "query")?, &opts)?,
+        "defs" => service.defs_with_code(
+            required_str(query, "identifier")?,
+            &opts,
+            &code_context::options_from_query(query),
+        )?,
+        "symbols" => service.symbols_with_code(
+            required_str(query, "query")?,
+            &opts,
+            &code_context::options_from_query(query),
+        )?,
         "routes" => service.routes(
             query.get("pattern").and_then(Value::as_str),
             &string_array(query.get("framework")),

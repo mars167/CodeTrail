@@ -117,6 +117,7 @@ pub(super) fn caveat_metadata(code: &str) -> (&'static str, &'static str) {
         | "parser_fact"
         | "refs_identifier_boundary_text_search_unless_a_precise_occurrence_index_is_available"
         | "query_input_expanded"
+        | "source_context_fallback"
         | "inferred_candidate" => ("info", "capability"),
         "unknown_tool" | "invalid_mcp_argument" | "unsupported_mcp_scope" | "cli_usage_error" => {
             ("error", "error")
@@ -134,6 +135,11 @@ fn results_contain_truncation(value: &Value) -> bool {
         .any(|result| {
             result.get("truncated").and_then(Value::as_bool) == Some(true)
                 || result.get("previewTruncated").and_then(Value::as_bool) == Some(true)
+                || result.pointer("/source/truncated").and_then(Value::as_bool) == Some(true)
+                || result
+                    .pointer("/relations/truncated")
+                    .and_then(Value::as_bool)
+                    == Some(true)
                 || result
                     .get("context")
                     .and_then(Value::as_array)

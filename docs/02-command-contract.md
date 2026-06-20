@@ -85,6 +85,8 @@ reference resolution。
 
 ```bash
 codetrail refs <identifier>
+codetrail defs <identifier>
+codetrail symbols <query>
 codetrail calls <caller-name>
 codetrail callers <callee-name>
 ```
@@ -104,6 +106,27 @@ codetrail callers <callee-name>
 - 兼容输入命中时结果会带 `matchedInputVariant`；使用兼容候选或非默认 scope 时
   public JSON 会返回 `query_input_expanded` caveat，severity 为 `info`、
   category 为 `capability`。
+
+`symbols` 和 `defs` 支持显式源码上下文：
+
+```bash
+codetrail symbols <query> --include-code [--code-context <lines>] [--code-max-lines <lines>]
+codetrail defs <identifier> --include-code [--code-context <lines>] [--code-max-lines <lines>]
+```
+
+- 默认 `--include-code=false`，`--code-context=20`，`--code-max-lines=200`；
+  `--code-max-lines` 最大为 `2000`。
+- `--code-context` 与 `--code-max-lines` 只在 `--include-code` 时有效；未开启
+  include-code 时传入会返回 usage error。
+- 每条结果会附加 `source` 和 `relations`。`source` 来自当前本地 workspace 的
+  源码读取，优先使用 parser `bodyRange`；SCIP precise 结果没有 body range 时
+  会按同文件同名 symbol 尝试 parser 补 body range；仍补不到时使用 occurrence
+  `range + codeContext` 并返回 `source_context_fallback` caveat。
+- `relations.calls` 是源码范围内的 outgoing call candidates，`relations.callers`
+  是按 symbolName 查询的 incoming caller candidates，二者最多各 12 条，并始终
+  保持 `inferred_candidate` 语义，不提升整体 reliability。
+- 大符号按 `--code-max-lines` 从起始行截断，`source.truncated=true` 且 caveats
+  包含 `source_truncated`。
 
 Go、Rust、Python、TypeScript、JavaScript、Java、Ruby 和 Swift 有
 tree-sitter parser fallback；其他语言的关系查询主要依赖 fresh graph/SCIP
@@ -170,6 +193,9 @@ public JSON 不暴露内部计时和扫描统计。
   `only` 或显式 `remoteSnapshot` 只查询选中的 remote text snapshot。
   remote-only 结果通过 caveats 标记 `remote_only`，并在 file proof
   不能与当前本地文件对齐时标记 `remote_unverified`。
+- MCP 的 `codetrail_symbols` 和 `codetrail_defs` 接受 `includeCode`、
+  `codeContext` 和 `codeMaxLines`，语义与 CLI 对应参数一致；输出仍使用同一
+  public JSON projection。
 
 ## 输出契约
 
@@ -192,6 +218,10 @@ MCP tool result 的 `content[0].text` 使用同一 public JSON 投影。
 稳定字段：
 
 - `results` 是唯一的主要结果载体。每条结果只保留定位、文本、符号、关系或命令结果本身需要的字段；内部审计字段、producer、source target、index freshness 和 agent next action 不进入公开 JSON。
+- `symbols/defs --include-code` 的每条结果可包含
+  `source: {path,range,rangeKind,startLine,endLine,content,truncated,truncatedReason}` 和
+  `relations: {calls,callers,truncated}`。relation 条目只保留公开定位和候选关系字段，
+  例如 `path`、`range`、`target`、`enclosingSymbol`、`language` 和 `layer`。
 - `page.truncated` 表示本次输出被裁切或分页，调用方应缩小查询、降低 context 或使用 `page.nextCursor` 翻页。
 - `page.nextCursor` 是下一页游标；没有下一页时为 `null`。
 - `caveats` 是机器可匹配的边界说明，结构为 `{code,message,severity,category}`。`severity` 目前使用 `info`、`warning` 或 `error`；`category` 目前使用 `capability`、`risk` 或 `error`。
@@ -214,6 +244,8 @@ MCP tool result 的 `content[0].text` 使用同一 public JSON 投影。
 
 - `--context` 控制结果上下文；默认 `0`，不会输出 context block。
 - preview、context 和结果数量受输出预算保护；当任何层级被裁切时，`page.truncated=true` 或 `caveats` 包含 `truncated_output`。
+- `symbols/defs --include-code` 的源码块额外受 `--code-max-lines` 控制；这是每条结果
+  的源码行数上限，不改变 `--limit` 的结果数量含义。
 - 宽查询 guard 仍会返回少量样本和 caveat，避免终端与机器输出被大结果集淹没。
 - internal JSON 可包含 `sourceTarget` 和 `suggestedReads`，用于提示宿主 Agent 读取的路径或行号范围；公开 JSON 不暴露这些 agent next action 字段，调用方应使用结果里的 `path` 和 `range` 组合读取目标。
 
@@ -278,6 +310,8 @@ flowchart LR
 
 - `--save-query <name>` 写入 `.codetrail/queries/<name>.json`；name 只允许 ASCII 字母、数字、`.`、`_` 和 `-`。
 - saved query 保存 command、canonicalCommand、query、scope、snapshotId、requestCursor 和 nextCursor；不会保存结果正文，也不会改变公开输出形态。
+- `symbols/defs --include-code` 的 `includeCode`、`codeContext` 和 `codeMaxLines`
+  保存在 query 元数据中，replay 时会重新读取当前 workspace 源码并重新计算候选关系。
 - `query replay <name>` 默认使用当前 workspace。snapshot 不匹配时会丢弃 saved cursor，按当前 scope 重跑并返回 `saved_query_snapshot_mismatch` caveat。
 - `query replay <name> --snapshot saved` 要求当前 snapshot 与保存时一致；不一致时返回错误。
 - `query show/list/delete` 是对本地 `.codetrail/queries/` 的文件系统操作，结果仍放在 `results`。
@@ -290,6 +324,8 @@ flowchart LR
 - `routes` 按 `METHOD routePattern  path:line` 渲染，并附带 framework 与
   handler candidate。
 - `calls`/`callers` 按 caller -> callee 关系渲染，并附带位置。
+- `symbols/defs --include-code` 会在 symbol/def 行下渲染带行号的 source block，并附
+  简短 calls/callers 摘要；JSON/JSONL 仍是该能力的主契约。
 - `index build/update/pack/unpack` 在 TTY 上显示加载进度；非 TTY 保持无
   spinner，避免污染脚本输出。
 - `index skipped` 输出跳过数量、日志路径和每条 path/reason/stage。

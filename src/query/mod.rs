@@ -12,6 +12,7 @@ use anyhow::Result;
 use serde_json::{json, Value};
 
 use crate::{
+    code_context::{self, CodeContextOptions},
     config_index, graph, output,
     query_input::{InputMode, InputPlan},
     routes, scip_index, search,
@@ -294,6 +295,15 @@ impl QueryService {
 
     /// Find definitions of `identifier` — prefers SCIP; falls back to tree-sitter.
     pub fn defs(&self, identifier: &str, opts: &QueryOptions) -> Result<Value> {
+        self.defs_with_code(identifier, opts, &CodeContextOptions::default())
+    }
+
+    pub fn defs_with_code(
+        &self,
+        identifier: &str,
+        opts: &QueryOptions,
+        code_options: &CodeContextOptions,
+    ) -> Result<Value> {
         let scan = opts.to_scan_options();
 
         // 1. Try SCIP precise index first.
@@ -301,17 +311,23 @@ impl QueryService {
             scip_index::defs(&self.workspace, &scan, identifier)?
         {
             if has_results(&precise.results) {
-                return Ok(self.finalize(output::response_with_index(
+                let response = output::response_with_index(
                     "defs",
                     "defs",
                     scoped_query(
-                        json!({ "identifier": identifier, "producer": "scip" }),
+                        code_context::query_with_code_options(
+                            json!({ "identifier": identifier, "producer": "scip" }),
+                            code_options,
+                        ),
                         &scan,
                     ),
                     &self.workspace.snapshot_id,
                     output::precise_fact(),
                     output::IndexedResponseParts::new(precise.index, precise.results, Vec::new()),
-                )));
+                );
+                let response =
+                    code_context::enrich_response(&self.workspace, &scan, response, code_options)?;
+                return Ok(self.finalize(response));
             }
             Some(precise)
         } else {
@@ -326,24 +342,33 @@ impl QueryService {
         }
         if !has_results(&results) {
             if let Some(precise) = precise_empty {
-                return Ok(self.finalize(output::response_with_index(
+                let response = output::response_with_index(
                     "defs",
                     "defs",
                     scoped_query(
-                        json!({ "identifier": identifier, "producer": "scip" }),
+                        code_context::query_with_code_options(
+                            json!({ "identifier": identifier, "producer": "scip" }),
+                            code_options,
+                        ),
                         &scan,
                     ),
                     &self.workspace.snapshot_id,
                     output::precise_fact(),
                     output::IndexedResponseParts::new(precise.index, precise.results, Vec::new()),
-                )));
+                );
+                let response =
+                    code_context::enrich_response(&self.workspace, &scan, response, code_options)?;
+                return Ok(self.finalize(response));
             }
         }
-        Ok(self.finalize(output::response(
+        let response = output::response(
             "defs",
             "defs",
             scoped_query(
-                json!({ "identifier": identifier, "producer": "tree_sitter_parser_fallback", "fallbackReason": "precise_scip_index_unavailable" }),
+                code_context::query_with_code_options(
+                    json!({ "identifier": identifier, "producer": "tree_sitter_parser_fallback", "fallbackReason": "precise_scip_index_unavailable" }),
+                    code_options,
+                ),
                 &scan,
             ),
             &self.workspace.snapshot_id,
@@ -352,11 +377,13 @@ impl QueryService {
             merge_warnings(
                 warnings,
                 vec![
-                    "precise_scip_index_unavailable: using tree-sitter parser fallback"
-                        .to_string(),
+                    "precise_scip_index_unavailable: using tree-sitter parser fallback".to_string(),
                 ],
             ),
-        )))
+        );
+        let response =
+            code_context::enrich_response(&self.workspace, &scan, response, code_options)?;
+        Ok(self.finalize(response))
     }
 
     /// Find references to `identifier` — prefers SCIP; falls back to text search.
@@ -442,42 +469,60 @@ impl QueryService {
 
     /// Find symbols matching `query` — prefers SCIP; falls back to tree-sitter.
     pub fn symbols(&self, query: &str, opts: &QueryOptions) -> Result<Value> {
+        self.symbols_with_code(query, opts, &CodeContextOptions::default())
+    }
+
+    pub fn symbols_with_code(
+        &self,
+        query: &str,
+        opts: &QueryOptions,
+        code_options: &CodeContextOptions,
+    ) -> Result<Value> {
         let scan = opts.to_scan_options();
 
         // 1. Try SCIP precise index first.
-        let precise_empty =
-            if let Some(precise) = scip_index::symbols(&self.workspace, &scan, query)? {
-                if has_results(&precise.results) {
-                    let page = search::page_results(
-                        precise.results,
-                        &scan,
-                        "symbols",
+        let precise_empty = if let Some(precise) =
+            scip_index::symbols(&self.workspace, &scan, query)?
+        {
+            if has_results(&precise.results) {
+                let page = search::page_results(
+                    precise.results,
+                    &scan,
+                    "symbols",
+                    code_context::query_with_code_options(
                         json!({ "query": query, "producer": "scip" }),
-                        &self.workspace.snapshot_id,
-                    )?;
-                    let response = output::response_with_index(
-                        "symbols",
-                        "symbols",
-                        scoped_query(json!({ "query": query, "producer": "scip" }), &scan),
-                        &self.workspace.snapshot_id,
-                        output::precise_fact(),
-                        output::IndexedResponseParts::new(
-                            precise.index,
-                            page.results.clone(),
-                            Vec::new(),
+                        code_options,
+                    ),
+                    &self.workspace.snapshot_id,
+                )?;
+                let response = output::response_with_index(
+                    "symbols",
+                    "symbols",
+                    scoped_query(
+                        code_context::query_with_code_options(
+                            json!({ "query": query, "producer": "scip" }),
+                            code_options,
                         ),
-                    );
-                    return Ok(self.finalize(output::with_page_meta(
-                        response,
-                        page.truncated,
-                        page.next_cursor,
-                        page.facets,
-                    )));
-                }
-                Some(precise)
-            } else {
-                None
-            };
+                        &scan,
+                    ),
+                    &self.workspace.snapshot_id,
+                    output::precise_fact(),
+                    output::IndexedResponseParts::new(
+                        precise.index,
+                        page.results.clone(),
+                        Vec::new(),
+                    ),
+                );
+                let response =
+                    output::with_page_meta(response, page.truncated, page.next_cursor, page.facets);
+                let response =
+                    code_context::enrich_response(&self.workspace, &scan, response, code_options)?;
+                return Ok(self.finalize(response));
+            }
+            Some(precise)
+        } else {
+            None
+        };
 
         // 2. Fall back to tree-sitter.
         let (mut results, warnings) = syntax::symbols(&self.workspace, &scan, query)?;
@@ -488,28 +533,43 @@ impl QueryService {
         let fallback_had_results = has_results(&results);
         if !fallback_had_results {
             if let Some(precise) = precise_empty {
-                return Ok(self.finalize(output::response_with_index(
+                let response = output::response_with_index(
                     "symbols",
                     "symbols",
-                    scoped_query(json!({ "query": query, "producer": "scip" }), &scan),
+                    scoped_query(
+                        code_context::query_with_code_options(
+                            json!({ "query": query, "producer": "scip" }),
+                            code_options,
+                        ),
+                        &scan,
+                    ),
                     &self.workspace.snapshot_id,
                     output::precise_fact(),
                     output::IndexedResponseParts::new(precise.index, precise.results, Vec::new()),
-                )));
+                );
+                let response =
+                    code_context::enrich_response(&self.workspace, &scan, response, code_options)?;
+                return Ok(self.finalize(response));
             }
         }
         let page = search::page_results(
             results,
             &scan,
             "symbols",
-            json!({ "query": query, "producer": "tree_sitter_parser" }),
+            code_context::query_with_code_options(
+                json!({ "query": query, "producer": "tree_sitter_parser" }),
+                code_options,
+            ),
             &self.workspace.snapshot_id,
         )?;
         let response = output::response(
             "symbols",
             "symbols",
             scoped_query(
-                json!({ "query": query, "producer": "tree_sitter_parser" }),
+                code_context::query_with_code_options(
+                    json!({ "query": query, "producer": "tree_sitter_parser" }),
+                    code_options,
+                ),
                 &scan,
             ),
             &self.workspace.snapshot_id,
@@ -522,12 +582,11 @@ impl QueryService {
                 ],
             ),
         );
-        Ok(self.finalize(output::with_page_meta(
-            response,
-            page.truncated,
-            page.next_cursor,
-            page.facets,
-        )))
+        let response =
+            output::with_page_meta(response, page.truncated, page.next_cursor, page.facets);
+        let response =
+            code_context::enrich_response(&self.workspace, &scan, response, code_options)?;
+        Ok(self.finalize(response))
     }
 
     pub fn routes(

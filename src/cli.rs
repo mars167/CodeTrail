@@ -1,6 +1,7 @@
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
 use crate::{
+    code_context::MAX_CODE_MAX_LINES,
     query_input::InputMode,
     search_pattern::{ContentPatternMode, SearchPatternMode},
 };
@@ -141,9 +142,21 @@ pub enum Command {
     },
     Symbols {
         query: String,
+        #[arg(long)]
+        include_code: bool,
+        #[arg(long, requires = "include_code", value_parser = clap::value_parser!(u16), help = "Lines around a symbol occurrence when body range is unavailable")]
+        code_context: Option<u16>,
+        #[arg(long, requires = "include_code", value_parser = parse_code_max_lines, help = "Maximum source lines returned per result")]
+        code_max_lines: Option<usize>,
     },
     Defs {
         identifier: String,
+        #[arg(long)]
+        include_code: bool,
+        #[arg(long, requires = "include_code", value_parser = clap::value_parser!(u16), help = "Lines around a symbol occurrence when body range is unavailable")]
+        code_context: Option<u16>,
+        #[arg(long, requires = "include_code", value_parser = parse_code_max_lines, help = "Maximum source lines returned per result")]
+        code_max_lines: Option<usize>,
     },
     Routes {
         pattern: Option<String>,
@@ -195,6 +208,16 @@ pub enum Command {
         #[arg(value_enum)]
         shell: CompletionShell,
     },
+}
+
+fn parse_code_max_lines(value: &str) -> Result<usize, String> {
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|_| "must be an integer".to_string())?;
+    if !(1..=MAX_CODE_MAX_LINES).contains(&parsed) {
+        return Err(format!("must be between 1 and {MAX_CODE_MAX_LINES}"));
+    }
+    Ok(parsed)
 }
 
 #[derive(Debug, Subcommand)]

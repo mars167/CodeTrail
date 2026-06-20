@@ -145,6 +145,8 @@ fn render_text_result(result: &Value, out: &mut dyn Write) -> io::Result<()> {
                 .unwrap_or("symbol");
             writeln!(out, "{kind:<12} {name}")?;
             writeln!(out, "  {location}")?;
+            render_text_source_context(result, out)?;
+            render_text_relation_summary(result, out)?;
             return Ok(());
         }
         if let Some(preview) = result.get("preview").and_then(Value::as_str) {
@@ -259,6 +261,64 @@ fn render_text_caveats(value: &Value, out: &mut dyn Write) -> io::Result<()> {
         writeln!(out, "caveat: {code}: {message}")?;
     }
     Ok(())
+}
+
+fn render_text_source_context(result: &Value, out: &mut dyn Write) -> io::Result<()> {
+    let Some(source) = result.get("source") else {
+        return Ok(());
+    };
+    let Some(content) = source.get("content").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    if content.is_empty() {
+        return Ok(());
+    }
+    let start_line = source.get("startLine").and_then(Value::as_u64).unwrap_or(1);
+    writeln!(out, "  source:")?;
+    for (idx, line) in content.lines().enumerate() {
+        writeln!(out, "    {:>4} | {}", start_line + idx as u64, line)?;
+    }
+    if source.get("truncated").and_then(Value::as_bool) == Some(true) {
+        writeln!(out, "    ...")?;
+    }
+    Ok(())
+}
+
+fn render_text_relation_summary(result: &Value, out: &mut dyn Write) -> io::Result<()> {
+    let Some(relations) = result.get("relations") else {
+        return Ok(());
+    };
+    let calls = relation_names(relations.get("calls"), false);
+    let callers = relation_names(relations.get("callers"), true);
+    if calls.is_empty() && callers.is_empty() {
+        return Ok(());
+    }
+    if !calls.is_empty() {
+        writeln!(out, "  calls: {}", calls.join(", "))?;
+    }
+    if !callers.is_empty() {
+        writeln!(out, "  callers: {}", callers.join(", "))?;
+    }
+    Ok(())
+}
+
+fn relation_names(value: Option<&Value>, prefer_enclosing: bool) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(5)
+        .filter_map(|relation| {
+            let target = relation.get("target").and_then(Value::as_str);
+            let enclosing = relation.get("enclosingSymbol").and_then(Value::as_str);
+            if prefer_enclosing {
+                enclosing.or(target)
+            } else {
+                target.or(enclosing)
+            }
+            .map(display_symbol)
+        })
+        .collect()
 }
 
 fn format_location(path: &str, range: Option<&Value>) -> String {
