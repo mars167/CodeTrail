@@ -703,6 +703,114 @@ fn public_json_keeps_only_results_page_and_caveats() {
 }
 
 #[test]
+fn public_json_symbols_include_code_returns_source_and_relations() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "fn alpha() {\n    beta();\n}\n\nfn beta() {}\n\nfn caller() {\n    alpha();\n}\n",
+    )
+    .unwrap();
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "json", "symbols", "alpha", "--include-code"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let result = &json["results"][0];
+
+    assert_eq!(result["path"], "src/lib.rs");
+    assert_eq!(result["source"]["path"], "src/lib.rs");
+    assert_eq!(result["source"]["rangeKind"], "body");
+    assert_eq!(result["source"]["truncated"], false);
+    assert!(result["source"]["content"]
+        .as_str()
+        .unwrap()
+        .contains("beta();"));
+    assert!(result.get("sourceTarget").is_none());
+
+    let calls = result["relations"]["calls"].as_array().unwrap();
+    assert!(calls.iter().any(|call| call["target"] == "beta"));
+    let callers = result["relations"]["callers"].as_array().unwrap();
+    assert!(callers
+        .iter()
+        .any(|caller| caller["enclosingSymbol"] == "caller"));
+    assert_eq!(result["relations"]["truncated"], false);
+    assert!(calls.iter().all(|call| call.get("fileHash").is_none()));
+    let ambiguous = caveat_with_code(&json, "ambiguous_relations");
+    assert_eq!(ambiguous["severity"], "warning");
+    assert_eq!(ambiguous["category"], "risk");
+}
+
+#[test]
+fn public_json_defs_include_code_truncates_large_symbol() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "fn alpha() {\n    let one = 1;\n    let two = 2;\n    let three = one + two;\n    println!(\"{}\", three);\n}\n",
+    )
+    .unwrap();
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args([
+            "--output",
+            "json",
+            "defs",
+            "alpha",
+            "--include-code",
+            "--code-max-lines",
+            "2",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let source = &json["results"][0]["source"];
+
+    assert_eq!(source["truncated"], true);
+    assert_eq!(source["truncatedReason"], "code_max_lines");
+    assert_eq!(source["content"].as_str().unwrap().lines().count(), 2);
+    let caveat = caveat_with_code(&json, "source_truncated");
+    assert_eq!(caveat["category"], "risk");
+}
+
+#[test]
+fn code_context_options_require_include_code() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("lib.rs"), "fn alpha() {}\n").unwrap();
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args([
+            "--output",
+            "json",
+            "symbols",
+            "alpha",
+            "--code-context",
+            "1",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let caveat = caveat_with_code(&json, "cli_usage_error");
+    assert_eq!(caveat["severity"], "error");
+}
+
+#[test]
 fn public_json_uses_cursor_without_truncated_caveat_for_limited_pages() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
@@ -2235,6 +2343,61 @@ fn saved_query_replay_preserves_symbol_scope() {
     assert_eq!(replay_json["query"]["scope"]["include"], json!(["src/a"]));
     assert_eq!(replay_json["results"].as_array().unwrap().len(), 1);
     assert_eq!(replay_json["results"][0]["path"], "src/a/mod.rs");
+}
+
+#[test]
+fn saved_query_replay_preserves_include_code_options() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "fn alpha() {\n    beta();\n}\nfn beta() {}\n",
+    )
+    .unwrap();
+
+    codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--save-query")
+        .arg("alpha-code")
+        .args([
+            "symbols",
+            "alpha",
+            "--include-code",
+            "--code-context",
+            "3",
+            "--code-max-lines",
+            "8",
+        ])
+        .assert()
+        .success();
+
+    let saved_path = dir.path().join(".codetrail/queries/alpha-code.json");
+    let saved_file: Value = serde_json::from_slice(&fs::read(&saved_path).unwrap()).unwrap();
+    assert_eq!(saved_file["query"]["includeCode"], true);
+    assert_eq!(saved_file["query"]["codeContext"], 3);
+    assert_eq!(saved_file["query"]["codeMaxLines"], 8);
+
+    let replay_output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["query", "replay", "alpha-code"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let replay_json: Value = serde_json::from_slice(&replay_output).unwrap();
+    assert_eq!(replay_json["query"]["includeCode"], true);
+    assert!(replay_json["results"][0]["source"]["content"]
+        .as_str()
+        .unwrap()
+        .contains("beta();"));
+    assert!(replay_json["results"][0]["relations"]["calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|call| call["target"] == "beta"));
 }
 
 #[test]
@@ -4639,6 +4802,35 @@ fn prebuilt_json_scip_index_drives_precise_defs_refs_and_symbols() {
     assert_eq!(symbols_json["results"][0]["role"], "definition");
     assert_eq!(symbols_json["results"][0]["range"]["start"]["line"], 1);
     assert_eq!(symbols_json["results"][0]["sourceTarget"], "src/lib.rs");
+
+    let public_defs = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "json", "defs", "needle", "--include-code"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let public_defs_json: Value = serde_json::from_slice(&public_defs).unwrap();
+    assert_eq!(public_defs_json["results"][0]["symbolName"], "needle");
+    assert_eq!(
+        public_defs_json["results"][0]["source"]["rangeKind"],
+        "body"
+    );
+    assert!(public_defs_json["results"][0]["source"]["content"]
+        .as_str()
+        .unwrap()
+        .contains("fn needle()"));
+    assert!(public_defs_json["results"][0].get("producer").is_none());
+    assert!(public_defs_json["results"][0].get("sourceTarget").is_none());
+    let ambiguous = caveat_with_code(&public_defs_json, "ambiguous_relations");
+    assert_eq!(ambiguous["severity"], "warning");
+    assert!(public_defs_json["caveats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|caveat| caveat["code"] != "source_context_fallback"));
 }
 
 #[test]

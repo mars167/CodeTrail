@@ -27,6 +27,9 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
 use crate::{
+    code_context::{
+        CodeContextOptions, DEFAULT_CODE_CONTEXT_LINES, DEFAULT_CODE_MAX_LINES, MAX_CODE_MAX_LINES,
+    },
     output,
     query::{QueryOptions, QueryService},
     query_input::InputMode,
@@ -64,6 +67,40 @@ fn with_remote_query_schema(mut schema: Value) -> Value {
             json!({
                 "type": "string",
                 "description": "Remote snapshot key or snapshot id to query when remoteMode is only or a specific remote snapshot is required."
+            }),
+        );
+    }
+    schema
+}
+
+fn with_code_context_schema(mut schema: Value) -> Value {
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        properties.insert(
+            "includeCode".to_string(),
+            json!({
+                "type": "boolean",
+                "default": false,
+                "description": "Attach current local source context and capped call relations to each result."
+            }),
+        );
+        properties.insert(
+            "codeContext".to_string(),
+            json!({
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 65535,
+                "default": DEFAULT_CODE_CONTEXT_LINES,
+                "description": "Fallback context lines around an occurrence when a symbol body range is unavailable. Only valid when includeCode is true."
+            }),
+        );
+        properties.insert(
+            "codeMaxLines".to_string(),
+            json!({
+                "type": "integer",
+                "minimum": 1,
+                "maximum": MAX_CODE_MAX_LINES,
+                "default": DEFAULT_CODE_MAX_LINES,
+                "description": "Maximum source lines returned per result. Only valid when includeCode is true."
             }),
         );
     }
@@ -186,7 +223,7 @@ fn tool_definitions() -> Vec<ToolDef> {
             description:
                 "Find definitions of a given identifier. Prefers SCIP precise index; falls back to tree-sitter parser."
                     .to_string(),
-            input_schema: json!({
+            input_schema: with_code_context_schema(json!({
                 "type": "object",
                 "properties": {
                     "identifier": { "type": "string", "description": "Identifier to find definitions for" },
@@ -205,7 +242,7 @@ fn tool_definitions() -> Vec<ToolDef> {
                     "limit": { "type": "integer", "minimum": 0, "default": 100, "description": "Max results" }
                 },
                 "required": ["identifier"]
-            }),
+            })),
         },
         ToolDef {
             name: "codetrail_refs".to_string(),
@@ -238,7 +275,7 @@ fn tool_definitions() -> Vec<ToolDef> {
             description:
                 "Find symbols (functions, structs, classes, etc.) matching a query. Prefers SCIP; falls back to tree-sitter."
                     .to_string(),
-            input_schema: json!({
+            input_schema: with_code_context_schema(json!({
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "Symbol name query (substring match)" },
@@ -257,7 +294,7 @@ fn tool_definitions() -> Vec<ToolDef> {
                     "limit": { "type": "integer", "minimum": 0, "default": 100, "description": "Max results" }
                 },
                 "required": ["query"]
-            }),
+            })),
         },
         ToolDef {
             name: "codetrail_routes".to_string(),
@@ -548,7 +585,9 @@ impl Server {
             }
             "codetrail_defs" => {
                 let identifier = required_str(args, "identifier")?;
-                self.service.defs(identifier, &opts)
+                let code_options = parse_code_context_options(args)?;
+                self.service
+                    .defs_with_code(identifier, &opts, &code_options)
             }
             "codetrail_refs" => {
                 let identifier = required_str(args, "identifier")?;
@@ -556,7 +595,8 @@ impl Server {
             }
             "codetrail_symbols" => {
                 let query = required_str(args, "query")?;
-                self.service.symbols(query, &opts)
+                let code_options = parse_code_context_options(args)?;
+                self.service.symbols_with_code(query, &opts, &code_options)
             }
             "codetrail_routes" => {
                 let pattern = optional_str(args, "pattern");
@@ -684,6 +724,46 @@ fn parse_query_options(args: Option<&Value>) -> Result<QueryOptions> {
     })
 }
 
+fn parse_code_context_options(args: Option<&Value>) -> Result<CodeContextOptions> {
+    let obj = match args.and_then(Value::as_object) {
+        Some(obj) => obj,
+        None => return Ok(CodeContextOptions::default()),
+    };
+    let include_code = match obj.get("includeCode").or_else(|| obj.get("include_code")) {
+        Some(value) => value.as_bool().ok_or_else(|| {
+            anyhow::anyhow!("invalid_mcp_argument: includeCode must be a boolean")
+        })?,
+        None => false,
+    };
+    let has_code_context = obj.contains_key("codeContext") || obj.contains_key("code_context");
+    let has_code_max_lines = obj.contains_key("codeMaxLines") || obj.contains_key("code_max_lines");
+    if !include_code && (has_code_context || has_code_max_lines) {
+        return Err(anyhow::anyhow!(
+            "invalid_mcp_argument: codeContext and codeMaxLines require includeCode"
+        ));
+    }
+    let code_context = optional_u16_fields(
+        obj,
+        &["codeContext", "code_context"],
+        DEFAULT_CODE_CONTEXT_LINES,
+    )?;
+    let code_max_lines = optional_usize_fields(
+        obj,
+        &["codeMaxLines", "code_max_lines"],
+        DEFAULT_CODE_MAX_LINES,
+    )?;
+    if !(1..=MAX_CODE_MAX_LINES).contains(&code_max_lines) {
+        return Err(anyhow::anyhow!(
+            "invalid_mcp_argument: codeMaxLines must be an integer between 1 and {MAX_CODE_MAX_LINES}"
+        ));
+    }
+    Ok(CodeContextOptions {
+        include_code,
+        code_context,
+        code_max_lines,
+    })
+}
+
 fn extract_string_array(obj: &serde_json::Map<String, Value>, field: &str) -> Vec<String> {
     let Some(value) = obj.get(field) else {
         return Vec::new();
@@ -708,6 +788,19 @@ fn extract_string_arrays(obj: &serde_json::Map<String, Value>, fields: &[&str]) 
         .collect()
 }
 
+fn optional_usize_fields(
+    obj: &serde_json::Map<String, Value>,
+    fields: &[&str],
+    default: usize,
+) -> Result<usize> {
+    for field in fields {
+        if obj.contains_key(*field) {
+            return optional_usize_arg(obj, field, default);
+        }
+    }
+    Ok(default)
+}
+
 fn optional_usize_arg(
     obj: &serde_json::Map<String, Value>,
     field: &str,
@@ -724,6 +817,19 @@ fn optional_usize_arg(
     usize::try_from(number).map_err(|_| {
         anyhow::anyhow!("invalid_mcp_argument: {field} must fit in the platform usize")
     })
+}
+
+fn optional_u16_fields(
+    obj: &serde_json::Map<String, Value>,
+    fields: &[&str],
+    default: u16,
+) -> Result<u16> {
+    for field in fields {
+        if obj.contains_key(*field) {
+            return optional_u16_arg(obj, field, default);
+        }
+    }
+    Ok(default)
 }
 
 fn optional_u16_arg(
@@ -890,6 +996,25 @@ mod tests {
     }
 
     #[test]
+    fn tools_list_schema_includes_code_context_options() {
+        let tools = tool_definitions();
+        for name in ["codetrail_defs", "codetrail_symbols"] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("missing tool {name}"));
+            let properties = tool.input_schema["properties"].as_object().unwrap();
+            assert!(properties.contains_key("includeCode"), "{name}");
+            assert!(properties.contains_key("codeContext"), "{name}");
+            assert!(properties.contains_key("codeMaxLines"), "{name}");
+            assert_eq!(
+                properties["codeMaxLines"]["maximum"],
+                json!(MAX_CODE_MAX_LINES)
+            );
+        }
+    }
+
+    #[test]
     fn server_handles_tools_call_find() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("src")).unwrap();
@@ -961,6 +1086,54 @@ mod tests {
             }
             _ => panic!("expected success response"),
         }
+    }
+
+    #[test]
+    fn server_handles_tools_call_defs_include_code() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            "fn alpha() {\n    beta();\n}\nfn beta() {}\n",
+        )
+        .unwrap();
+        let server = Server::new(dir.path()).unwrap();
+
+        let parsed = call_tool_json(
+            &server,
+            "codetrail_defs",
+            json!({ "identifier": "alpha", "includeCode": true }),
+        );
+        let result = &parsed["results"][0];
+        assert!(result["source"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("beta();"));
+        assert_eq!(result["source"]["truncated"], false);
+        assert!(result["relations"]["calls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|call| call["target"] == "beta"));
+        assert!(result.get("sourceTarget").is_none());
+        assert!(result.get("producer").is_none());
+    }
+
+    #[test]
+    fn tools_call_defs_rejects_code_context_without_include_code() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/lib.rs"), "fn alpha() {}\n").unwrap();
+        let server = Server::new(dir.path()).unwrap();
+
+        let result = call_tool(
+            &server,
+            "codetrail_defs",
+            json!({ "identifier": "alpha", "codeContext": 2 }),
+        );
+        assert!(result.is_error);
+        let parsed: Value = serde_json::from_str(&result.content[0].text).unwrap();
+        assert!(has_caveat(&parsed, "invalid_mcp_argument"));
     }
 
     #[test]

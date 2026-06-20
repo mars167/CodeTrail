@@ -79,10 +79,13 @@ fn public_result(result: &Value) -> Value {
 }
 
 fn sanitize_public_object(object: &mut serde_json::Map<String, Value>) {
+    let is_source_object = object.contains_key("rangeKind") && object.contains_key("content");
+    let is_relations_object = object.contains_key("calls") && object.contains_key("callers");
     for value in object.values_mut() {
         sanitize_public_value(value);
     }
-    object.retain(|key, value| keep_public_field(key, value));
+    object
+        .retain(|key, value| keep_public_field(key, value, is_source_object, is_relations_object));
 }
 
 fn sanitize_public_value(value: &mut Value) {
@@ -97,14 +100,25 @@ fn sanitize_public_value(value: &mut Value) {
     }
 }
 
-fn keep_public_field(key: &str, value: &Value) -> bool {
+fn keep_public_field(
+    key: &str,
+    value: &Value,
+    is_source_object: bool,
+    is_relations_object: bool,
+) -> bool {
     if value.is_null() {
+        if is_source_object && key == "truncatedReason" {
+            return true;
+        }
         return false;
     }
     if matches!(key, "context" | "warnings") {
         return !value.as_array().is_some_and(Vec::is_empty);
     }
     if matches!(key, "previewTruncated" | "truncated" | "binary") {
+        if key == "truncated" && (is_source_object || is_relations_object) {
+            return true;
+        }
         return value.as_bool().unwrap_or(true);
     }
     if key == "warning" {

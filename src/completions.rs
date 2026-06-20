@@ -71,7 +71,7 @@ fn bash() -> String {
   esac
 
   if [[ "$cur" == -* ]]; then
-    COMPREPLY=( $(compgen -W "--path --output --include --exclude --hidden --no-ignore --lang --dir --ext --file-pattern --file-mode --case-sensitive --ignore-case --input-mode --changed --cursor --allow-broad --limit --context --save-query --help --version" -- "$cur") )
+    COMPREPLY=( $(compgen -W "--path --output --include --exclude --hidden --no-ignore --lang --dir --ext --file-pattern --file-mode --case-sensitive --ignore-case --input-mode --changed --cursor --allow-broad --limit --context --include-code --code-context --code-max-lines --save-query --help --version" -- "$cur") )
   else
     COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
   fi
@@ -94,7 +94,7 @@ _codetrail() {{
   index_cmds=({index_commands})
   hooks_cmds=(install uninstall status)
   shells=(bash zsh fish)
-  global_opts=(--path --output --include --exclude --hidden --no-ignore --lang --dir --ext --file-pattern --file-mode --case-sensitive --ignore-case --input-mode --changed --cursor --allow-broad --limit --context --save-query --help --version)
+  global_opts=(--path --output --include --exclude --hidden --no-ignore --lang --dir --ext --file-pattern --file-mode --case-sensitive --ignore-case --input-mode --changed --cursor --allow-broad --limit --context --include-code --code-context --code-max-lines --save-query --help --version)
 
   if [[ "$words[CURRENT]" == -* ]]; then
     _describe 'option' global_opts
@@ -146,6 +146,9 @@ fn fish() -> String {
         "complete -c codetrail -l allow-broad".to_string(),
         "complete -c codetrail -l limit -r".to_string(),
         "complete -c codetrail -l context -r".to_string(),
+        "complete -c codetrail -l include-code".to_string(),
+        "complete -c codetrail -l code-context -r".to_string(),
+        "complete -c codetrail -l code-max-lines -r".to_string(),
         "complete -c codetrail -l save-query -r".to_string(),
     ];
     for command in COMMANDS {
