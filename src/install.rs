@@ -14,8 +14,8 @@ use crate::{
     lsp::registry::resolve_binary,
     project_graph::{discover_project_graph, ProjectLanguage},
     provider_help::{
-        current_platform_install_commands, requirement_for_language, requirement_for_language_name,
-        ProviderRequirement,
+        current_platform_install_commands, env_keys_for_requirement, requirement_for_language,
+        requirement_for_language_name, ProviderRequirement,
     },
     workspace::Workspace,
 };
@@ -219,6 +219,7 @@ fn all_provider_requirements() -> Vec<ProviderRequirement> {
         ProjectLanguage::Go,
         ProjectLanguage::Rust,
         ProjectLanguage::Java,
+        ProjectLanguage::Kotlin,
         ProjectLanguage::TypeScript,
         ProjectLanguage::Ruby,
         ProjectLanguage::Swift,
@@ -236,11 +237,10 @@ fn provider_available(requirement: &ProviderRequirement) -> bool {
 }
 
 fn provider_program(requirement: &ProviderRequirement) -> Option<String> {
-    if let Some(value) = env::var(requirement.env_key)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    {
-        return first_shell_word(&value);
+    for key in env_keys_for_requirement(requirement) {
+        if let Some(value) = env::var(key).ok().filter(|value| !value.trim().is_empty()) {
+            return first_shell_word(&value);
+        }
     }
     Some(requirement.command.to_string())
 }

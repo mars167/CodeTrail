@@ -65,6 +65,7 @@ pub enum ProjectLanguage {
     Go,
     Rust,
     Java,
+    Kotlin,
     TypeScript,
     Ruby,
     Swift,
@@ -76,6 +77,7 @@ impl ProjectLanguage {
             ProjectLanguage::Go => &["go"],
             ProjectLanguage::Rust => &["rs"],
             ProjectLanguage::Java => &["java"],
+            ProjectLanguage::Kotlin => &["kt"],
             ProjectLanguage::TypeScript => &["ts", "tsx", "js", "jsx", "mjs", "cjs"],
             ProjectLanguage::Ruby => &["rb", "rake", "gemspec"],
             ProjectLanguage::Swift => &["swift"],
@@ -89,6 +91,7 @@ impl fmt::Display for ProjectLanguage {
             ProjectLanguage::Go => write!(f, "go"),
             ProjectLanguage::Rust => write!(f, "rust"),
             ProjectLanguage::Java => write!(f, "java"),
+            ProjectLanguage::Kotlin => write!(f, "kotlin"),
             ProjectLanguage::TypeScript => write!(f, "typescript"),
             ProjectLanguage::Ruby => write!(f, "ruby"),
             ProjectLanguage::Swift => write!(f, "swift"),
@@ -104,6 +107,7 @@ pub enum ProjectRootKind {
     RustCargo,
     JavaMaven,
     JavaGradle,
+    KotlinGradle,
     TypeScriptConfig,
     TypeScriptPackage,
     RubyGemfile,
@@ -119,6 +123,7 @@ impl ProjectRootKind {
             ProjectRootKind::GoModule | ProjectRootKind::GoWorkspace => ProjectLanguage::Go,
             ProjectRootKind::RustCargo => ProjectLanguage::Rust,
             ProjectRootKind::JavaMaven | ProjectRootKind::JavaGradle => ProjectLanguage::Java,
+            ProjectRootKind::KotlinGradle => ProjectLanguage::Kotlin,
             ProjectRootKind::TypeScriptConfig | ProjectRootKind::TypeScriptPackage => {
                 ProjectLanguage::TypeScript
             }
@@ -136,6 +141,7 @@ impl ProjectRootKind {
             ProjectRootKind::RustCargo => 0,
             ProjectRootKind::JavaMaven => 0,
             ProjectRootKind::JavaGradle => 1,
+            ProjectRootKind::KotlinGradle => 1,
             ProjectRootKind::TypeScriptConfig => 0,
             ProjectRootKind::TypeScriptPackage => 1,
             ProjectRootKind::RubyGemfile => 0,
@@ -324,23 +330,15 @@ fn discover_roots(files: &[String]) -> Vec<ProjectRoot> {
         let Some((kind, marker_dir)) = root_marker(file) else {
             continue;
         };
-        let language = kind.language();
-        let key = (marker_dir.clone(), language.clone());
-        let marker = file.clone();
-        candidates
-            .entry(key)
-            .and_modify(|candidate| {
-                candidate.markers.insert(marker.clone());
-                if kind.priority() < candidate.kind.priority() {
-                    candidate.kind = kind.clone();
-                }
-            })
-            .or_insert_with(|| RootCandidate {
-                path: marker_dir,
-                language,
-                kind,
-                markers: BTreeSet::from([marker]),
-            });
+        insert_root_candidate(&mut candidates, marker_dir.clone(), kind, file.clone());
+        if is_gradle_marker(file) && gradle_root_has_kotlin_sources(files, &marker_dir) {
+            insert_root_candidate(
+                &mut candidates,
+                marker_dir,
+                ProjectRootKind::KotlinGradle,
+                file.clone(),
+            );
+        }
     }
 
     let mut roots = candidates
@@ -362,6 +360,30 @@ fn discover_roots(files: &[String]) -> Vec<ProjectRoot> {
             .then_with(|| left.id.cmp(&right.id))
     });
     roots
+}
+
+fn insert_root_candidate(
+    candidates: &mut BTreeMap<(String, ProjectLanguage), RootCandidate>,
+    marker_dir: String,
+    kind: ProjectRootKind,
+    marker: String,
+) {
+    let language = kind.language();
+    let key = (marker_dir.clone(), language.clone());
+    candidates
+        .entry(key)
+        .and_modify(|candidate| {
+            candidate.markers.insert(marker.clone());
+            if kind.priority() < candidate.kind.priority() {
+                candidate.kind = kind.clone();
+            }
+        })
+        .or_insert_with(|| RootCandidate {
+            path: marker_dir,
+            language,
+            kind,
+            markers: BTreeSet::from([marker]),
+        });
 }
 
 fn discover_sources(
@@ -508,6 +530,19 @@ fn root_marker(path: &str) -> Option<(ProjectRootKind, String)> {
     Some((kind, parent_dir(path)))
 }
 
+fn is_gradle_marker(path: &str) -> bool {
+    matches!(
+        file_name(path),
+        "build.gradle" | "build.gradle.kts" | "settings.gradle" | "settings.gradle.kts"
+    )
+}
+
+fn gradle_root_has_kotlin_sources(files: &[String], root_path: &str) -> bool {
+    files
+        .iter()
+        .any(|file| path_under_root(file, root_path) && extension(file).as_deref() == Some("kt"))
+}
+
 fn xcode_root_marker(path: &str) -> Option<(ProjectRootKind, String)> {
     let mut parts = path.rsplitn(2, '/');
     let file = parts.next()?;
@@ -634,6 +669,20 @@ fn affected_roots_for_config(
 ) -> (Option<String>, Vec<String>, bool) {
     match kind {
         ConfigEdgeKind::BuildConfig => {
+            if is_gradle_marker(path) {
+                let mut affected = matching_language_roots(path, &ProjectLanguage::Java, roots);
+                affected.extend(matching_language_roots(
+                    path,
+                    &ProjectLanguage::Kotlin,
+                    roots,
+                ));
+                affected.sort();
+                affected.dedup();
+                if !affected.is_empty() {
+                    let owner = (affected.len() == 1).then(|| affected[0].clone());
+                    return (owner, affected, false);
+                }
+            }
             if let Some(root) = root_for_build_config(path, roots) {
                 (Some(root.id.clone()), vec![root.id.clone()], false)
             } else if swift_lsp_build_config(path) {
@@ -694,16 +743,21 @@ fn affected_roots_for_dependency_config(
     path: &str,
     roots: &[ProjectRoot],
 ) -> (Option<String>, Vec<String>, bool) {
-    if let Some(language) = dependency_config_language(path) {
+    let languages = dependency_config_languages(path);
+    let mut all_matching = Vec::new();
+    for language in languages {
         let matching = matching_language_roots(path, &language, roots);
-        if !matching.is_empty() {
-            let owner_root_id = if matching.len() == 1 {
-                Some(matching[0].clone())
-            } else {
-                None
-            };
-            return (owner_root_id, matching, false);
-        }
+        all_matching.extend(matching);
+    }
+    all_matching.sort();
+    all_matching.dedup();
+    if !all_matching.is_empty() {
+        let owner_root_id = if all_matching.len() == 1 {
+            Some(all_matching[0].clone())
+        } else {
+            None
+        };
+        return (owner_root_id, all_matching, false);
     }
 
     if shared_config_path(path) && !roots.is_empty() {
@@ -717,15 +771,17 @@ fn affected_roots_for_dependency_config(
     }
 }
 
-fn dependency_config_language(path: &str) -> Option<ProjectLanguage> {
+fn dependency_config_languages(path: &str) -> Vec<ProjectLanguage> {
     match file_name(path) {
-        "go.sum" => Some(ProjectLanguage::Go),
-        "Cargo.lock" => Some(ProjectLanguage::Rust),
-        "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock" => Some(ProjectLanguage::TypeScript),
-        "gradle.lockfile" => Some(ProjectLanguage::Java),
-        "Gemfile.lock" => Some(ProjectLanguage::Ruby),
-        "Package.resolved" => Some(ProjectLanguage::Swift),
-        _ => None,
+        "go.sum" => vec![ProjectLanguage::Go],
+        "Cargo.lock" => vec![ProjectLanguage::Rust],
+        "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock" => {
+            vec![ProjectLanguage::TypeScript]
+        }
+        "gradle.lockfile" => vec![ProjectLanguage::Java, ProjectLanguage::Kotlin],
+        "Gemfile.lock" => vec![ProjectLanguage::Ruby],
+        "Package.resolved" => vec![ProjectLanguage::Swift],
+        _ => Vec::new(),
     }
 }
 
@@ -871,6 +927,7 @@ fn source_language(path: &str) -> Option<ProjectLanguage> {
         ProjectLanguage::Go,
         ProjectLanguage::Rust,
         ProjectLanguage::Java,
+        ProjectLanguage::Kotlin,
         ProjectLanguage::TypeScript,
         ProjectLanguage::Ruby,
         ProjectLanguage::Swift,

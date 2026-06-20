@@ -118,6 +118,39 @@ pub fn requirement_for_language(language: &ProjectLanguage) -> ProviderRequireme
             },
             fallback: FallbackMode::TreeSitterParser,
         },
+        ProjectLanguage::Kotlin => ProviderRequirement {
+            language: ProjectLanguage::Kotlin,
+            provider: "scip-java",
+            kind: ProviderKind::NativeScip,
+            command: "scip-java",
+            args: &["index"],
+            env_key: "CODETRAIL_SCIP_KOTLIN",
+            install: InstallHelp {
+                macos: &[
+                    "brew install coursier/formulas/coursier",
+                    "mkdir -p \"$HOME/.local/bin\"",
+                    "coursier bootstrap --standalone -f -o \"$HOME/.local/bin/scip-java\" com.sourcegraph:scip-java_2.13:0.12.3 --main com.sourcegraph.scip_java.ScipJava",
+                ],
+                linux: &[
+                    "mkdir -p \"$HOME/.local/bin\"",
+                    "curl -fLo /tmp/coursier https://git.io/coursier-cli",
+                    "chmod +x /tmp/coursier",
+                    "/tmp/coursier bootstrap --standalone -f -o \"$HOME/.local/bin/scip-java\" com.sourcegraph:scip-java_2.13:0.12.3 --main com.sourcegraph.scip_java.ScipJava",
+                ],
+                windows: &[
+                    "mkdir \"%USERPROFILE%\\.local\\bin\"",
+                    "bitsadmin /transfer downloadCoursierCli https://git.io/coursier-cli \"%TEMP%\\coursier\"",
+                    "bitsadmin /transfer downloadCoursierBat https://git.io/coursier-bat \"%TEMP%\\coursier.bat\"",
+                    "\"%TEMP%\\coursier.bat\" bootstrap --standalone -f -o \"%USERPROFILE%\\.local\\bin\\scip-java.bat\" com.sourcegraph:scip-java_2.13:0.12.3 --main com.sourcegraph.scip_java.ScipJava",
+                ],
+                notes: &[
+                    "Set CODETRAIL_SCIP_KOTLIN to override the scip-java command for Kotlin roots.",
+                    "CODETRAIL_SCIP_JAVA is used as a fallback override when CODETRAIL_SCIP_KOTLIN is unset.",
+                    "Gradle Kotlin projects are the supported automatic setup path; Maven and Bazel Kotlin may require manual scip-java/scip-kotlin configuration.",
+                ],
+            },
+            fallback: FallbackMode::TreeSitterParser,
+        },
         ProjectLanguage::TypeScript => ProviderRequirement {
             language: ProjectLanguage::TypeScript,
             provider: "scip-typescript",
@@ -177,6 +210,14 @@ pub fn requirement_for_language(language: &ProjectLanguage) -> ProviderRequireme
 
 pub fn requirement_for_language_name(language: &str) -> Option<ProviderRequirement> {
     parse_project_language(language).map(|language| requirement_for_language(&language))
+}
+
+pub fn env_keys_for_requirement(requirement: &ProviderRequirement) -> Vec<&'static str> {
+    if requirement.language == ProjectLanguage::Kotlin {
+        vec!["CODETRAIL_SCIP_KOTLIN", "CODETRAIL_SCIP_JAVA"]
+    } else {
+        vec![requirement.env_key]
+    }
 }
 
 pub fn install_help_for_semantic_report(report: &SemanticBuildReport) -> Vec<ProviderInstallHelp> {
@@ -261,6 +302,7 @@ fn parse_project_language(language: &str) -> Option<ProjectLanguage> {
         "go" => Some(ProjectLanguage::Go),
         "rust" => Some(ProjectLanguage::Rust),
         "java" => Some(ProjectLanguage::Java),
+        "kotlin" => Some(ProjectLanguage::Kotlin),
         "typescript" => Some(ProjectLanguage::TypeScript),
         "ruby" => Some(ProjectLanguage::Ruby),
         "swift" => Some(ProjectLanguage::Swift),
@@ -297,6 +339,14 @@ mod tests {
                 "scip-java",
                 &["index"],
                 "CODETRAIL_SCIP_JAVA",
+                ProviderKind::NativeScip,
+            ),
+            (
+                ProjectLanguage::Kotlin,
+                "scip-java",
+                "scip-java",
+                &["index"],
+                "CODETRAIL_SCIP_KOTLIN",
                 ProviderKind::NativeScip,
             ),
             (

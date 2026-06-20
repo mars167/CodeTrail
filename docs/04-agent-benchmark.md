@@ -99,13 +99,16 @@ codetrail --output json defs SymbolName
 `find`/`grep` 和 `defs`/`refs`/`symbols` 放在同一优先级，而是要求多步调查按
 下面顺序执行：
 
-1. 先调用 `codetrail --output json index status`，检查 SCIP freshness 和语言覆盖。
+1. 先调用 `codetrail --output json index status --summary`，检查 SCIP freshness 和语言覆盖。
 2. 从任务中抽取候选 symbol、type、function、method、route 或 config 名称。
-3. 优先尝试 `symbols`、`defs`、`refs`、`routes`、`calls`、`callers`。
-4. 用 `files`、`find-path`、`glob` 只做范围收窄或名称发现，然后回到语义命令。
-5. 用普通 source read 验证关键范围；`list`、`tree` 和 `read` 不属于
+3. 首轮优先调用
+   `codetrail --output json explore node <query> --max-candidates 5 --snippet-lines 24 --relation-limit 8`。
+4. 只有首轮结果不足时，再用一个窄的 `symbols`、`defs`、`refs`、`routes`、
+   `calls` 或 `callers` 补充。
+5. 用 `files`、`find-path`、`glob` 只做范围收窄或名称发现，然后回到语义命令。
+6. 用普通 source read 验证关键范围；`list`、`tree` 和 `read` 不属于
    CodeTrail CLI/MCP 命令面，也不计入 index-backed discovery。
-6. 只有在 literal-text 任务、无候选名称、索引缺失/过期/不支持、无语义命中或结果歧义时，才 fallback 到 `find`/`grep`，并在 subagent JSON 的 `index_usage.text_fallback_reason` 里记录原因。
+7. 只有在 literal-text 任务、无候选名称、索引缺失/过期/不支持、无语义命中或结果歧义时，才 fallback 到 `find`/`grep`，并在 subagent JSON 的 `index_usage.text_fallback_reason` 里记录原因。
 
 这个调整的目标是把 CodeTrail 当作 SCIP/LSP/text/path index 优先的导航工具，
 而不是受控 `grep`/`read` 包装器。评测报告应新增或单列这些指标：
@@ -121,9 +124,10 @@ codetrail --output json defs SymbolName
 Load the codetrail skill, then delegate repository investigation to the
 codetrail-evidence subagent. Do not inspect the agent template file. Do not
 force the subagent to use only CodeTrail. The subagent must use an index-first
-workflow: check codetrail index status, try semantic/navigation commands before
-find/grep, use files/find-path/glob for indexed path discovery, and explain any
-non-index or text-search fallback in index_usage.text_fallback_reason.
+workflow: check codetrail index status --summary, start with explore node,
+use at most one narrow semantic/navigation supplement before find/grep, use
+files/find-path/glob for indexed path discovery, and explain any non-index or
+text-search fallback in index_usage.text_fallback_reason.
 Every final evidence string must be path:line or path:start-end.
 ```
 

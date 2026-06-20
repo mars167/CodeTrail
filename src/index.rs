@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     graph,
-    index_status::{indexed_languages, semantic_status},
+    index_status::{indexed_languages, semantic_status, summary_status},
     lancedb_store, output,
     scan_diagnostics::SkippedFile,
     snapshot_store, text_index,
@@ -413,6 +413,11 @@ pub fn status(workspace: &Workspace) -> Result<Value> {
         result["remote"] = remote;
     }
     Ok(result)
+}
+
+pub fn status_summary(workspace: &Workspace) -> Result<Value> {
+    let full = status(workspace)?;
+    Ok(summary_status(&full))
 }
 
 pub fn skipped(workspace: &Workspace, staged: bool) -> Result<Value> {

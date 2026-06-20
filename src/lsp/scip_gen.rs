@@ -133,58 +133,81 @@ pub fn generate_best_effort(
     let mut manifests = Vec::new();
     let mut native_indexes = Vec::new();
 
-    for root in &graph.roots {
-        let requirement = crate::provider_help::requirement_for_language(&root.language);
-        if requirement.kind != crate::provider_help::ProviderKind::NativeScip {
-            continue;
-        }
-        let files = source_files_for_root(&graph, root);
-        if files.is_empty() {
-            continue;
-        }
+    for (_key, roots) in native_work_groups(&graph) {
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-            let report = semantic_report(
-                root,
-                Some(requirement.provider),
-                "partial",
-                0,
-                vec!["semantic_provider_failed: provider_timeout".to_string()],
-            );
-            language_reports.push(report.clone());
-            manifests.push(build_manifest(workspace, root, &report, &files, records));
+            for (root, files) in roots {
+                let requirement = crate::provider_help::requirement_for_language(&root.language);
+                let report = semantic_report(
+                    root,
+                    Some(requirement.provider),
+                    "partial",
+                    0,
+                    vec!["semantic_provider_failed: provider_timeout".to_string()],
+                );
+                language_reports.push(report.clone());
+                manifests.push(build_manifest(workspace, root, &report, &files, records));
+            }
             continue;
         };
-        let report =
-            match crate::scip_provider::run_native_provider(workspace, root, verbose, remaining)? {
-                crate::scip_provider::NativeScipOutcome::Generated {
-                    provider, index, ..
-                } => {
-                    let occurrence_count = count_scip_occurrences(&index);
-                    native_indexes.push(index);
-                    semantic_report(root, Some(provider), "fresh", occurrence_count, Vec::new())
-                }
-                crate::scip_provider::NativeScipOutcome::Missing { requirement } => {
-                    semantic_report(
+        let run_root = roots
+            .iter()
+            .find(|(root, _)| root.language == ProjectLanguage::Kotlin)
+            .map(|(root, _)| *root)
+            .unwrap_or(roots[0].0);
+        match crate::scip_provider::run_native_provider(workspace, run_root, verbose, remaining)? {
+            crate::scip_provider::NativeScipOutcome::Generated {
+                provider, index, ..
+            } => {
+                for (root, files) in &roots {
+                    let occurrence_count = count_scip_occurrences_for_root(&index, root, files);
+                    let (state, partial_reasons) = native_report_state(root, occurrence_count);
+                    let report = semantic_report(
                         root,
-                        Some(requirement.provider),
+                        Some(provider),
+                        state,
+                        occurrence_count,
+                        partial_reasons,
+                    );
+                    language_reports.push(report.clone());
+                    manifests.push(build_manifest(workspace, root, &report, files, records));
+                }
+                native_indexes.push(index);
+            }
+            crate::scip_provider::NativeScipOutcome::Missing { requirement } => {
+                for (root, files) in roots {
+                    let root_requirement =
+                        crate::provider_help::requirement_for_language(&root.language);
+                    let provider = if root_requirement.provider == requirement.provider {
+                        requirement.provider
+                    } else {
+                        root_requirement.provider
+                    };
+                    let report = semantic_report(
+                        root,
+                        Some(provider),
                         "missing",
                         0,
                         vec!["semantic_provider_missing".to_string()],
-                    )
+                    );
+                    language_reports.push(report.clone());
+                    manifests.push(build_manifest(workspace, root, &report, &files, records));
                 }
-                crate::scip_provider::NativeScipOutcome::Failed { provider, message } => {
-                    semantic_report(
+            }
+            crate::scip_provider::NativeScipOutcome::Failed { provider, message } => {
+                for (root, files) in roots {
+                    let report = semantic_report(
                         root,
                         Some(provider),
                         "partial",
                         0,
                         vec![format!("semantic_provider_failed: {message}")],
-                    )
+                    );
+                    language_reports.push(report.clone());
+                    manifests.push(build_manifest(workspace, root, &report, &files, records));
                 }
-                crate::scip_provider::NativeScipOutcome::NotNative => continue,
-            };
-        language_reports.push(report.clone());
-        manifests.push(build_manifest(workspace, root, &report, &files, records));
+            }
+            crate::scip_provider::NativeScipOutcome::NotNative => {}
+        }
     }
 
     for (root, files, report) in skipped_lsp_roots(workspace, &graph, None) {
@@ -313,14 +336,6 @@ fn scip_report_source(native_index_count: usize, lsp_generated: bool) -> String 
     }
 }
 
-fn count_scip_occurrences(index: &proto::Index) -> usize {
-    index
-        .documents
-        .iter()
-        .map(|document| document.occurrences.len())
-        .sum()
-}
-
 fn semantic_budget_ms(graph: &ProjectGraph) -> u64 {
     if let Some(value) = std::env::var("CODETRAIL_SEMANTIC_BUDGET_MS")
         .ok()
@@ -333,25 +348,32 @@ fn semantic_budget_ms(graph: &ProjectGraph) -> u64 {
 }
 
 fn adaptive_semantic_budget_ms(graph: &ProjectGraph) -> u64 {
-    let java_root_count = graph
+    let jvm_root_count = graph
         .roots
         .iter()
-        .filter(|root| root.language == ProjectLanguage::Java)
+        .filter(|root| {
+            matches!(
+                root.language,
+                ProjectLanguage::Java | ProjectLanguage::Kotlin
+            )
+        })
         .count() as u64;
-    if java_root_count == 0 {
+    if jvm_root_count == 0 {
         return DEFAULT_SEMANTIC_BUDGET_MS;
     }
 
-    let java_file_count = graph
+    let jvm_file_count = graph
         .source_owners
         .iter()
         .filter(|owner| {
-            owner.language == ProjectLanguage::Java
-                && owner.semantic_fact_policy == SemanticFactPolicy::PreciseEligible
+            matches!(
+                owner.language,
+                ProjectLanguage::Java | ProjectLanguage::Kotlin
+            ) && owner.semantic_fact_policy == SemanticFactPolicy::PreciseEligible
         })
         .count() as u64;
 
-    (180_000 + (java_root_count * 60_000) + (java_file_count * 1_000))
+    (180_000 + (jvm_root_count * 60_000) + (jvm_file_count * 1_000))
         .clamp(DEFAULT_SEMANTIC_BUDGET_MS, 3_600_000)
 }
 
@@ -400,6 +422,80 @@ fn source_files_for_root(graph: &ProjectGraph, root: &ProjectRoot) -> Vec<String
         })
         .map(|owner| owner.path.clone())
         .collect()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct NativeGroupKey {
+    provider: String,
+    root_path: String,
+    command: String,
+    args: Vec<String>,
+}
+
+type NativeWorkGroups<'a> = BTreeMap<NativeGroupKey, Vec<(&'a ProjectRoot, Vec<String>)>>;
+
+fn native_work_groups<'a>(graph: &'a ProjectGraph) -> NativeWorkGroups<'a> {
+    let mut groups = BTreeMap::new();
+    for root in &graph.roots {
+        let requirement = crate::provider_help::requirement_for_language(&root.language);
+        if requirement.kind != crate::provider_help::ProviderKind::NativeScip {
+            continue;
+        }
+        let files = source_files_for_root(graph, root);
+        if files.is_empty() {
+            continue;
+        }
+        let key = NativeGroupKey {
+            provider: requirement.provider.to_string(),
+            root_path: root.path.clone(),
+            command: requirement.command.to_string(),
+            args: requirement
+                .args
+                .iter()
+                .map(|arg| (*arg).to_string())
+                .collect(),
+        };
+        groups
+            .entry(key)
+            .or_insert_with(Vec::new)
+            .push((root, files));
+    }
+    groups
+}
+
+fn count_scip_occurrences_for_root(
+    index: &proto::Index,
+    root: &ProjectRoot,
+    files: &[String],
+) -> usize {
+    let file_set = files.iter().collect::<BTreeSet<_>>();
+    index
+        .documents
+        .iter()
+        .filter(|document| file_set.contains(&document.relative_path))
+        .filter(|document| scip_document_matches_root_language(document, root))
+        .map(|document| document.occurrences.len())
+        .sum()
+}
+
+fn scip_document_matches_root_language(document: &proto::Document, root: &ProjectRoot) -> bool {
+    let expected = root.language.to_string();
+    if document.language == expected {
+        return true;
+    }
+    document.language.is_empty()
+        && crate::workspace::language_for_path(Path::new(&document.relative_path)) == expected
+}
+
+fn native_report_state(root: &ProjectRoot, occurrence_count: usize) -> (&'static str, Vec<String>) {
+    if root.language == ProjectLanguage::Kotlin && occurrence_count == 0 {
+        (
+            "partial",
+            vec!["semantic_provider_partial: kotlin_no_occurrences".to_string()],
+        )
+    } else {
+        ("fresh", Vec::new())
+    }
 }
 
 type LspWorkGroups<'a> = BTreeMap<(ProjectLanguage, PathBuf), Vec<(&'a ProjectRoot, Vec<String>)>>;
@@ -811,6 +907,7 @@ fn lsp_language_id(language: &ProjectLanguage) -> &'static str {
         ProjectLanguage::Go => "go",
         ProjectLanguage::Rust => "rust",
         ProjectLanguage::Java => "java",
+        ProjectLanguage::Kotlin => "kotlin",
         ProjectLanguage::TypeScript => "typescript",
         ProjectLanguage::Ruby => "ruby",
         ProjectLanguage::Swift => "swift",

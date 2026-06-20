@@ -181,6 +181,66 @@ fn discovers_polyglot_multi_root_workspace_with_stable_ids() {
 }
 
 #[test]
+fn discovers_kotlin_gradle_root_without_treating_kts_as_precise_source() {
+    let dir = tempdir().unwrap();
+    write(
+        &dir.path().join("settings.gradle.kts"),
+        "pluginManagement {}\n",
+    );
+    write(
+        &dir.path().join("build.gradle.kts"),
+        "plugins { kotlin(\"jvm\") version \"1.9.0\" }\n",
+    );
+    write(
+        &dir.path().join("src/main/java/example/App.java"),
+        "package example; class App {}\n",
+    );
+    write(
+        &dir.path().join("src/main/kotlin/example/App.kt"),
+        "package example\nclass KotlinApp\n",
+    );
+
+    let graph = discover_project_graph(dir.path()).unwrap();
+    let roots = graph
+        .roots
+        .iter()
+        .map(|root| (root.id.as_str(), root.kind.clone()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        roots,
+        vec![
+            ("java:.", ProjectRootKind::JavaGradle),
+            ("kotlin:.", ProjectRootKind::KotlinGradle),
+        ]
+    );
+    assert!(graph.source_owners.iter().any(|owner| {
+        owner.path == "src/main/java/example/App.java"
+            && owner.root_id == "java:."
+            && owner.language == ProjectLanguage::Java
+    }));
+    assert!(graph.source_owners.iter().any(|owner| {
+        owner.path == "src/main/kotlin/example/App.kt"
+            && owner.root_id == "kotlin:."
+            && owner.language == ProjectLanguage::Kotlin
+    }));
+    assert!(!graph
+        .source_owners
+        .iter()
+        .any(|owner| owner.path.ends_with(".kts")));
+
+    for path in ["settings.gradle.kts", "build.gradle.kts"] {
+        let edge = graph
+            .config_edges
+            .iter()
+            .find(|edge| edge.path == path)
+            .expect("gradle config edge");
+        assert_eq!(edge.kind, ConfigEdgeKind::BuildConfig);
+        assert_eq!(edge.affected_root_ids, vec!["java:.", "kotlin:."]);
+    }
+}
+
+#[test]
 fn maps_root_and_shared_config_edges_to_affected_roots() {
     let dir = tempdir().unwrap();
     write(&dir.path().join("api/go.mod"), "module api\n");

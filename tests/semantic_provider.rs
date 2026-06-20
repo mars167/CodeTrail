@@ -272,6 +272,7 @@ fn root(id: &str, path: &str, language: ProjectLanguage) -> ProjectRoot {
         ProjectLanguage::Go => ProjectRootKind::GoModule,
         ProjectLanguage::Rust => ProjectRootKind::RustCargo,
         ProjectLanguage::Java => ProjectRootKind::JavaMaven,
+        ProjectLanguage::Kotlin => ProjectRootKind::KotlinGradle,
         ProjectLanguage::TypeScript => ProjectRootKind::TypeScriptConfig,
         ProjectLanguage::Ruby => ProjectRootKind::RubyGemfile,
         ProjectLanguage::Swift => ProjectRootKind::SwiftPackage,

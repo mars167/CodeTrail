@@ -89,6 +89,7 @@ codetrail defs <identifier>
 codetrail symbols <query>
 codetrail calls <caller-name>
 codetrail callers <callee-name>
+codetrail explore node <query>
 ```
 
 如果字符串包含空格、括号或 shell 特殊字符，调用方必须按普通 shell 规则加引号；
@@ -128,7 +129,22 @@ codetrail defs <identifier> --include-code [--code-context <lines>] [--code-max-
 - 大符号按 `--code-max-lines` 从起始行截断，`source.truncated=true` 且 caveats
   包含 `source_truncated`。
 
-Go、Rust、Python、TypeScript、JavaScript、Java、Ruby 和 Swift 有
+`explore node <query>` 是给 agent 的低 token 聚合探索原语：
+
+```bash
+codetrail explore node <query> \
+  [--max-candidates 5] [--snippet-lines 12] [--relation-limit 8]
+```
+
+- 查询顺序固定为 `defs` -> `symbols` -> bounded `files` fallback。
+- `--max-candidates` 范围 `1..20`；`--snippet-lines` 范围 `1..80`；
+  `--relation-limit` 范围 `0..20`。
+- 每条结果只返回定位、`bodyRange`、`language`、`kind`、`layer`、短 `snippet`
+  与 capped `relations`，不返回整文件源码。
+- `relations` 始终是 `inferred_candidate` 候选关系；fallback、截断和关系候选都会
+  进入 caveats。
+
+Go、Rust、Python、TypeScript、JavaScript、Java、Kotlin、Ruby 和 Swift 有
 tree-sitter parser fallback；其他语言的关系查询主要依赖 fresh graph/SCIP
 派生结果。所有
 `calls`/`callers` 输出无论来自 graph 还是 parser，可靠性都保持
@@ -137,7 +153,8 @@ tree-sitter parser fallback；其他语言的关系查询主要依赖 fresh grap
 ## 性能契约
 
 Index-backed discovery 命令包括 `find`、`grep`、`files`、`find-path`、
-`glob`、`defs`、`refs`、`symbols`、`routes`、`calls` 和 `callers`。
+`glob`、`defs`、`refs`、`symbols`、`routes`、`calls`、`callers` 和
+`explore node`。
 CLI/MCP 不再暴露 `list`、`tree` 或 `read`；源码验证由宿主编辑器或 Agent read
 工具按结果中的 `path` 和 `range` 完成。
 
@@ -176,7 +193,7 @@ public JSON 不暴露内部计时和扫描统计。
   `--mode literal|regex|wildcard|glob`。
 - `--lang <lang>` 按扩展名映射出的语言名过滤，大小写不敏感。当前内置语言名为
   `go`、`rust`、`python`、`java`、`typescript`、`javascript`、`markdown`、
-  `ruby`、`swift`、`json`、`toml`、`yaml`、`html`、`css` 和 `text`。
+  `kotlin`、`ruby`、`swift`、`json`、`toml`、`yaml`、`html`、`css` 和 `text`。
 - `--cursor <cursor>` 是不透明分页 token，只能用于相同 query scope 和相同
   snapshot；scope 或 snapshot 不匹配会返回 cursor 错误。
 - `--save-query <name>`、`query replay <name>`、`query show <name>` 和
@@ -196,6 +213,9 @@ public JSON 不暴露内部计时和扫描统计。
 - MCP 的 `codetrail_symbols` 和 `codetrail_defs` 接受 `includeCode`、
   `codeContext` 和 `codeMaxLines`，语义与 CLI 对应参数一致；输出仍使用同一
   public JSON projection。
+- MCP 的 `codetrail_explore_node` 对应 CLI `explore node`，接受
+  `query`、`maxCandidates`、`snippetLines`、`relationLimit` 与常规 scope/filter
+  参数，输出仍为公开 `results/page/caveats` 投影。
 
 ## 输出契约
 
@@ -229,7 +249,8 @@ MCP tool result 的 `content[0].text` 使用同一 public JSON 投影。
 - `severity=warning, category=risk` 表示需要调用方调整或复核的风险边界，例如 `ambiguous_results`、无匹配不可证明、宽查询保护和输出裁切。错误 caveat 使用 `severity=error, category=error`。
 - `reliability.llm_instruction` 是英文运行时契约文本。面向中文读者的说明只能放在文档正文，不能放入 Rust runtime strings。
 
-`--output compact-json` 是兼容别名，输出同一公开 JSON 形态。
+`--output compact-json` 是兼容别名，输出同一公开 JSON 形态；它不是 status 摘要
+模式。需要紧凑索引状态时使用 `codetrail --output json index status --summary`。
 
 `--output jsonl` 使用逐行事件：
 
@@ -263,6 +284,16 @@ MCP tool result 的 `content[0].text` 使用同一 public JSON 投影。
   展示当前项目 root 所需 semantic provider 是否可解析，缺失时给出 `missingDependencies`。
   `semanticStatus.languageServers` 暂时保留为兼容别名，内容来自同一 provider registry。
   旧的 `semanticManifests` 数组保留，用于展示 per-root 生成状态。
+- `index status --summary` 只返回 `exists`、`fresh`、`fileCount`、
+  `indexedLanguages` 和紧凑 `semanticStatus`。其中
+  `semanticStatus.languageCoverage` 按语言给出 `provider`、`precise`
+  (`fresh|partial|missing|manual_required`) 与 `fallback`。
+- Kotlin `.kt` / `.kts` 映射为 `kotlin` 并支持 `--lang kotlin`。`.kt` 可进入
+  precise source owner；`.kts` 只参与语言识别、path/text/parser。
+- Kotlin precise provider 使用 `scip-java index`，优先读
+  `CODETRAIL_SCIP_KOTLIN`，未设置时回退 `CODETRAIL_SCIP_JAVA`。Gradle Java/Kotlin
+  混合 root 会复用同一次 `scip-java` 运行；环境不可用时降级为
+  `tree_sitter_parser`。
 - Swift root 在 `semanticStatus.roots[*].swiftConfig` 中报告 SourceKit-LSP
   配置状态。SwiftPM root 直接可尝试；Xcode `.xcodeproj`/`.xcworkspace` root
   只有在已有 `buildServer.json` 或 `compile_commands.json` 时标记 ready。

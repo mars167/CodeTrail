@@ -4,13 +4,14 @@ use serde_json::{json, Value};
 
 use crate::{
     cli::{
-        Cli, Command, HooksCommand, IndexCommand, IndexProviderCommand, OutputFormat, QueryCommand,
-        SkillCommand,
+        Cli, Command, ExploreCommand, HooksCommand, IndexCommand, IndexProviderCommand,
+        OutputFormat, QueryCommand, SkillCommand,
     },
     code_context::{self, CodeContextOptions},
     completions, config_index, graph, index,
     install::{IndexProviderInstallOptions, SkillInstallOptions},
     output,
+    query::{ExploreNodeOptions, QueryOptions, QueryService},
     query_input::InputPlan,
     routes, saved_query, scip_index, search,
     search_pattern::SearchPatternMode,
@@ -684,6 +685,24 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 warnings,
             )
         }
+        Command::Explore { command } => match command {
+            ExploreCommand::Node {
+                query,
+                max_candidates,
+                snippet_lines,
+                relation_limit,
+            } => {
+                let service = QueryService::from_workspace(workspace.clone());
+                let opts = QueryOptions::from_scan_options(&scan_opts, cli.context);
+                let response = service.explore_node(
+                    query,
+                    &opts,
+                    ExploreNodeOptions::bounded(*max_candidates, *snippet_lines, *relation_limit),
+                )?;
+                exit_code = output::no_match_exit(&response["results"]);
+                response
+            }
+        },
         Command::Changed => output::with_summary_field(
             output::response(
                 "changed",
@@ -878,13 +897,17 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 )?]),
                 Vec::new(),
             ),
-            IndexCommand::Status => output::response(
+            IndexCommand::Status { summary } => output::response(
                 "index status",
                 "index status",
-                json!({}),
+                json!({ "summary": summary }),
                 &workspace.snapshot_id,
                 output::freshness(),
-                json!([index::status(&workspace)?]),
+                json!([if *summary {
+                    index::status_summary(&workspace)?
+                } else {
+                    index::status(&workspace)?
+                }]),
                 Vec::new(),
             ),
             IndexCommand::Skipped { staged } => output::response(
@@ -1267,6 +1290,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Routes { .. } => "routes",
         Command::Calls { .. } => "calls",
         Command::Callers { .. } => "callers",
+        Command::Explore { .. } => "explore",
         Command::Changed => "changed",
         Command::Status => "status",
         Command::Mcp => "mcp",
@@ -1276,7 +1300,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Index { command } => match command {
             IndexCommand::Build { .. } => "index build",
             IndexCommand::Update => "index update",
-            IndexCommand::Status => "index status",
+            IndexCommand::Status { .. } => "index status",
             IndexCommand::Skipped { .. } => "index skipped",
             IndexCommand::Verify => "index verify",
             IndexCommand::Clean => "index clean",
