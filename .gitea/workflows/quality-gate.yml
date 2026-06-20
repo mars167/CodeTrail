@@ -21,25 +21,29 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  CARGO_HOME: /cache/codetrail/cargo
+  CODETRAIL_CACHE_ROOT: /opt/hostedtoolcache/codetrail
+  CARGO_HOME: /opt/hostedtoolcache/codetrail/cargo
   CARGO_INCREMENTAL: "0"
   CARGO_BUILD_JOBS: "2"
   RUOYI_REPO_URL: https://git.home.arpa/mars/RuoYi.git
   RUOYI_BRANCH: master
-  RUOYI_CACHE_DIR: /cache/codetrail/fixtures/RuoYi
+  RUOYI_CACHE_DIR: /opt/hostedtoolcache/codetrail/fixtures/RuoYi
 
 jobs:
   pr-gate:
     name: PR Gate
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'pull_request' }}
+    env:
+      CARGO_TARGET_DIR: /opt/hostedtoolcache/codetrail/target/pr-gate
     container:
       image: rust:1.95-bookworm
-      options: --volume /tmp/codetrail-cache:/cache/codetrail
     steps:
       - name: Prepare CI tools
         run: |
+          mkdir -p "$CODETRAIL_CACHE_ROOT"
           mkdir -p "$CARGO_HOME"
+          mkdir -p "$CARGO_TARGET_DIR"
           if ! command -v protoc >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
             apt-get update
             apt-get install -y --no-install-recommends git ca-certificates nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang
@@ -56,13 +60,16 @@ jobs:
     name: Main Gate
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    env:
+      CARGO_TARGET_DIR: /opt/hostedtoolcache/codetrail/target/main-gate
     container:
       image: rust:1.95-bookworm
-      options: --volume /tmp/codetrail-cache:/cache/codetrail
     steps:
       - name: Prepare CI tools
         run: |
+          mkdir -p "$CODETRAIL_CACHE_ROOT"
           mkdir -p "$CARGO_HOME"
+          mkdir -p "$CARGO_TARGET_DIR"
           if ! command -v protoc >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
             apt-get update
             apt-get install -y --no-install-recommends git ca-certificates jq nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang
@@ -84,13 +91,16 @@ jobs:
     name: Cross-Platform Check
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    env:
+      CARGO_TARGET_DIR: /opt/hostedtoolcache/codetrail/target/cross-check
     container:
       image: rust:1.95-bookworm
-      options: --volume /tmp/codetrail-cache:/cache/codetrail
     steps:
       - name: Prepare cross tools
         run: |
+          mkdir -p "$CODETRAIL_CACHE_ROOT"
           mkdir -p "$CARGO_HOME"
+          mkdir -p "$CARGO_TARGET_DIR"
           if ! command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
             apt-get update
             apt-get install -y --no-install-recommends git ca-certificates nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang mingw-w64
@@ -107,13 +117,16 @@ jobs:
     name: Benchmark Gate
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_bench == 'true') }}
+    env:
+      CARGO_TARGET_DIR: /opt/hostedtoolcache/codetrail/target/bench
     container:
       image: rust:1.95-bookworm
-      options: --volume /tmp/codetrail-cache:/cache/codetrail
     steps:
       - name: Prepare benchmark tools
         run: |
+          mkdir -p "$CODETRAIL_CACHE_ROOT"
           mkdir -p "$CARGO_HOME"
+          mkdir -p "$CARGO_TARGET_DIR"
           if ! command -v hyperfine >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
             apt-get update
             apt-get install -y --no-install-recommends git ca-certificates jq bc hyperfine nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang
