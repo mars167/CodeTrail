@@ -5,7 +5,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-CS="${CS_BIN:-$ROOT/target/release/codetrail}"
+DEFAULT_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
+CS="${CS_BIN:-$DEFAULT_TARGET_DIR/release/codetrail}"
 REPO="${TEST_REPO:-$ROOT/../RuoYi}"
 BASELINE_FILE="$SCRIPT_DIR/baseline.json"
 BASELINE_VALUES_DIR="$SCRIPT_DIR/baseline_values"
