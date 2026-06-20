@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::{
     code_context::{self, CodeContextOptions},
@@ -84,6 +84,29 @@ impl Default for QueryOptions {
 }
 
 impl QueryOptions {
+    pub fn from_scan_options(opts: &ScanOptions, context: u16) -> Self {
+        Self {
+            dirs: opts.dirs.clone(),
+            extensions: opts.extensions.clone(),
+            file_patterns: opts.file_patterns.clone(),
+            file_mode: opts.file_mode,
+            case_sensitive: opts.case_sensitive,
+            input_mode: opts.input_mode,
+            include: opts.include.clone(),
+            exclude: opts.exclude.clone(),
+            lang: opts.lang.clone(),
+            changed: opts.changed,
+            hidden: opts.hidden,
+            no_ignore: opts.no_ignore,
+            cursor: opts.cursor.clone(),
+            allow_broad: opts.allow_broad,
+            limit: opts.limit,
+            context,
+            remote_mode: opts.remote_mode,
+            remote_snapshot: opts.remote_snapshot.clone(),
+        }
+    }
+
     fn to_scan_options(&self) -> ScanOptions {
         ScanOptions {
             dirs: self.dirs.clone(),
@@ -107,6 +130,23 @@ impl QueryOptions {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ExploreNodeOptions {
+    pub max_candidates: usize,
+    pub snippet_lines: usize,
+    pub relation_limit: usize,
+}
+
+impl ExploreNodeOptions {
+    pub fn bounded(max_candidates: usize, snippet_lines: usize, relation_limit: usize) -> Self {
+        Self {
+            max_candidates: max_candidates.clamp(1, 20),
+            snippet_lines: snippet_lines.clamp(1, 80),
+            relation_limit: relation_limit.min(20),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // QueryService
 // ---------------------------------------------------------------------------
@@ -121,6 +161,10 @@ impl QueryService {
     pub fn new(root: &Path) -> Result<Self> {
         let workspace = Workspace::discover(root)?;
         Ok(Self { workspace })
+    }
+
+    pub fn from_workspace(workspace: Workspace) -> Self {
+        Self { workspace }
     }
 
     /// Expose the workspace snapshot id (used for reliability metadata).
@@ -621,6 +665,159 @@ impl QueryService {
         Ok(self.finalize(page_response(response, output)))
     }
 
+    pub fn explore_node(
+        &self,
+        query: &str,
+        opts: &QueryOptions,
+        explore: ExploreNodeOptions,
+    ) -> Result<Value> {
+        let explore = ExploreNodeOptions::bounded(
+            explore.max_candidates,
+            explore.snippet_lines,
+            explore.relation_limit,
+        );
+        let mut query_opts = opts.clone();
+        query_opts.limit = explore.max_candidates;
+        query_opts.allow_broad = true;
+        let code_options = CodeContextOptions {
+            include_code: true,
+            code_context: 0,
+            code_max_lines: explore.snippet_lines,
+        };
+
+        let mut warnings = Vec::new();
+        let mut producer = "defs";
+        let mut response = self.defs_with_code(query, &query_opts, &code_options)?;
+        if !has_results(&response["results"]) {
+            warnings
+                .push("explore_fallback: defs returned no candidates; tried symbols".to_string());
+            producer = "symbols";
+            response = self.symbols_with_code(query, &query_opts, &code_options)?;
+        }
+        if !has_results(&response["results"]) {
+            warnings
+                .push("explore_fallback: symbols returned no candidates; tried files".to_string());
+            producer = "files";
+            response = self.files(query, &query_opts)?;
+        }
+
+        warnings.extend(warning_strings(&response));
+        let mut relation_seen = false;
+        let mut relation_truncated = false;
+        let mut source_truncated = false;
+        let mut compact = Vec::new();
+        for result in response["results"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(explore.max_candidates)
+        {
+            let (relations, relation_warnings) =
+                self.explore_relations(result, query, &query_opts, explore.relation_limit)?;
+            warnings.extend(relation_warnings);
+            let item = compact_explore_result(
+                &self.workspace,
+                result,
+                producer,
+                response
+                    .pointer("/reliability/level")
+                    .and_then(Value::as_str),
+                explore.snippet_lines,
+                Some(&relations),
+                explore.relation_limit,
+            )?;
+            relation_seen |= item
+                .get("relations")
+                .and_then(|relations| relation_has_items(relations))
+                .unwrap_or(false);
+            relation_truncated |= item
+                .pointer("/relations/truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            source_truncated |= item
+                .get("snippetTruncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            compact.push(item);
+        }
+
+        if relation_seen {
+            warnings.push(
+                "inferred_candidate: explore node relations are candidate call graph evidence"
+                    .to_string(),
+            );
+        }
+        if relation_truncated {
+            warnings.push("relations_truncated: explore node relations were capped".to_string());
+        }
+        if source_truncated {
+            warnings.push("source_truncated: explore node snippets were capped".to_string());
+        }
+        if producer != "defs" {
+            warnings.push(format!("explore_fallback: used {producer} fallback"));
+        }
+
+        let scan = query_opts.to_scan_options();
+        Ok(self.finalize(output::response(
+            "explore node",
+            "explore node",
+            scoped_query(
+                json!({
+                    "query": query,
+                    "producer": producer,
+                    "maxCandidates": explore.max_candidates,
+                    "snippetLines": explore.snippet_lines,
+                    "relationLimit": explore.relation_limit
+                }),
+                &scan,
+            ),
+            &self.workspace.snapshot_id,
+            reliability_from_response(&response),
+            Value::Array(compact),
+            dedupe_warnings(warnings),
+        )))
+    }
+
+    fn explore_relations(
+        &self,
+        result: &Value,
+        fallback_query: &str,
+        opts: &QueryOptions,
+        relation_limit: usize,
+    ) -> Result<(Value, Vec<String>)> {
+        if relation_limit == 0 {
+            return Ok((
+                json!({ "calls": [], "callers": [], "truncated": false }),
+                Vec::new(),
+            ));
+        }
+        let identifier = relation_identifier(result).unwrap_or(fallback_query);
+        let mut relation_opts = opts.clone();
+        relation_opts.limit = relation_limit;
+        let calls = self.calls(identifier, &relation_opts)?;
+        let callers = self.callers(identifier, &relation_opts)?;
+        let mut warnings = relation_warning_strings(&calls);
+        warnings.extend(relation_warning_strings(&callers));
+        let calls_results = calls.get("results").cloned().unwrap_or_else(|| json!([]));
+        let callers_results = callers.get("results").cloned().unwrap_or_else(|| json!([]));
+        let truncated = calls
+            .get("truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || callers
+                .get("truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+        Ok((
+            json!({
+                "calls": calls_results,
+                "callers": callers_results,
+                "truncated": truncated
+            }),
+            warnings,
+        ))
+    }
+
     // ------------------------------------------------------------------
     //  Relation queries  (graph → tree-sitter fallback)
     // ------------------------------------------------------------------
@@ -853,6 +1050,214 @@ fn remote_warnings(index: &Value, opts: &QueryOptions) -> Vec<String> {
         ));
     }
     warnings
+}
+
+fn reliability_from_response(response: &Value) -> output::Reliability {
+    match response
+        .pointer("/reliability/level")
+        .and_then(Value::as_str)
+        .unwrap_or("parser_fact")
+    {
+        "precise_fact" => output::precise_fact(),
+        "source_fact" => output::source_fact(),
+        "inferred_candidate" => output::inferred_candidate(),
+        "config_fact" => output::config_fact(),
+        _ => output::parser_fact(),
+    }
+}
+
+fn compact_explore_result(
+    workspace: &Workspace,
+    result: &Value,
+    producer: &str,
+    response_layer: Option<&str>,
+    snippet_lines: usize,
+    relations: Option<&Value>,
+    relation_limit: usize,
+) -> Result<Value> {
+    let mut object = Map::new();
+    copy_field(result, &mut object, "path");
+    copy_field(result, &mut object, "range");
+    copy_field(result, &mut object, "bodyRange");
+    copy_field(result, &mut object, "language");
+    copy_field(result, &mut object, "kind");
+    copy_field(result, &mut object, "name");
+    copy_field(result, &mut object, "symbolName");
+    copy_field(result, &mut object, "target");
+    copy_field(result, &mut object, "enclosingSymbol");
+    let layer = result
+        .get("layer")
+        .and_then(Value::as_str)
+        .or(response_layer)
+        .unwrap_or("parser_fact");
+    object.insert("layer".to_string(), Value::String(layer.to_string()));
+
+    if let Some(source) = result.get("source") {
+        if let Some(content) = source.get("content").and_then(Value::as_str) {
+            object.insert("snippet".to_string(), Value::String(content.to_string()));
+        }
+        if source.get("truncated").and_then(Value::as_bool) == Some(true) {
+            object.insert("snippetTruncated".to_string(), Value::Bool(true));
+        }
+    } else if producer == "files" {
+        if let Some(path) = result.get("path").and_then(Value::as_str) {
+            if let Some((snippet, range, truncated)) =
+                read_file_snippet(workspace, path, snippet_lines)?
+            {
+                object.insert("snippet".to_string(), Value::String(snippet));
+                object.insert("range".to_string(), range);
+                if truncated {
+                    object.insert("snippetTruncated".to_string(), Value::Bool(true));
+                }
+            }
+        }
+    }
+
+    object.insert(
+        "relations".to_string(),
+        compact_relations(
+            relations.or_else(|| result.get("relations")),
+            relation_limit,
+        ),
+    );
+    Ok(Value::Object(object))
+}
+
+fn read_file_snippet(
+    workspace: &Workspace,
+    path: &str,
+    snippet_lines: usize,
+) -> Result<Option<(String, Value, bool)>> {
+    let target = format!("{path}:1-{}", snippet_lines.max(1));
+    let read = search::read(workspace, &target)?;
+    if read.get("binary").and_then(Value::as_bool) == Some(true) {
+        return Ok(None);
+    }
+    let content = read
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let range = read.get("range").cloned().unwrap_or_else(|| {
+        json!({
+            "start": { "line": 1, "column": 1 },
+            "end": { "line": snippet_lines.max(1), "column": 1 }
+        })
+    });
+    let truncated = read
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Ok(Some((content, range, truncated)))
+}
+
+fn relation_identifier(result: &Value) -> Option<&str> {
+    result
+        .get("name")
+        .and_then(Value::as_str)
+        .or_else(|| result.get("symbolName").and_then(Value::as_str))
+        .or_else(|| result.get("target").and_then(Value::as_str))
+        .or_else(|| result.get("enclosingSymbol").and_then(Value::as_str))
+}
+
+fn compact_relations(relations: Option<&Value>, limit: usize) -> Value {
+    let Some(relations) = relations else {
+        return json!({ "calls": [], "callers": [], "truncated": false });
+    };
+    let calls_all = relations
+        .get("calls")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let callers_all = relations
+        .get("callers")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut remaining = limit;
+    let calls = take_compact_relations(&calls_all, &mut remaining);
+    let callers = take_compact_relations(&callers_all, &mut remaining);
+    let truncated = relations
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || calls_all.len() + callers_all.len() > calls.len() + callers.len();
+    json!({
+        "calls": calls,
+        "callers": callers,
+        "truncated": truncated,
+    })
+}
+
+fn take_compact_relations(items: &[Value], remaining: &mut usize) -> Vec<Value> {
+    let mut output = Vec::new();
+    for item in items {
+        if *remaining == 0 {
+            break;
+        }
+        let mut object = Map::new();
+        copy_field(item, &mut object, "path");
+        copy_field(item, &mut object, "range");
+        copy_field(item, &mut object, "language");
+        copy_field(item, &mut object, "kind");
+        copy_field(item, &mut object, "target");
+        copy_field(item, &mut object, "enclosingSymbol");
+        copy_field(item, &mut object, "layer");
+        output.push(Value::Object(object));
+        *remaining -= 1;
+    }
+    output
+}
+
+fn relation_has_items(relations: &Value) -> Option<bool> {
+    Some(
+        relations
+            .get("calls")
+            .and_then(Value::as_array)
+            .is_some_and(|items| !items.is_empty())
+            || relations
+                .get("callers")
+                .and_then(Value::as_array)
+                .is_some_and(|items| !items.is_empty()),
+    )
+}
+
+fn warning_strings(response: &Value) -> Vec<String> {
+    response
+        .get("warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|warning| {
+            let code = warning.get("code").and_then(Value::as_str)?;
+            let message = warning
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or(code);
+            Some(format!("{code}: {message}"))
+        })
+        .collect()
+}
+
+fn relation_warning_strings(response: &Value) -> Vec<String> {
+    warning_strings(response)
+        .into_iter()
+        .filter(|warning| !warning.starts_with("no_match:"))
+        .collect()
+}
+
+fn dedupe_warnings(warnings: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    warnings
+        .into_iter()
+        .filter(|warning| seen.insert(warning.clone()))
+        .collect()
+}
+
+fn copy_field(source: &Value, target: &mut Map<String, Value>, field: &str) {
+    if let Some(value) = source.get(field).filter(|value| !value.is_null()) {
+        target.insert(field.to_string(), value.clone());
+    }
 }
 
 // ---------------------------------------------------------------------------

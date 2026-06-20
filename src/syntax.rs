@@ -55,7 +55,7 @@ pub(crate) fn candidate_language_matrix() -> &'static [LanguageCandidateMatrix] 
     &LANGUAGE_CANDIDATE_MATRIX
 }
 
-static LANGUAGE_CANDIDATE_MATRIX: [LanguageCandidateMatrix; 8] = [
+static LANGUAGE_CANDIDATE_MATRIX: [LanguageCandidateMatrix; 9] = [
     LanguageCandidateMatrix {
         language: "go",
         extracted_kinds: &["definition", "method", "type", "call", "import"],
@@ -87,6 +87,25 @@ static LANGUAGE_CANDIDATE_MATRIX: [LanguageCandidateMatrix; 8] = [
             "interface dispatch and inheritance",
             "reflection and framework injection",
             "annotation generated code",
+        ],
+    },
+    LanguageCandidateMatrix {
+        language: "kotlin",
+        extracted_kinds: &[
+            "definition",
+            "method",
+            "class",
+            "object",
+            "property",
+            "call",
+            "import",
+        ],
+        known_blind_spots: &[
+            "overload resolution",
+            "extension function dispatch",
+            "delegated properties",
+            "compiler plugin generated code",
+            "Gradle/Maven classpath dependent binding",
         ],
     },
     LanguageCandidateMatrix {
@@ -917,6 +936,7 @@ fn parser_language(path: &Path) -> Option<Language> {
         "rust" => Some(tree_sitter_rust::LANGUAGE.into()),
         "python" => Some(tree_sitter_python::LANGUAGE.into()),
         "java" => Some(tree_sitter_java::LANGUAGE.into()),
+        "kotlin" => Some(tree_sitter_kotlin_ng::LANGUAGE.into()),
         "typescript" => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
         "javascript" => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
         "ruby" => Some(tree_sitter_ruby::LANGUAGE.into()),
@@ -934,6 +954,7 @@ fn symbol_kind(kind: &str) -> Option<&'static str> {
         "method_definition" | "method_declaration" => Some("function"),
         "method" | "singleton_method" => Some("function"),
         "method_elem" => Some("function"),
+        "property_declaration" => Some("property"),
         "struct_item" | "type_declaration" => Some("struct"),
         "enum_item" | "enum_declaration" => Some("enum"),
         "trait_item" => Some("trait"),
@@ -946,6 +967,7 @@ fn symbol_kind(kind: &str) -> Option<&'static str> {
         "record_declaration" => Some("record"),
         "annotation_type_declaration" => Some("annotation"),
         "class_definition" | "class_declaration" | "class" => Some("class"),
+        "object_declaration" | "companion_object" => Some("object"),
         "module" => Some("module"),
         "lexical_declaration" | "var_declaration" | "const_declaration" => Some("variable"),
         _ => None,
@@ -964,6 +986,7 @@ fn is_enclosing_symbol_node(kind: &str) -> bool {
             | "method"
             | "singleton_method"
             | "method_elem"
+            | "property_declaration"
             | "constructor_declaration"
             | "compact_constructor_declaration"
             | "init_declaration"
@@ -983,6 +1006,8 @@ fn candidate_kind_for_symbol(node: Node, language: &str) -> &'static str {
         | "deinit_declaration"
         | "method_elem" => "method",
         "class_definition" | "class_declaration" | "class" => "class",
+        "object_declaration" | "companion_object" => "object",
+        "property_declaration" => "definition",
         "module" => "module",
         "struct_item"
         | "enum_item"
@@ -1020,6 +1045,7 @@ fn is_import_node(kind: &str) -> bool {
         "use_declaration"
             | "import_statement"
             | "import_declaration"
+            | "import_header"
             | "import_from_statement"
             | "import_require_clause"
     )
@@ -1081,6 +1107,11 @@ fn import_name(node: Node, language: &str, source: &[u8]) -> Option<String> {
             .unwrap_or(raw)
             .trim_start_matches("static ")
             .trim_end_matches(';')
+            .trim()
+            .to_string(),
+        "kotlin" => raw
+            .strip_prefix("import ")
+            .unwrap_or(raw)
             .trim()
             .to_string(),
         "go" => raw

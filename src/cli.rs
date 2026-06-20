@@ -171,6 +171,10 @@ pub enum Command {
     Callers {
         identifier: String,
     },
+    Explore {
+        #[command(subcommand)]
+        command: ExploreCommand,
+    },
     Changed,
     Status,
     Mcp,
@@ -208,6 +212,41 @@ pub enum Command {
         #[arg(value_enum)]
         shell: CompletionShell,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ExploreCommand {
+    Node {
+        query: String,
+        #[arg(long, default_value_t = 5, value_parser = parse_max_candidates)]
+        max_candidates: usize,
+        #[arg(long, default_value_t = 12, value_parser = parse_snippet_lines)]
+        snippet_lines: usize,
+        #[arg(long, default_value_t = 8, value_parser = parse_relation_limit)]
+        relation_limit: usize,
+    },
+}
+
+fn parse_max_candidates(value: &str) -> Result<usize, String> {
+    parse_bounded_usize(value, 1, 20, "max-candidates")
+}
+
+fn parse_snippet_lines(value: &str) -> Result<usize, String> {
+    parse_bounded_usize(value, 1, 80, "snippet-lines")
+}
+
+fn parse_relation_limit(value: &str) -> Result<usize, String> {
+    parse_bounded_usize(value, 0, 20, "relation-limit")
+}
+
+fn parse_bounded_usize(value: &str, min: usize, max: usize, name: &str) -> Result<usize, String> {
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|_| format!("{name} must be an integer"))?;
+    if !(min..=max).contains(&parsed) {
+        return Err(format!("{name} must be between {min} and {max}"));
+    }
+    Ok(parsed)
 }
 
 fn parse_code_max_lines(value: &str) -> Result<usize, String> {
@@ -256,7 +295,10 @@ pub enum IndexCommand {
         no_semantic: bool,
     },
     Update,
-    Status,
+    Status {
+        #[arg(long)]
+        summary: bool,
+    },
     Skipped {
         #[arg(long)]
         staged: bool,

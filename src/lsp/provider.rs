@@ -190,6 +190,7 @@ fn language_from_id(language_id: &str) -> ProjectLanguage {
         "go" => ProjectLanguage::Go,
         "rust" => ProjectLanguage::Rust,
         "java" => ProjectLanguage::Java,
+        "kotlin" => ProjectLanguage::Kotlin,
         "typescript" | "javascript" => ProjectLanguage::TypeScript,
         "ruby" => ProjectLanguage::Ruby,
         "swift" => ProjectLanguage::Swift,

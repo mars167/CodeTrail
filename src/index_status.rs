@@ -12,7 +12,7 @@ use crate::{
     project_graph::{
         discover_project_graph, ProjectGraph, ProjectLanguage, ProjectRoot, ProjectRootKind,
     },
-    provider_help::{requirement_for_language, ProviderRequirement},
+    provider_help::{env_keys_for_requirement, requirement_for_language, ProviderRequirement},
     scip,
     workspace::{FileRecord, Workspace},
 };
@@ -75,6 +75,166 @@ pub(crate) fn semantic_status(
         status["projectGraphError"] = Value::String(error);
     }
     status
+}
+
+pub(crate) fn summary_status(full: &Value) -> Value {
+    let indexed_languages = full
+        .get("indexedLanguages")
+        .cloned()
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    let file_count = full
+        .pointer("/manifest/fileCount")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| indexed_language_file_count(&indexed_languages));
+    let semantic_status = full.get("semanticStatus").cloned().unwrap_or_else(|| {
+        json!({
+            "scipIndex": {},
+            "languageCoverage": []
+        })
+    });
+
+    json!({
+        "exists": full.get("exists").and_then(Value::as_bool).unwrap_or(false),
+        "fresh": full.get("fresh").and_then(Value::as_bool).unwrap_or(false),
+        "fileCount": file_count,
+        "indexedLanguages": indexed_languages,
+        "semanticStatus": {
+            "scipIndex": compact_scip_index(semantic_status.get("scipIndex")),
+            "languageCoverage": language_coverage(&semantic_status),
+        }
+    })
+}
+
+fn indexed_language_file_count(indexed_languages: &Value) -> u64 {
+    indexed_languages
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|language| language.get("fileCount").and_then(Value::as_u64))
+        .sum()
+}
+
+fn compact_scip_index(value: Option<&Value>) -> Value {
+    let Some(value) = value else {
+        return json!({
+            "available": false,
+            "usable": false,
+            "fresh": false,
+            "state": "not_generated",
+            "languages": []
+        });
+    };
+    json!({
+        "available": value.get("available").and_then(Value::as_bool).unwrap_or(false),
+        "usable": value.get("usable").and_then(Value::as_bool).unwrap_or(false),
+        "fresh": value.get("fresh").and_then(Value::as_bool).unwrap_or(false),
+        "state": value.get("state").and_then(Value::as_str).unwrap_or("unknown"),
+        "languages": value.get("languages").cloned().unwrap_or_else(|| Value::Array(Vec::new())),
+    })
+}
+
+fn language_coverage(semantic_status: &Value) -> Value {
+    let provider_status = semantic_status
+        .get("semanticProviders")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|provider| {
+            let language = provider.get("language").and_then(Value::as_str)?;
+            Some((language.to_string(), provider.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let mut coverage = BTreeMap::<String, Value>::new();
+    for root in semantic_status
+        .get("roots")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(language) = root.get("language").and_then(Value::as_str) else {
+            continue;
+        };
+        let provider = root
+            .get("provider")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                provider_status
+                    .get(language)
+                    .and_then(|status| status.get("provider"))
+                    .and_then(Value::as_str)
+            })
+            .unwrap_or("unknown");
+        let provider_available = provider_status
+            .get(language)
+            .and_then(|status| status.get("available"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let state = root
+            .get("semanticState")
+            .and_then(Value::as_str)
+            .unwrap_or("not_generated");
+        let partial_reasons = root
+            .get("partialReasons")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new()));
+        let entry = coverage.entry(language.to_string()).or_insert_with(|| {
+            json!({
+                "language": language,
+                "provider": provider,
+                "precise": precise_coverage_state(state, provider_available),
+                "fallback": "tree_sitter_parser",
+                "rootCount": 0,
+                "partialReasons": []
+            })
+        });
+        entry["rootCount"] = json!(entry.get("rootCount").and_then(Value::as_u64).unwrap_or(0) + 1);
+        let current = entry
+            .get("precise")
+            .and_then(Value::as_str)
+            .unwrap_or("missing");
+        entry["precise"] = Value::String(merge_precise_coverage(
+            current,
+            precise_coverage_state(state, provider_available),
+        ));
+        append_unique_strings(&mut entry["partialReasons"], &partial_reasons);
+    }
+
+    Value::Array(coverage.into_values().collect())
+}
+
+fn precise_coverage_state(state: &str, provider_available: bool) -> &'static str {
+    match state {
+        "fresh" => "fresh",
+        "partial" => "partial",
+        "missing" => "manual_required",
+        "not_generated" if !provider_available => "manual_required",
+        _ => "missing",
+    }
+}
+
+fn merge_precise_coverage(left: &str, right: &str) -> String {
+    if left == right {
+        return left.to_string();
+    }
+    for state in ["partial", "manual_required", "missing", "fresh"] {
+        if left == state || right == state {
+            return state.to_string();
+        }
+    }
+    "missing".to_string()
+}
+
+fn append_unique_strings(target: &mut Value, extra: &Value) {
+    let Some(target_items) = target.as_array_mut() else {
+        return;
+    };
+    for item in extra.as_array().into_iter().flatten() {
+        if target_items.iter().any(|existing| existing == item) {
+            continue;
+        }
+        target_items.push(item.clone());
+    }
 }
 
 fn scip_language_summary(db_path: &Path) -> (Value, usize, Option<String>) {
@@ -196,9 +356,14 @@ fn swift_config_status(workspace: &Workspace, root: &ProjectRoot) -> Option<Valu
 
 fn semantic_provider_status(language: &ProjectLanguage) -> Value {
     let requirement = requirement_for_language(language);
-    let env_override = std::env::var(requirement.env_key)
-        .ok()
-        .filter(|value| !value.trim().is_empty());
+    let env_override = env_keys_for_requirement(&requirement)
+        .into_iter()
+        .find_map(|key| {
+            std::env::var(key)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| (key, value))
+        });
     let program = provider_program(&requirement);
     let available = program.is_some();
     let mut value = json!({
@@ -220,18 +385,21 @@ fn semantic_provider_status(language: &ProjectLanguage) -> Value {
             vec![requirement.provider]
         },
     });
-    if let Some(env_override) = env_override {
-        value["envOverride"] = Value::String(env_override);
+    if let Some((key, value_override)) = env_override {
+        value["envOverride"] = Value::String(value_override);
+        value["envOverrideKey"] = Value::String(key.to_string());
     }
     value
 }
 
 fn provider_program(requirement: &ProviderRequirement) -> Option<String> {
-    if let Some(override_value) = std::env::var(requirement.env_key)
-        .ok()
-        .and_then(|value| first_shell_word(&value))
-    {
-        return resolve_binary(&override_value);
+    for key in env_keys_for_requirement(requirement) {
+        if let Some(override_value) = std::env::var(key)
+            .ok()
+            .and_then(|value| first_shell_word(&value))
+        {
+            return resolve_binary(&override_value);
+        }
     }
     resolve_binary(requirement.command)
 }

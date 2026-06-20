@@ -14,7 +14,9 @@ use crate::{
     lsp::registry::resolve_binary,
     output::VerboseLogger,
     project_graph::{ProjectLanguage, ProjectRoot},
-    provider_help::{requirement_for_language, ProviderKind, ProviderRequirement},
+    provider_help::{
+        env_keys_for_requirement, requirement_for_language, ProviderKind, ProviderRequirement,
+    },
     scip,
     scip_proto::proto,
     workspace::Workspace,
@@ -193,15 +195,14 @@ pub fn merge_native_indexes(indexes: Vec<proto::Index>) -> proto::Index {
 }
 
 fn resolve_provider_command(requirement: &ProviderRequirement) -> Option<ProviderCommand> {
-    if let Some(value) = env::var(requirement.env_key)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    {
-        let mut words = shell_words(&value).into_iter();
-        let program = resolve_binary(&words.next()?)?;
-        let mut args = words.collect::<Vec<_>>();
-        args.extend(requirement.args.iter().map(|arg| (*arg).to_string()));
-        return Some(ProviderCommand { program, args });
+    for key in env_keys_for_requirement(requirement) {
+        if let Some(value) = env::var(key).ok().filter(|value| !value.trim().is_empty()) {
+            let mut words = shell_words(&value).into_iter();
+            let program = resolve_binary(&words.next()?)?;
+            let mut args = words.collect::<Vec<_>>();
+            args.extend(requirement.args.iter().map(|arg| (*arg).to_string()));
+            return Some(ProviderCommand { program, args });
+        }
     }
 
     Some(ProviderCommand {

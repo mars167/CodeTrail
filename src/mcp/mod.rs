@@ -31,7 +31,7 @@ use crate::{
         CodeContextOptions, DEFAULT_CODE_CONTEXT_LINES, DEFAULT_CODE_MAX_LINES, MAX_CODE_MAX_LINES,
     },
     output,
-    query::{QueryOptions, QueryService},
+    query::{ExploreNodeOptions, QueryOptions, QueryService},
     query_input::InputMode,
     search_pattern::SearchPatternMode,
     workspace::RemoteMode,
@@ -375,6 +375,33 @@ fn tool_definitions() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "codetrail_explore_node".to_string(),
+            description:
+                "Explore a symbol or file node with bounded snippets and capped inferred relations. Tries defs, symbols, then files."
+                    .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Symbol, type, method, or file name to explore" },
+                    "maxCandidates": { "type": "integer", "minimum": 1, "maximum": 20, "default": 5 },
+                    "snippetLines": { "type": "integer", "minimum": 1, "maximum": 80, "default": 12 },
+                    "relationLimit": { "type": "integer", "minimum": 0, "maximum": 20, "default": 8 },
+                    "dir": { "type": "array", "items": { "type": "string" }, "description": "Workspace-relative directories to search (OR filter)" },
+                    "ext": { "type": "array", "items": { "type": "string" }, "description": "File extensions to search, with or without a leading dot" },
+                    "filePattern": { "type": "array", "items": { "type": "string" }, "description": "Path patterns applied before exploration" },
+                    "fileMode": { "type": "string", "enum": ["literal", "regex", "wildcard", "glob"], "default": "wildcard", "description": "Pattern mode for filePattern" },
+                    "caseSensitive": { "type": "boolean", "default": false, "description": "Use exact case for symbol input matching" },
+                    "inputMode": { "type": "string", "enum": ["compatible", "strict"], "default": "compatible", "description": "Symbol input handling mode" },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Path substrings to include" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Path substrings to exclude" },
+                    "lang": { "type": "array", "items": { "type": "string" }, "description": "Languages to include" },
+                    "changed": { "type": "boolean", "default": false, "description": "Restrict search to git changed files" },
+                    "allowBroad": { "type": "boolean", "default": false, "description": "Allow broad path fallback" }
+                },
+                "required": ["query"]
+            }),
+        },
+        ToolDef {
             name: "codetrail_changed".to_string(),
             description:
                 "List changed (git-modified or untracked) files in the workspace."
@@ -610,6 +637,11 @@ impl Server {
                     .unwrap_or_default();
                 self.service.routes(pattern, &frameworks, &methods, &opts)
             }
+            "codetrail_explore_node" => {
+                let query = required_str(args, "query")?;
+                self.service
+                    .explore_node(query, &opts, parse_explore_node_options(args)?)
+            }
             "codetrail_calls" => {
                 let identifier = required_str(args, "identifier")?;
                 self.service.calls(identifier, &opts)
@@ -762,6 +794,45 @@ fn parse_code_context_options(args: Option<&Value>) -> Result<CodeContextOptions
         code_context,
         code_max_lines,
     })
+}
+
+fn parse_explore_node_options(args: Option<&Value>) -> Result<ExploreNodeOptions> {
+    let obj = match args.and_then(Value::as_object) {
+        Some(obj) => obj,
+        None => {
+            return Ok(ExploreNodeOptions::bounded(5, 12, 8));
+        }
+    };
+    let max_candidates = optional_usize_fields(
+        obj,
+        &["maxCandidates", "max_candidates", "max-candidates"],
+        5,
+    )?;
+    let snippet_lines =
+        optional_usize_fields(obj, &["snippetLines", "snippet_lines", "snippet-lines"], 12)?;
+    let relation_limit = optional_usize_fields(
+        obj,
+        &["relationLimit", "relation_limit", "relation-limit"],
+        8,
+    )?;
+    validate_explore_bound("maxCandidates", max_candidates, 1, 20)?;
+    validate_explore_bound("snippetLines", snippet_lines, 1, 80)?;
+    validate_explore_bound("relationLimit", relation_limit, 0, 20)?;
+    Ok(ExploreNodeOptions::bounded(
+        max_candidates,
+        snippet_lines,
+        relation_limit,
+    ))
+}
+
+fn validate_explore_bound(name: &str, value: usize, min: usize, max: usize) -> Result<()> {
+    if (min..=max).contains(&value) {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "invalid_mcp_argument: {name} must be between {min} and {max}"
+        ))
+    }
 }
 
 fn extract_string_array(obj: &serde_json::Map<String, Value>, field: &str) -> Vec<String> {
@@ -987,9 +1058,10 @@ mod tests {
                 assert!(!names.contains(&"codetrail_tree"));
                 assert!(!names.contains(&"codetrail_read"));
                 assert!(names.contains(&"codetrail_routes"));
+                assert!(names.contains(&"codetrail_explore_node"));
                 assert!(names.contains(&"codetrail_status"));
                 // All core CLI-backed tools should be present.
-                assert_eq!(list.tools.len(), 12);
+                assert_eq!(list.tools.len(), 13);
             }
             _ => panic!("expected success response"),
         }

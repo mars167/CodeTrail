@@ -1654,6 +1654,215 @@ fn swift_language_mapping_is_visible_to_files_and_index_status() {
 }
 
 #[test]
+fn kotlin_language_parser_status_summary_and_explore_are_bounded() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("settings.gradle.kts"),
+        "pluginManagement {}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("build.gradle.kts"),
+        "plugins { kotlin(\"jvm\") version \"1.9.0\" }\n",
+    )
+    .unwrap();
+    fs::create_dir_all(dir.path().join("src/main/kotlin/okhttp3")).unwrap();
+    fs::write(
+        dir.path().join("src/main/kotlin/okhttp3/RealCall.kt"),
+        r#"package okhttp3
+
+class RealCall(private val chain: RealInterceptorChain) {
+  fun getResponseWithInterceptorChain(): Response {
+    return chain.proceed(Request())
+  }
+}
+
+class RealInterceptorChain {
+  fun proceed(request: Request): Response {
+    return Response()
+  }
+}
+
+class Request
+class Response
+"#,
+    )
+    .unwrap();
+
+    let files = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--lang")
+        .arg("kotlin")
+        .args(["files", "RealCall.kt"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let files_json: Value = serde_json::from_slice(&files).unwrap();
+    assert_eq!(files_json["results"][0]["language"], "kotlin");
+
+    let kts_files = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--lang")
+        .arg("kotlin")
+        .args(["files", "build.gradle.kts"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let kts_json: Value = serde_json::from_slice(&kts_files).unwrap();
+    assert_eq!(kts_json["results"][0]["language"], "kotlin");
+
+    let symbols = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["symbols", "RealCall"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let symbols_json: Value = serde_json::from_slice(&symbols).unwrap();
+    assert_eq!(symbols_json["reliability"]["level"], "parser_fact");
+    assert!(symbols_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|result| {
+            result["language"] == "kotlin"
+                && result["name"] == "RealCall"
+                && result["kind"] == "class"
+        }));
+
+    let defs = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "getResponseWithInterceptorChain"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let defs_json: Value = serde_json::from_slice(&defs).unwrap();
+    assert_eq!(defs_json["reliability"]["level"], "parser_fact");
+    assert!(defs_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|result| {
+            result["language"] == "kotlin" && result["name"] == "getResponseWithInterceptorChain"
+        }));
+
+    let proceed_defs = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "proceed"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let proceed_defs_json: Value = serde_json::from_slice(&proceed_defs).unwrap();
+    assert!(proceed_defs_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|result| result["language"] == "kotlin" && result["name"] == "proceed"));
+
+    let callers = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["callers", "proceed"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let callers_json: Value = serde_json::from_slice(&callers).unwrap();
+    assert!(callers_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|result| {
+            result["language"] == "kotlin"
+                && result["enclosingSymbol"] == "getResponseWithInterceptorChain"
+        }));
+
+    raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build", "--no-semantic"])
+        .assert()
+        .success();
+
+    let summary = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "json", "index", "status", "--summary"])
+        .env("PATH", tempdir().unwrap().path())
+        .env_remove("CODETRAIL_SCIP_KOTLIN")
+        .env_remove("CODETRAIL_SCIP_JAVA")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let summary_json: Value = serde_json::from_slice(&summary).unwrap();
+    let summary = &summary_json["results"][0];
+    assert!(summary["indexedLanguages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|language| language["language"] == "kotlin"));
+    let kotlin_coverage = summary["semanticStatus"]["languageCoverage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|coverage| coverage["language"] == "kotlin")
+        .expect("kotlin coverage");
+    assert_eq!(kotlin_coverage["provider"], "scip-java");
+    assert_eq!(kotlin_coverage["precise"], "manual_required");
+    assert_eq!(kotlin_coverage["fallback"], "tree_sitter_parser");
+    assert!(summary["manifest"].is_null());
+    assert!(summary["semanticManifests"].is_null());
+
+    let explore = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args([
+            "explore",
+            "node",
+            "RealCall",
+            "--max-candidates",
+            "5",
+            "--snippet-lines",
+            "6",
+            "--relation-limit",
+            "4",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let explore_json: Value = serde_json::from_slice(&explore).unwrap();
+    let first = &explore_json["results"][0];
+    assert_eq!(first["language"], "kotlin");
+    assert_eq!(first["name"], "RealCall");
+    assert!(first["snippet"]
+        .as_str()
+        .unwrap()
+        .contains("class RealCall"));
+    assert!(first["source"].is_null());
+    assert!(first["relations"]["calls"].as_array().unwrap().len() <= 4);
+    assert!(first["relations"]["callers"].as_array().unwrap().len() <= 4);
+}
+
+#[test]
 fn changed_scope_searches_only_git_changed_files() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
@@ -5241,6 +5450,88 @@ fn write_minimal_scip_json(path: &std::path::Path) {
     fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
 }
 
+fn write_jvm_scip_index(path: &std::path::Path, include_java: bool, include_kotlin: bool) {
+    use codetrail::scip_proto::proto;
+    use prost::Message;
+
+    let mut documents = Vec::new();
+    if include_java {
+        documents.push(proto::Document {
+            language: "java".to_string(),
+            relative_path: "src/main/java/example/App.java".to_string(),
+            occurrences: vec![proto::Occurrence {
+                range: vec![1, 13, 1, 16],
+                symbol: "local java-app".to_string(),
+                symbol_roles: 1,
+                ..Default::default()
+            }],
+            symbols: vec![proto::SymbolInformation {
+                symbol: "local java-app".to_string(),
+                kind: proto::symbol_information::Kind::Class as i32,
+                display_name: "App".to_string(),
+                ..Default::default()
+            }],
+            position_encoding: proto::PositionEncoding::Utf8CodeUnitOffsetFromLineStart as i32,
+            ..Default::default()
+        });
+    }
+    if include_kotlin {
+        documents.push(proto::Document {
+            language: "kotlin".to_string(),
+            relative_path: "src/main/kotlin/okhttp3/RealCall.kt".to_string(),
+            occurrences: vec![
+                proto::Occurrence {
+                    range: vec![2, 6, 2, 14],
+                    symbol: "local kotlin-realcall".to_string(),
+                    symbol_roles: 1,
+                    ..Default::default()
+                },
+                proto::Occurrence {
+                    range: vec![3, 6, 3, 37],
+                    symbol: "local kotlin-get-response".to_string(),
+                    symbol_roles: 1,
+                    ..Default::default()
+                },
+            ],
+            symbols: vec![
+                proto::SymbolInformation {
+                    symbol: "local kotlin-realcall".to_string(),
+                    kind: proto::symbol_information::Kind::Class as i32,
+                    display_name: "RealCall".to_string(),
+                    ..Default::default()
+                },
+                proto::SymbolInformation {
+                    symbol: "local kotlin-get-response".to_string(),
+                    kind: proto::symbol_information::Kind::Method as i32,
+                    display_name: "getResponseWithInterceptorChain".to_string(),
+                    ..Default::default()
+                },
+            ],
+            position_encoding: proto::PositionEncoding::Utf8CodeUnitOffsetFromLineStart as i32,
+            ..Default::default()
+        });
+    }
+
+    let index = proto::Index {
+        metadata: Some(proto::Metadata {
+            version: proto::ProtocolVersion::UnspecifiedProtocolVersion as i32,
+            tool_info: Some(proto::ToolInfo {
+                name: "test-jvm-indexer".to_string(),
+                version: "0.1.0".to_string(),
+                arguments: vec![],
+            }),
+            project_root: "file:///test".to_string(),
+            text_document_encoding: proto::TextEncoding::Utf8 as i32,
+        }),
+        documents,
+        ..Default::default()
+    };
+
+    let mut buf = Vec::new();
+    index.encode(&mut buf).unwrap();
+    fs::write(path, buf).unwrap();
+}
+
 fn build_native_scip_db_from_file(
     root: &std::path::Path,
     scip_path: &std::path::Path,
@@ -5347,6 +5638,154 @@ fn prebuilt_native_scip_db_drives_precise_defs_refs_and_symbols() {
     let symbols_json: Value = serde_json::from_slice(&symbols).unwrap();
     assert_eq!(symbols_json["reliability"]["level"], "precise_fact");
     assert_eq!(symbols_json["results"][0]["name"], "needle");
+}
+
+#[test]
+fn prebuilt_native_scip_db_preserves_kotlin_language_for_precise_results() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src/main/kotlin/okhttp3")).unwrap();
+    fs::write(
+        dir.path().join("src/main/kotlin/okhttp3/RealCall.kt"),
+        "package okhttp3\n\nclass RealCall {\n  fun getResponseWithInterceptorChain() {}\n}\n",
+    )
+    .unwrap();
+
+    let scip_path = dir.path().join("index.scip");
+    write_jvm_scip_index(&scip_path, false, true);
+    let db_path = build_native_scip_db_from_file(dir.path(), &scip_path);
+    assert!(db_path.is_file());
+
+    let symbols = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["symbols", "RealCall"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let symbols_json: Value = serde_json::from_slice(&symbols).unwrap();
+    assert_eq!(symbols_json["reliability"]["level"], "precise_fact");
+    assert_eq!(symbols_json["results"][0]["language"], "kotlin");
+    assert_eq!(symbols_json["results"][0]["name"], "RealCall");
+
+    let defs = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "getResponseWithInterceptorChain"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let defs_json: Value = serde_json::from_slice(&defs).unwrap();
+    assert_eq!(defs_json["reliability"]["level"], "precise_fact");
+    assert_eq!(defs_json["results"][0]["language"], "kotlin");
+    assert_eq!(
+        defs_json["results"][0]["name"],
+        "getResponseWithInterceptorChain"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn mixed_java_kotlin_gradle_root_runs_scip_java_once_for_both_languages() {
+    let dir = tempdir().unwrap();
+    fs::write(
+        dir.path().join("settings.gradle.kts"),
+        "pluginManagement {}\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("build.gradle.kts"),
+        "plugins { kotlin(\"jvm\") version \"1.9.0\" }\n",
+    )
+    .unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/example")).unwrap();
+    fs::write(
+        dir.path().join("src/main/java/example/App.java"),
+        "package example;\npublic class App {}\n",
+    )
+    .unwrap();
+    fs::create_dir_all(dir.path().join("src/main/kotlin/okhttp3")).unwrap();
+    fs::write(
+        dir.path().join("src/main/kotlin/okhttp3/RealCall.kt"),
+        "package okhttp3\nclass RealCall { fun getResponseWithInterceptorChain() {} }\n",
+    )
+    .unwrap();
+
+    let fixture = dir.path().join("fixture.scip");
+    write_jvm_scip_index(&fixture, true, true);
+    let count_file = dir.path().join("provider-count.txt");
+    let provider = dir.path().join("fake-scip-java");
+    fs::write(
+        &provider,
+        r#"#!/bin/sh
+set -eu
+echo run >> "$CODETRAIL_TEST_PROVIDER_COUNT"
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output" ]; then
+    shift
+    out="$1"
+  fi
+  shift || true
+done
+cp "$CODETRAIL_TEST_SCIP_FIXTURE" "$out"
+"#,
+    )
+    .unwrap();
+    make_executable(&provider);
+
+    raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "json", "index", "build"])
+        .env(
+            "CODETRAIL_SCIP_KOTLIN",
+            provider.to_string_lossy().to_string(),
+        )
+        .env(
+            "CODETRAIL_TEST_SCIP_FIXTURE",
+            fixture.to_string_lossy().to_string(),
+        )
+        .env(
+            "CODETRAIL_TEST_PROVIDER_COUNT",
+            count_file.to_string_lossy().to_string(),
+        )
+        .assert()
+        .success();
+
+    let count = fs::read_to_string(&count_file).unwrap();
+    assert_eq!(count.lines().count(), 1, "{count}");
+
+    let status = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "json", "index", "status"])
+        .env(
+            "CODETRAIL_SCIP_KOTLIN",
+            provider.to_string_lossy().to_string(),
+        )
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let status_json: Value = serde_json::from_slice(&status).unwrap();
+    let manifests = status_json["results"][0]["semanticManifests"]
+        .as_array()
+        .unwrap();
+    assert!(manifests.iter().any(|manifest| {
+        manifest["language"] == "java"
+            && manifest["providerName"] == "scip-java"
+            && manifest["state"] == "fresh"
+    }));
+    assert!(manifests.iter().any(|manifest| {
+        manifest["language"] == "kotlin"
+            && manifest["providerName"] == "scip-java"
+            && manifest["state"] == "fresh"
+    }));
 }
 
 #[test]
@@ -5868,6 +6307,69 @@ fn mcp_stdio_find_matches_cli_core_json_and_read_flow() {
     );
     assert!(mcp_find["results"][0].get("readCommandArgv").is_none());
     assert!(mcp_find["results"][0].get("sourceTarget").is_none());
+}
+
+#[test]
+fn mcp_stdio_explore_node_is_registered_and_returns_public_projection() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "fn alpha() {\n    beta();\n}\n\nfn beta() {}\n",
+    )
+    .unwrap();
+
+    let list_request = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/list"
+    });
+    let explore_request = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "codetrail_explore_node",
+            "arguments": {
+                "query": "alpha",
+                "maxCandidates": 5,
+                "snippetLines": 4,
+                "relationLimit": 4
+            }
+        }
+    });
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("mcp")
+        .write_stdin(format!("{list_request}\n{explore_request}\n"))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+    let lines: Vec<Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+
+    let tools = lines[0]["result"]["tools"].as_array().unwrap();
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "codetrail_explore_node"));
+
+    let explore: Value =
+        serde_json::from_str(lines[1]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(explore.get("results").is_some());
+    assert!(explore.get("page").is_some());
+    assert!(explore.get("caveats").is_some());
+    assert_eq!(explore.as_object().unwrap().len(), 3);
+    assert_eq!(explore["results"][0]["name"], "alpha");
+    assert!(explore["results"][0]["snippet"]
+        .as_str()
+        .unwrap()
+        .contains("fn alpha"));
 }
 
 // ---------------------------------------------------------------------------

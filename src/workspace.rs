@@ -640,6 +640,7 @@ pub fn language_for_path(path: &Path) -> &'static str {
         "rs" => "rust",
         "py" => "python",
         "java" => "java",
+        "kt" | "kts" => "kotlin",
         "swift" => "swift",
         "ts" | "tsx" => "typescript",
         "js" | "jsx" | "mjs" | "cjs" => "javascript",
