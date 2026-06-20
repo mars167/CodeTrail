@@ -1824,8 +1824,14 @@ class Response
         .iter()
         .find(|coverage| coverage["language"] == "kotlin")
         .expect("kotlin coverage");
+    assert_eq!(summary["semanticStatus"]["queryMode"], "parser_fallback");
+    assert_eq!(
+        summary["semanticStatus"]["fallbackReason"],
+        "scip_index_not_generated"
+    );
     assert_eq!(kotlin_coverage["provider"], "scip-java");
     assert_eq!(kotlin_coverage["precise"], "manual_required");
+    assert_eq!(kotlin_coverage["mode"], "parser_fallback");
     assert_eq!(kotlin_coverage["fallback"], "tree_sitter_parser");
     assert!(summary["manifest"].is_null());
     assert!(summary["semanticManifests"].is_null());
@@ -1860,6 +1866,93 @@ class Response
     assert!(first["source"].is_null());
     assert!(first["relations"]["calls"].as_array().unwrap().len() <= 4);
     assert!(first["relations"]["callers"].as_array().unwrap().len() <= 4);
+
+    let compact_explore = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args([
+            "explore",
+            "node",
+            "RealCall",
+            "--compact",
+            "--max-candidates",
+            "5",
+            "--snippet-lines",
+            "24",
+            "--relation-limit",
+            "8",
+            "--max-bytes",
+            "5000",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(
+        compact_explore.len() < 8_000,
+        "compact explore output too large: {} bytes",
+        compact_explore.len()
+    );
+    let compact_json: Value = serde_json::from_slice(&compact_explore).unwrap();
+    assert!(compact_json["results"].as_array().unwrap().len() <= 2);
+    assert!(compact_json["results"][0]["citeTarget"]
+        .as_str()
+        .unwrap()
+        .contains("RealCall.kt:"));
+}
+
+#[test]
+fn explore_flow_returns_compact_nodes_and_relationships() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "fn alpha() {\n    beta();\n}\n\nfn beta() {}\n",
+    )
+    .unwrap();
+
+    let flow = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args([
+            "explore",
+            "flow",
+            "alpha beta",
+            "--max-nodes",
+            "4",
+            "--snippet-lines",
+            "4",
+            "--relation-limit",
+            "4",
+            "--max-bytes",
+            "6000",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(flow.len() < 8_000, "flow output too large: {}", flow.len());
+    let flow_json: Value = serde_json::from_slice(&flow).unwrap();
+    let result = &flow_json["results"][0];
+    let nodes = result["nodes"].as_array().unwrap();
+    assert!(nodes.len() <= 4);
+    assert!(nodes.iter().any(|node| node["name"] == "alpha"));
+    assert!(nodes.iter().any(|node| node["name"] == "beta"));
+    assert!(nodes.iter().all(|node| node["citeTarget"]
+        .as_str()
+        .unwrap()
+        .starts_with("src/lib.rs:")));
+    assert!(result["relationships"].as_array().unwrap().len() <= 4);
+    let caveats = flow_json
+        .get("caveats")
+        .and_then(Value::as_array)
+        .or_else(|| flow_json.get("warnings").and_then(Value::as_array))
+        .expect("flow caveats or warnings");
+    assert!(caveats
+        .iter()
+        .any(|caveat| caveat["code"] == "flow_heuristic"));
 }
 
 #[test]
@@ -6338,11 +6431,28 @@ fn mcp_stdio_explore_node_is_registered_and_returns_public_projection() {
             }
         }
     });
+    let flow_request = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "codetrail_explore_flow",
+            "arguments": {
+                "query": "alpha beta",
+                "maxNodes": 4,
+                "snippetLines": 4,
+                "relationLimit": 4,
+                "maxBytes": 6000
+            }
+        }
+    });
     let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("mcp")
-        .write_stdin(format!("{list_request}\n{explore_request}\n"))
+        .write_stdin(format!(
+            "{list_request}\n{explore_request}\n{flow_request}\n"
+        ))
         .assert()
         .success()
         .get_output()
@@ -6358,6 +6468,9 @@ fn mcp_stdio_explore_node_is_registered_and_returns_public_projection() {
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "codetrail_explore_node"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "codetrail_explore_flow"));
 
     let explore: Value =
         serde_json::from_str(lines[1]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
@@ -6370,6 +6483,18 @@ fn mcp_stdio_explore_node_is_registered_and_returns_public_projection() {
         .as_str()
         .unwrap()
         .contains("fn alpha"));
+
+    let flow: Value =
+        serde_json::from_str(lines[2]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert!(flow.get("results").is_some());
+    assert!(flow.get("page").is_some());
+    assert!(flow.get("caveats").is_some());
+    assert_eq!(flow.as_object().unwrap().len(), 3);
+    assert!(flow["results"][0]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|node| node["name"] == "alpha"));
 }
 
 // ---------------------------------------------------------------------------

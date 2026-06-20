@@ -17,7 +17,7 @@ It can return:
 
 - source/path facts;
 - symbols, definitions, references, routes, calls, and callers;
-- bounded `explore node` evidence;
+- bounded `explore flow` and compact `explore node` evidence;
 - index freshness and semantic provider status;
 - reliability labels and caveats.
 
@@ -50,10 +50,16 @@ For multi-step repository investigations:
 
 ```bash
 codetrail --output json index status --summary
-codetrail --output json explore node <name> --max-candidates 5 --snippet-lines 24 --relation-limit 8
+codetrail --output json explore flow "<feature or flow>" --max-nodes 8 --snippet-lines 8 --relation-limit 8 --max-bytes 12000
 ```
 
-Use one narrow supplement only when needed:
+Use compact node exploration only when the flow bundle misses an obvious node:
+
+```bash
+codetrail --output json explore node <name> --compact --max-candidates 2 --snippet-lines 8 --relation-limit 4 --max-bytes 8000
+```
+
+Use one narrow supplement only when still needed:
 
 ```bash
 codetrail --output json defs <name> --limit 10
@@ -84,7 +90,8 @@ codetrail --output json grep <regex> --limit 20
 ## Core Commands
 
 - `index status --summary`: compact index and semantic coverage status.
-- `explore node <query>`: bounded defs -> symbols -> files exploration with snippets and capped relations.
+- `explore flow <query>`: compact flow bundle with nodes, short snippets, and capped relationships.
+- `explore node <query> --compact`: bounded defs -> symbols -> files exploration for one node.
 - `defs <name>`: definition candidates; prefers SCIP.
 - `symbols <name>`: symbol candidates; prefers SCIP.
 - `refs <name>`: references; falls back to identifier-boundary text search.
@@ -138,7 +145,7 @@ File-only paths are leads, not evidence.
 
 - Do not call nonexistent `codetrail read`, `codetrail list`, or `codetrail tree`.
 - Do not treat `parser_fact` or `inferred_candidate` as `precise_fact`.
-- Do not use `find`/`grep` before `explore node` when a likely symbol name exists.
+- Do not use `find`/`grep` before `explore flow` or compact `explore node` when likely names exist.
 - Do not paste whole files into the conversation when a range or snippet is enough.
 - Do not add fields to public JSON casually; the public shape is `results`, `page`, `caveats`.
 - Do not load long provider tables or agent schemas by default.

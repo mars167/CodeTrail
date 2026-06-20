@@ -20,10 +20,17 @@ For multi-step repository investigations:
 
 ```bash
 codetrail --output json index status --summary
-codetrail --output json explore node <name> --max-candidates 5 --snippet-lines 24 --relation-limit 8
+codetrail --output json explore flow "<feature or flow>" --max-nodes 8 --snippet-lines 8 --relation-limit 8 --max-bytes 12000
 ```
 
-Use one narrow supplement only when needed:
+Use compact node exploration only when the flow bundle misses a necessary
+symbol:
+
+```bash
+codetrail --output json explore node <name> --compact --max-candidates 2 --snippet-lines 8 --relation-limit 4 --max-bytes 8000
+```
+
+Use one narrow supplement only when still needed:
 
 ```bash
 codetrail --output json defs <name> --limit 10
@@ -45,6 +52,7 @@ Subagents should return compact evidence:
 - `evidence` no more than 6 items.
 - `relationships` no more than 8 items.
 - `queries` no more than 10 items.
+- Prefer no more than 6 CodeTrail commands total for one evidence package.
 - Every evidence location must be `path:line` or `path:start-end`.
 - Record fallback reasons for text search, non-index tools, stale indexes, or
   unsupported languages.

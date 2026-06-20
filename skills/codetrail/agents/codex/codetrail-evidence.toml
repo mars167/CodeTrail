@@ -47,13 +47,20 @@ Required preflight, exactly once unless it fails:
 codetrail --output json index status --summary
 ```
 
-Primary entry for each candidate name:
+Primary entry for repository flow or multi-node questions:
 
 ```bash
-codetrail --output json explore node <query> --max-candidates 5 --snippet-lines 24 --relation-limit 8
+codetrail --output json explore flow "<feature or flow>" --max-nodes 8 --snippet-lines 8 --relation-limit 8 --max-bytes 12000
 ```
 
-Allowed narrow supplements, at most one before source verification unless the
+Use compact node exploration only when the flow bundle misses a necessary
+symbol:
+
+```bash
+codetrail --output json explore node <query> --compact --max-candidates 2 --snippet-lines 8 --relation-limit 4 --max-bytes 8000
+```
+
+Allowed narrow supplements, at most one after flow/node exploration unless the
 task explicitly needs more:
 
 ```bash
@@ -67,7 +74,7 @@ codetrail --output json callers <name> --limit 20
 
 Fallbacks are allowed only for:
 
-- no candidates from `explore node`;
+- no candidates from `explore flow` or compact `explore node`;
 - missing or stale index;
 - unsupported language or unsupported artifact;
 - literal-text task;
@@ -110,6 +117,7 @@ Limits:
 - `evidence` <= 6
 - `relationships` <= 8
 - `queries` <= 10
+- prefer <= 6 CodeTrail commands total
 - every evidence item must be `path:line` or `path:start-end`
 - file-only paths are leads, not evidence
 """

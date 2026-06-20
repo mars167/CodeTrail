@@ -31,7 +31,7 @@ use crate::{
         CodeContextOptions, DEFAULT_CODE_CONTEXT_LINES, DEFAULT_CODE_MAX_LINES, MAX_CODE_MAX_LINES,
     },
     output,
-    query::{ExploreNodeOptions, QueryOptions, QueryService},
+    query::{ExploreFlowOptions, ExploreNodeOptions, QueryOptions, QueryService},
     query_input::InputMode,
     search_pattern::SearchPatternMode,
     workspace::RemoteMode,
@@ -386,6 +386,36 @@ fn tool_definitions() -> Vec<ToolDef> {
                     "maxCandidates": { "type": "integer", "minimum": 1, "maximum": 20, "default": 5 },
                     "snippetLines": { "type": "integer", "minimum": 1, "maximum": 80, "default": 12 },
                     "relationLimit": { "type": "integer", "minimum": 0, "maximum": 20, "default": 8 },
+                    "compact": { "type": "boolean", "default": false, "description": "Use LLM-oriented compact caps: at most 2 candidates, 8 snippet lines, and 4 relations" },
+                    "maxBytes": { "type": "integer", "minimum": 1000, "maximum": 100000, "default": 12000 },
+                    "dir": { "type": "array", "items": { "type": "string" }, "description": "Workspace-relative directories to search (OR filter)" },
+                    "ext": { "type": "array", "items": { "type": "string" }, "description": "File extensions to search, with or without a leading dot" },
+                    "filePattern": { "type": "array", "items": { "type": "string" }, "description": "Path patterns applied before exploration" },
+                    "fileMode": { "type": "string", "enum": ["literal", "regex", "wildcard", "glob"], "default": "wildcard", "description": "Pattern mode for filePattern" },
+                    "caseSensitive": { "type": "boolean", "default": false, "description": "Use exact case for symbol input matching" },
+                    "inputMode": { "type": "string", "enum": ["compatible", "strict"], "default": "compatible", "description": "Symbol input handling mode" },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Path substrings to include" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Path substrings to exclude" },
+                    "lang": { "type": "array", "items": { "type": "string" }, "description": "Languages to include" },
+                    "changed": { "type": "boolean", "default": false, "description": "Restrict search to git changed files" },
+                    "allowBroad": { "type": "boolean", "default": false, "description": "Allow broad path fallback" }
+                },
+                "required": ["query"]
+            }),
+        },
+        ToolDef {
+            name: "codetrail_explore_flow".to_string(),
+            description:
+                "Explore a compact flow bundle from natural query terms, returning bounded nodes and inferred relationships."
+                    .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Natural flow description, feature name, or symbol terms" },
+                    "maxNodes": { "type": "integer", "minimum": 1, "maximum": 20, "default": 8 },
+                    "snippetLines": { "type": "integer", "minimum": 1, "maximum": 40, "default": 8 },
+                    "relationLimit": { "type": "integer", "minimum": 0, "maximum": 20, "default": 8 },
+                    "maxBytes": { "type": "integer", "minimum": 1000, "maximum": 100000, "default": 12000 },
                     "dir": { "type": "array", "items": { "type": "string" }, "description": "Workspace-relative directories to search (OR filter)" },
                     "ext": { "type": "array", "items": { "type": "string" }, "description": "File extensions to search, with or without a leading dot" },
                     "filePattern": { "type": "array", "items": { "type": "string" }, "description": "Path patterns applied before exploration" },
@@ -642,6 +672,11 @@ impl Server {
                 self.service
                     .explore_node(query, &opts, parse_explore_node_options(args)?)
             }
+            "codetrail_explore_flow" => {
+                let query = required_str(args, "query")?;
+                self.service
+                    .explore_flow(query, &opts, parse_explore_flow_options(args)?)
+            }
             "codetrail_calls" => {
                 let identifier = required_str(args, "identifier")?;
                 self.service.calls(identifier, &opts)
@@ -815,14 +850,47 @@ fn parse_explore_node_options(args: Option<&Value>) -> Result<ExploreNodeOptions
         &["relationLimit", "relation_limit", "relation-limit"],
         8,
     )?;
+    let compact = obj.get("compact").and_then(Value::as_bool).unwrap_or(false);
+    let max_bytes = optional_usize_fields(obj, &["maxBytes", "max_bytes", "max-bytes"], 12_000)?;
     validate_explore_bound("maxCandidates", max_candidates, 1, 20)?;
     validate_explore_bound("snippetLines", snippet_lines, 1, 80)?;
     validate_explore_bound("relationLimit", relation_limit, 0, 20)?;
-    Ok(ExploreNodeOptions::bounded(
+    validate_explore_bound("maxBytes", max_bytes, 1_000, 100_000)?;
+    Ok(ExploreNodeOptions::with_budget(
         max_candidates,
         snippet_lines,
         relation_limit,
+        compact,
+        max_bytes,
     ))
+}
+
+fn parse_explore_flow_options(args: Option<&Value>) -> Result<ExploreFlowOptions> {
+    let obj = match args.and_then(Value::as_object) {
+        Some(obj) => obj,
+        None => {
+            return Ok(ExploreFlowOptions::bounded(8, 8, 8));
+        }
+    };
+    let max_nodes = optional_usize_fields(obj, &["maxNodes", "max_nodes", "max-nodes"], 8)?;
+    let snippet_lines =
+        optional_usize_fields(obj, &["snippetLines", "snippet_lines", "snippet-lines"], 8)?;
+    let relation_limit = optional_usize_fields(
+        obj,
+        &["relationLimit", "relation_limit", "relation-limit"],
+        8,
+    )?;
+    let max_bytes = optional_usize_fields(obj, &["maxBytes", "max_bytes", "max-bytes"], 12_000)?;
+    validate_explore_bound("maxNodes", max_nodes, 1, 20)?;
+    validate_explore_bound("snippetLines", snippet_lines, 1, 40)?;
+    validate_explore_bound("relationLimit", relation_limit, 0, 20)?;
+    validate_explore_bound("maxBytes", max_bytes, 1_000, 100_000)?;
+    Ok(ExploreFlowOptions {
+        max_nodes,
+        snippet_lines,
+        relation_limit,
+        max_bytes,
+    })
 }
 
 fn validate_explore_bound(name: &str, value: usize, min: usize, max: usize) -> Result<()> {
@@ -1059,9 +1127,10 @@ mod tests {
                 assert!(!names.contains(&"codetrail_read"));
                 assert!(names.contains(&"codetrail_routes"));
                 assert!(names.contains(&"codetrail_explore_node"));
+                assert!(names.contains(&"codetrail_explore_flow"));
                 assert!(names.contains(&"codetrail_status"));
                 // All core CLI-backed tools should be present.
-                assert_eq!(list.tools.len(), 13);
+                assert_eq!(list.tools.len(), 14);
             }
             _ => panic!("expected success response"),
         }

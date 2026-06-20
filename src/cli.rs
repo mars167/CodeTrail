@@ -224,6 +224,21 @@ pub enum ExploreCommand {
         snippet_lines: usize,
         #[arg(long, default_value_t = 8, value_parser = parse_relation_limit)]
         relation_limit: usize,
+        #[arg(long)]
+        compact: bool,
+        #[arg(long, default_value_t = 12_000, value_parser = parse_max_bytes)]
+        max_bytes: usize,
+    },
+    Flow {
+        query: String,
+        #[arg(long, default_value_t = 8, value_parser = parse_max_nodes)]
+        max_nodes: usize,
+        #[arg(long, default_value_t = 8, value_parser = parse_flow_snippet_lines)]
+        snippet_lines: usize,
+        #[arg(long, default_value_t = 8, value_parser = parse_relation_limit)]
+        relation_limit: usize,
+        #[arg(long, default_value_t = 12_000, value_parser = parse_max_bytes)]
+        max_bytes: usize,
     },
 }
 
@@ -231,12 +246,24 @@ fn parse_max_candidates(value: &str) -> Result<usize, String> {
     parse_bounded_usize(value, 1, 20, "max-candidates")
 }
 
+fn parse_max_nodes(value: &str) -> Result<usize, String> {
+    parse_bounded_usize(value, 1, 20, "max-nodes")
+}
+
 fn parse_snippet_lines(value: &str) -> Result<usize, String> {
     parse_bounded_usize(value, 1, 80, "snippet-lines")
 }
 
+fn parse_flow_snippet_lines(value: &str) -> Result<usize, String> {
+    parse_bounded_usize(value, 1, 40, "snippet-lines")
+}
+
 fn parse_relation_limit(value: &str) -> Result<usize, String> {
     parse_bounded_usize(value, 0, 20, "relation-limit")
+}
+
+fn parse_max_bytes(value: &str) -> Result<usize, String> {
+    parse_bounded_usize(value, 1_000, 100_000, "max-bytes")
 }
 
 fn parse_bounded_usize(value: &str, min: usize, max: usize, name: &str) -> Result<usize, String> {

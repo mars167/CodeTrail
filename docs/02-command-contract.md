@@ -90,6 +90,7 @@ codetrail symbols <query>
 codetrail calls <caller-name>
 codetrail callers <callee-name>
 codetrail explore node <query>
+codetrail explore flow <query>
 ```
 
 如果字符串包含空格、括号或 shell 特殊字符，调用方必须按普通 shell 规则加引号；
@@ -133,16 +134,36 @@ codetrail defs <identifier> --include-code [--code-context <lines>] [--code-max-
 
 ```bash
 codetrail explore node <query> \
-  [--max-candidates 5] [--snippet-lines 12] [--relation-limit 8]
+  [--max-candidates 5] [--snippet-lines 12] [--relation-limit 8] \
+  [--compact] [--max-bytes 12000]
 ```
 
 - 查询顺序固定为 `defs` -> `symbols` -> bounded `files` fallback。
 - `--max-candidates` 范围 `1..20`；`--snippet-lines` 范围 `1..80`；
   `--relation-limit` 范围 `0..20`。
+- `--compact` 面向 LLM 工具调用，会把候选压到最多 2 个、snippet 压到最多 8 行、
+  relation 压到最多 4 条，并且只为首个候选做关系扩展。
+- `--max-bytes` 范围 `1000..100000`，默认 `12000`。超过预算时会裁剪 snippet、
+  relations 或尾部候选，并产生 `output_truncated` caveat。
 - 每条结果只返回定位、`bodyRange`、`language`、`kind`、`layer`、短 `snippet`
-  与 capped `relations`，不返回整文件源码。
+  与 capped `relations`，并附带可直接验证的 `citeTarget`，不返回整文件源码。
 - `relations` 始终是 `inferred_candidate` 候选关系；fallback、截断和关系候选都会
   进入 caveats。
+
+`explore flow <query>` 是给 agent 的低 token flow bundle 原语：
+
+```bash
+codetrail explore flow <query> \
+  [--max-nodes 8] [--snippet-lines 8] [--relation-limit 8] [--max-bytes 12000]
+```
+
+- 输入可以是自然语言短语、功能名或 symbol terms。命令会扩展 query terms，
+  用 `defs`/`symbols` 收集候选节点，并为前几个节点补 capped inferred relationships。
+- 输出为一个结果对象，包含 `nodes`、`relationships`、`nodeCount`、
+  `relationshipCount` 和 `truncated`。节点带短 `snippet` 和 `citeTarget`；
+  relationships 带 `from`、`to`、`kind`、定位和 `citeTarget`。
+- 该命令是启发式聚合，不是任务分析器；所有 relationships 仍是
+  `inferred_candidate`，必须用源码范围验证。
 
 Go、Rust、Python、TypeScript、JavaScript、Java、Kotlin、Ruby 和 Swift 有
 tree-sitter parser fallback；其他语言的关系查询主要依赖 fresh graph/SCIP
@@ -153,8 +174,8 @@ tree-sitter parser fallback；其他语言的关系查询主要依赖 fresh grap
 ## 性能契约
 
 Index-backed discovery 命令包括 `find`、`grep`、`files`、`find-path`、
-`glob`、`defs`、`refs`、`symbols`、`routes`、`calls`、`callers` 和
-`explore node`。
+`glob`、`defs`、`refs`、`symbols`、`routes`、`calls`、`callers`、
+`explore node` 和 `explore flow`。
 CLI/MCP 不再暴露 `list`、`tree` 或 `read`；源码验证由宿主编辑器或 Agent read
 工具按结果中的 `path` 和 `range` 完成。
 
@@ -214,8 +235,11 @@ public JSON 不暴露内部计时和扫描统计。
   `codeContext` 和 `codeMaxLines`，语义与 CLI 对应参数一致；输出仍使用同一
   public JSON projection。
 - MCP 的 `codetrail_explore_node` 对应 CLI `explore node`，接受
-  `query`、`maxCandidates`、`snippetLines`、`relationLimit` 与常规 scope/filter
-  参数，输出仍为公开 `results/page/caveats` 投影。
+  `query`、`maxCandidates`、`snippetLines`、`relationLimit`、`compact`、
+  `maxBytes` 与常规 scope/filter 参数，输出仍为公开 `results/page/caveats` 投影。
+- MCP 的 `codetrail_explore_flow` 对应 CLI `explore flow`，接受
+  `query`、`maxNodes`、`snippetLines`、`relationLimit`、`maxBytes` 与常规
+  scope/filter 参数，输出仍为公开 `results/page/caveats` 投影。
 
 ## 输出契约
 
@@ -286,8 +310,10 @@ MCP tool result 的 `content[0].text` 使用同一 public JSON 投影。
   旧的 `semanticManifests` 数组保留，用于展示 per-root 生成状态。
 - `index status --summary` 只返回 `exists`、`fresh`、`fileCount`、
   `indexedLanguages` 和紧凑 `semanticStatus`。其中
+  `semanticStatus.queryMode` 为 `precise`、`parser_fallback` 或 `source_only`；
+  `semanticStatus.fallbackReason` 说明 SCIP 不可用原因；
   `semanticStatus.languageCoverage` 按语言给出 `provider`、`precise`
-  (`fresh|partial|missing|manual_required`) 与 `fallback`。
+  (`fresh|partial|missing|manual_required`)、`mode` 与 `fallback`。
 - Kotlin `.kt` / `.kts` 映射为 `kotlin` 并支持 `--lang kotlin`。`.kt` 可进入
   precise source owner；`.kts` 只参与语言识别、path/text/parser。
 - Kotlin precise provider 使用 `scip-java index`，优先读

@@ -36,14 +36,16 @@ test("doctor reports missing and installed states", () => {
   assert.equal(after.ok, true);
 });
 
-test("codetrail skill stays compact and routes agents to summary explore", () => {
+test("codetrail skill stays compact and routes agents to summary flow", () => {
   assertAgentAssetsSynced(path.resolve(__dirname, "..", ".."));
   const skill = fs.readFileSync(
     path.resolve(__dirname, "..", "assets", "codetrail", "SKILL.md"),
     "utf8"
   );
   assert.equal(skill.includes("index status --summary"), true);
+  assert.equal(skill.includes("explore flow"), true);
   assert.equal(skill.includes("explore node"), true);
+  assert.equal(skill.includes("--compact"), true);
   assert.equal(skill.includes("precise_fact"), true);
   assert.equal(skill.includes("parser_fact"), true);
   assert.equal(skill.includes("inferred_candidate"), true);
@@ -84,9 +86,11 @@ test("codetrail subagent templates avoid duplicate skill loading", () => {
     assert.equal(template.includes("skill: deny"), true);
     assert.equal(template.includes("Use `$codetrail`"), false);
     assert.equal(template.includes("index status --summary"), true);
-    assert.equal(template.includes("explore node <query>"), true);
+    assert.equal(template.includes("explore flow"), true);
+    assert.equal(template.includes("explore node <query> --compact"), true);
     assert.equal(template.includes("evidence` <= 6"), true);
     assert.equal(template.includes("relationships` <= 8"), true);
     assert.equal(template.includes("queries` <= 10"), true);
+    assert.equal(template.includes("prefer <= 6 CodeTrail commands total"), true);
   }
 });

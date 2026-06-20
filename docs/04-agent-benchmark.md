@@ -102,13 +102,15 @@ codetrail --output json defs SymbolName
 1. 先调用 `codetrail --output json index status --summary`，检查 SCIP freshness 和语言覆盖。
 2. 从任务中抽取候选 symbol、type、function、method、route 或 config 名称。
 3. 首轮优先调用
-   `codetrail --output json explore node <query> --max-candidates 5 --snippet-lines 24 --relation-limit 8`。
-4. 只有首轮结果不足时，再用一个窄的 `symbols`、`defs`、`refs`、`routes`、
+   `codetrail --output json explore flow <query> --max-nodes 8 --snippet-lines 8 --relation-limit 8 --max-bytes 12000`。
+4. 只有 flow bundle 漏掉必要节点时，才调用 compact node：
+   `codetrail --output json explore node <query> --compact --max-candidates 2 --snippet-lines 8 --relation-limit 4 --max-bytes 8000`。
+5. 仍不足时，再用一个窄的 `symbols`、`defs`、`refs`、`routes`、
    `calls` 或 `callers` 补充。
-5. 用 `files`、`find-path`、`glob` 只做范围收窄或名称发现，然后回到语义命令。
-6. 用普通 source read 验证关键范围；`list`、`tree` 和 `read` 不属于
+6. 用 `files`、`find-path`、`glob` 只做范围收窄或名称发现，然后回到语义命令。
+7. 用普通 source read 验证关键范围；`list`、`tree` 和 `read` 不属于
    CodeTrail CLI/MCP 命令面，也不计入 index-backed discovery。
-7. 只有在 literal-text 任务、无候选名称、索引缺失/过期/不支持、无语义命中或结果歧义时，才 fallback 到 `find`/`grep`，并在 subagent JSON 的 `index_usage.text_fallback_reason` 里记录原因。
+8. 只有在 literal-text 任务、无候选名称、索引缺失/过期/不支持、无语义命中或结果歧义时，才 fallback 到 `find`/`grep`，并在 subagent JSON 的 `index_usage.text_fallback_reason` 里记录原因。
 
 这个调整的目标是把 CodeTrail 当作 SCIP/LSP/text/path index 优先的导航工具，
 而不是受控 `grep`/`read` 包装器。评测报告应新增或单列这些指标：
@@ -124,8 +126,9 @@ codetrail --output json defs SymbolName
 Load the codetrail skill, then delegate repository investigation to the
 codetrail-evidence subagent. Do not inspect the agent template file. Do not
 force the subagent to use only CodeTrail. The subagent must use an index-first
-workflow: check codetrail index status --summary, start with explore node,
-use at most one narrow semantic/navigation supplement before find/grep, use
+workflow: check codetrail index status --summary, start with explore flow,
+use compact explore node only if the flow bundle misses a needed node, use at
+most one narrow semantic/navigation supplement before find/grep, use
 files/find-path/glob for indexed path discovery, and explain any non-index or
 text-search fallback in index_usage.text_fallback_reason.
 Every final evidence string must be path:line or path:start-end.

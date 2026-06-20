@@ -11,7 +11,7 @@ use crate::{
     completions, config_index, graph, index,
     install::{IndexProviderInstallOptions, SkillInstallOptions},
     output,
-    query::{ExploreNodeOptions, QueryOptions, QueryService},
+    query::{ExploreFlowOptions, ExploreNodeOptions, QueryOptions, QueryService},
     query_input::InputPlan,
     routes, saved_query, scip_index, search,
     search_pattern::SearchPatternMode,
@@ -691,13 +691,43 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 max_candidates,
                 snippet_lines,
                 relation_limit,
+                compact,
+                max_bytes,
             } => {
                 let service = QueryService::from_workspace(workspace.clone());
                 let opts = QueryOptions::from_scan_options(&scan_opts, cli.context);
                 let response = service.explore_node(
                     query,
                     &opts,
-                    ExploreNodeOptions::bounded(*max_candidates, *snippet_lines, *relation_limit),
+                    ExploreNodeOptions {
+                        max_candidates: *max_candidates,
+                        snippet_lines: *snippet_lines,
+                        relation_limit: *relation_limit,
+                        compact: *compact,
+                        max_bytes: *max_bytes,
+                    },
+                )?;
+                exit_code = output::no_match_exit(&response["results"]);
+                response
+            }
+            ExploreCommand::Flow {
+                query,
+                max_nodes,
+                snippet_lines,
+                relation_limit,
+                max_bytes,
+            } => {
+                let service = QueryService::from_workspace(workspace.clone());
+                let opts = QueryOptions::from_scan_options(&scan_opts, cli.context);
+                let response = service.explore_flow(
+                    query,
+                    &opts,
+                    ExploreFlowOptions {
+                        max_nodes: *max_nodes,
+                        snippet_lines: *snippet_lines,
+                        relation_limit: *relation_limit,
+                        max_bytes: *max_bytes,
+                    },
                 )?;
                 exit_code = output::no_match_exit(&response["results"]);
                 response
