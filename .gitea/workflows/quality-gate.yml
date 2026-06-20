@@ -48,7 +48,7 @@ jobs:
             apt-get update
             apt-get install -y --no-install-recommends git ca-certificates nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang
           fi
-          rustup component add rustfmt
+          rustup component add rustfmt rust-src
       - name: Configure internal Gitea TLS
         run: git config --global http.https://git.home.arpa/.sslVerify false
       - name: Checkout
@@ -74,7 +74,7 @@ jobs:
             apt-get update
             apt-get install -y --no-install-recommends git ca-certificates jq nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang
           fi
-          rustup component add rustfmt
+          rustup component add rustfmt rust-src
       - name: Configure internal Gitea TLS
         run: git config --global http.https://git.home.arpa/.sslVerify false
       - name: Checkout
@@ -105,6 +105,7 @@ jobs:
             apt-get update
             apt-get install -y --no-install-recommends git ca-certificates nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang mingw-w64
           fi
+          rustup component add rust-src
           rustup target add x86_64-pc-windows-gnu
       - name: Configure internal Gitea TLS
         run: git config --global http.https://git.home.arpa/.sslVerify false
@@ -131,7 +132,7 @@ jobs:
             apt-get update
             apt-get install -y --no-install-recommends git ca-certificates jq bc hyperfine nodejs protobuf-compiler cmake libprotobuf-dev pkg-config libssl-dev clang
           fi
-          rustup component add rustfmt
+          rustup component add rustfmt rust-src
       - name: Configure internal Gitea TLS
         run: git config --global http.https://git.home.arpa/.sslVerify false
       - name: Checkout
