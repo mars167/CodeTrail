@@ -72,19 +72,36 @@ require_tool() {
   fi
 }
 
-resolve_rust_tool() {
-  local tool="$1"
+prepend_path_entry() {
+  local entry="$1"
+  case ":$PATH:" in
+    *":$entry:"*) ;;
+    *)
+      PATH="$entry:$PATH"
+      export PATH
+      ;;
+  esac
+}
+
+configure_cargo_bin() {
+  if [[ -n "$CARGO_BIN" ]]; then
+    prepend_path_entry "$(dirname "$CARGO_BIN")"
+    return 0
+  fi
 
   if command -v rustup >/dev/null 2>&1; then
     local resolved
-    if resolved="$(rustup which "$tool" 2>/dev/null)"; then
-      printf '%s\n' "$resolved"
+    if resolved="$(rustup which cargo 2>/dev/null)"; then
+      # Keep cargo, rustc, rustdoc, and cargo subcommands on the same toolchain.
+      prepend_path_entry "$(dirname "$resolved")"
+      CARGO_BIN="$resolved"
       return 0
     fi
   fi
 
-  if command -v "$tool" >/dev/null 2>&1; then
-    command -v "$tool"
+  if command -v cargo >/dev/null 2>&1; then
+    CARGO_BIN="$(command -v cargo)"
+    prepend_path_entry "$(dirname "$CARGO_BIN")"
     return 0
   fi
 
@@ -93,7 +110,12 @@ resolve_rust_tool() {
 
 run_cargo() {
   if [[ -z "$CARGO_BIN" ]]; then
-    CARGO_BIN="$(resolve_rust_tool cargo)"
+    configure_cargo_bin || {
+      fail "required tool missing: cargo"
+      return 1
+    }
+  else
+    prepend_path_entry "$(dirname "$CARGO_BIN")"
   fi
   "$CARGO_BIN" "$@"
 }
