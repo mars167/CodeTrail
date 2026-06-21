@@ -192,34 +192,41 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             )
         }
         Command::Refs { identifier } => {
-            let precise_empty =
-                if let Some(precise) = scip_index::refs(&workspace, &scan_opts, identifier)? {
-                    if has_results(&precise.results) {
-                        return emit_response(
-                            &cli.output,
-                            output::response_with_index(
-                                "refs",
-                                "refs",
-                                scoped_query(
-                                    json!({ "identifier": identifier, "producer": "scip" }),
-                                    &scan_opts,
-                                ),
-                                &workspace.snapshot_id,
-                                output::precise_fact(),
-                                output::IndexedResponseParts::new(
-                                    precise.index,
-                                    precise.results,
-                                    scope_warnings.clone(),
-                                ),
-                            ),
-                            &workspace,
-                            cli.save_query.as_deref(),
-                        );
+            let precise_empty = if let Some(precise) =
+                scip_index::refs(&workspace, &scan_opts, identifier)?
+            {
+                if has_results(&precise.results) {
+                    let mut results = precise.results;
+                    let mut index = precise.index;
+                    if let Some(config) = config_index::refs(&workspace, &scan_opts, identifier)? {
+                        append_results(&mut results, config.results);
+                        append_config_index(&mut index, config.index);
                     }
-                    Some(precise)
-                } else {
-                    None
-                };
+                    return emit_response(
+                        &cli.output,
+                        output::response_with_index(
+                            "refs",
+                            "refs",
+                            scoped_query(
+                                json!({ "identifier": identifier, "producer": "scip" }),
+                                &scan_opts,
+                            ),
+                            &workspace.snapshot_id,
+                            output::precise_fact(),
+                            output::IndexedResponseParts::new(
+                                index,
+                                results,
+                                scope_warnings.clone(),
+                            ),
+                        ),
+                        &workspace,
+                        cli.save_query.as_deref(),
+                    );
+                }
+                Some(precise)
+            } else {
+                None
+            };
             let mut query_output = search::find(
                 &workspace,
                 &scan_opts,
@@ -289,58 +296,65 @@ pub fn run(cli: Cli) -> AppResult<i32> {
         } => {
             let code_options =
                 CodeContextOptions::new(*include_code, *code_context, *code_max_lines);
-            let precise_empty =
-                if let Some(precise) = scip_index::symbols(&workspace, &scan_opts, query)? {
-                    if has_results(&precise.results) {
-                        let page = search::page_results(
-                            precise.results,
-                            &scan_opts,
-                            "symbols",
-                            code_context::query_with_code_options(
-                                json!({ "query": query, "producer": "scip" }),
-                                &code_options,
-                            ),
-                            &workspace.snapshot_id,
-                        )?;
-                        let response = code_context::enrich_response(
-                            &workspace,
-                            &scan_opts,
-                            output::with_page_meta(
-                                output::response_with_index(
-                                    "symbols",
-                                    "symbols",
-                                    scoped_query(
-                                        code_context::query_with_code_options(
-                                            json!({ "query": query, "producer": "scip" }),
-                                            &code_options,
-                                        ),
-                                        &scan_opts,
-                                    ),
-                                    &workspace.snapshot_id,
-                                    output::precise_fact(),
-                                    output::IndexedResponseParts::new(
-                                        precise.index,
-                                        page.results.clone(),
-                                        scope_warnings.clone(),
-                                    ),
-                                ),
-                                page.truncated,
-                                page.next_cursor,
-                                page.facets,
-                            ),
-                            &code_options,
-                        )?;
-                        return emit_response(
-                            &cli.output,
-                            response,
-                            &workspace,
-                            cli.save_query.as_deref(),
-                        );
+            let precise_empty = if let Some(precise) =
+                scip_index::symbols(&workspace, &scan_opts, query)?
+            {
+                if has_results(&precise.results) {
+                    let mut results = precise.results;
+                    let mut index = precise.index;
+                    if let Some(config) = config_index::symbols(&workspace, &scan_opts, query)? {
+                        append_results(&mut results, config.results);
+                        append_config_index(&mut index, config.index);
                     }
-                    Some(precise)
-                } else {
-                    None
-                };
+                    let page = search::page_results(
+                        results,
+                        &scan_opts,
+                        "symbols",
+                        code_context::query_with_code_options(
+                            json!({ "query": query, "producer": "scip" }),
+                            &code_options,
+                        ),
+                        &workspace.snapshot_id,
+                    )?;
+                    let response = code_context::enrich_response(
+                        &workspace,
+                        &scan_opts,
+                        output::with_page_meta(
+                            output::response_with_index(
+                                "symbols",
+                                "symbols",
+                                scoped_query(
+                                    code_context::query_with_code_options(
+                                        json!({ "query": query, "producer": "scip" }),
+                                        &code_options,
+                                    ),
+                                    &scan_opts,
+                                ),
+                                &workspace.snapshot_id,
+                                output::precise_fact(),
+                                output::IndexedResponseParts::new(
+                                    index,
+                                    page.results.clone(),
+                                    scope_warnings.clone(),
+                                ),
+                            ),
+                            page.truncated,
+                            page.next_cursor,
+                            page.facets,
+                        ),
+                        &code_options,
+                    )?;
+                    return emit_response(
+                        &cli.output,
+                        response,
+                        &workspace,
+                        cli.save_query.as_deref(),
+                    );
+                }
+                Some(precise)
+            } else {
+                None
+            };
             let (mut results, warnings) = syntax::symbols(&workspace, &scan_opts, query)?;
             let parser_had_results = has_results(&results);
             if let Some(config) = config_index::symbols(&workspace, &scan_opts, query)? {
@@ -434,43 +448,50 @@ pub fn run(cli: Cli) -> AppResult<i32> {
         } => {
             let code_options =
                 CodeContextOptions::new(*include_code, *code_context, *code_max_lines);
-            let precise_empty =
-                if let Some(precise) = scip_index::defs(&workspace, &scan_opts, identifier)? {
-                    if has_results(&precise.results) {
-                        let response = code_context::enrich_response(
-                            &workspace,
-                            &scan_opts,
-                            output::response_with_index(
-                                "defs",
-                                "defs",
-                                scoped_query(
-                                    code_context::query_with_code_options(
-                                        json!({ "identifier": identifier, "producer": "scip" }),
-                                        &code_options,
-                                    ),
-                                    &scan_opts,
-                                ),
-                                &workspace.snapshot_id,
-                                output::precise_fact(),
-                                output::IndexedResponseParts::new(
-                                    precise.index,
-                                    precise.results,
-                                    scope_warnings.clone(),
-                                ),
-                            ),
-                            &code_options,
-                        )?;
-                        return emit_response(
-                            &cli.output,
-                            response,
-                            &workspace,
-                            cli.save_query.as_deref(),
-                        );
+            let precise_empty = if let Some(precise) =
+                scip_index::defs(&workspace, &scan_opts, identifier)?
+            {
+                if has_results(&precise.results) {
+                    let mut results = precise.results;
+                    let mut index = precise.index;
+                    if let Some(config) = config_index::defs(&workspace, &scan_opts, identifier)? {
+                        append_results(&mut results, config.results);
+                        append_config_index(&mut index, config.index);
                     }
-                    Some(precise)
-                } else {
-                    None
-                };
+                    let response = code_context::enrich_response(
+                        &workspace,
+                        &scan_opts,
+                        output::response_with_index(
+                            "defs",
+                            "defs",
+                            scoped_query(
+                                code_context::query_with_code_options(
+                                    json!({ "identifier": identifier, "producer": "scip" }),
+                                    &code_options,
+                                ),
+                                &scan_opts,
+                            ),
+                            &workspace.snapshot_id,
+                            output::precise_fact(),
+                            output::IndexedResponseParts::new(
+                                index,
+                                results,
+                                scope_warnings.clone(),
+                            ),
+                        ),
+                        &code_options,
+                    )?;
+                    return emit_response(
+                        &cli.output,
+                        response,
+                        &workspace,
+                        cli.save_query.as_deref(),
+                    );
+                }
+                Some(precise)
+            } else {
+                None
+            };
             let (mut results, warnings) = syntax::defs(&workspace, &scan_opts, identifier)?;
             let parser_had_results = has_results(&results);
             if let Some(config) = config_index::defs(&workspace, &scan_opts, identifier)? {

@@ -360,7 +360,9 @@ flowchart LR
   dirty/staged/worktree 状态。
 - MyBatis mapper XML 的 namespace、statement、resultMap、SQL fragment 和
   XML 内引用属于 `config_fact` / `source_fact` 层；它们提升召回，不代表
-  SCIP precise semantic reference resolution。
+  SCIP precise semantic reference resolution。`defs`、`refs` 和 `symbols`
+  即使命中 fresh SCIP，也会合并匹配的 XML config facts；单条 XML 结果仍标为
+  `config_fact`。
 - 公开输出通过 caveats 暴露这些边界；自动化工具应先看 `severity/category`，不要把 `info/capability` 的能力说明当成风险告警。开发者修改代码前仍应通过宿主编辑器或 Agent read 工具读取关键结果的精确范围；能放进预算的小文件应一次读取整个文件，避免用相邻范围分页。
 
 ## Saved Query Replay

@@ -536,6 +536,112 @@ fn index_build_exposes_mybatis_mapper_xml_as_config_facts() {
 }
 
 #[test]
+fn precise_scip_results_include_matching_mybatis_xml_config_facts() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("pom.xml"), "<project></project>\n").unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/com/example")).unwrap();
+    fs::write(
+        dir.path().join("src/main/java/com/example/SysUserMapper.java"),
+        "package com.example;\npublic interface SysUserMapper {\n    SysUser selectUserByLoginName(String userName);\n}\nclass UseMapper { SysUserResult result; }\nclass SysUser {}\nclass SysUserResult {}\n",
+    )
+    .unwrap();
+    fs::create_dir_all(dir.path().join("src/main/resources/mapper/system")).unwrap();
+    fs::write(
+        dir.path()
+            .join("src/main/resources/mapper/system/SysUserMapper.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<mapper namespace="com.example.SysUserMapper">
+  <resultMap id="SysUserResult" type="com.example.SysUser">
+    <id property="userId" column="user_id"/>
+  </resultMap>
+  <select id="selectUserByLoginName" parameterType="String" resultMap="SysUserResult">
+    select user_id, login_name from sys_user where login_name = #{userName}
+  </select>
+</mapper>
+"#,
+    )
+    .unwrap();
+
+    codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build", "--no-semantic"])
+        .assert()
+        .success();
+
+    let scip_path = dir.path().join("index.scip");
+    write_java_mapper_scip_index(&scip_path);
+    build_native_scip_db_from_file(dir.path(), &scip_path);
+
+    let defs_output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "selectUserByLoginName"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let defs: Value = serde_json::from_slice(&defs_output).unwrap();
+    assert_eq!(defs["reliability"]["level"], "precise_fact");
+    assert!(defs["results"].as_array().unwrap().iter().any(|result| {
+        result["path"] == "src/main/java/com/example/SysUserMapper.java"
+            && result["producer"] == "scip"
+            && result["reliability"] == "precise_fact"
+    }));
+    assert!(defs["results"].as_array().unwrap().iter().any(|result| {
+        result["path"] == "src/main/resources/mapper/system/SysUserMapper.xml"
+            && result["kind"] == "mapper_statement"
+            && result["name"] == "com.example.SysUserMapper.selectUserByLoginName"
+            && result["layer"] == "config_fact"
+            && result["reliability"] == "config_fact"
+    }));
+    assert_eq!(defs["index"]["source"], "scip_native");
+    assert_eq!(defs["index"]["configFacts"]["source"], "config_facts");
+
+    let symbols_output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["symbols", "selectUserByLoginName"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let symbols: Value = serde_json::from_slice(&symbols_output).unwrap();
+    assert_eq!(symbols["reliability"]["level"], "precise_fact");
+    assert!(symbols["results"].as_array().unwrap().iter().any(|result| {
+        result["path"] == "src/main/resources/mapper/system/SysUserMapper.xml"
+            && result["kind"] == "mapper_statement"
+            && result["layer"] == "config_fact"
+    }));
+
+    let refs_output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["refs", "SysUserResult"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let refs: Value = serde_json::from_slice(&refs_output).unwrap();
+    assert_eq!(refs["reliability"]["level"], "precise_fact");
+    assert!(refs["results"].as_array().unwrap().iter().any(|result| {
+        result["path"] == "src/main/java/com/example/SysUserMapper.java"
+            && result["producer"] == "scip"
+            && result["reliability"] == "precise_fact"
+    }));
+    assert!(refs["results"].as_array().unwrap().iter().any(|result| {
+        result["path"] == "src/main/resources/mapper/system/SysUserMapper.xml"
+            && result["kind"] == "mapper_reference"
+            && result["name"] == "com.example.SysUserMapper.SysUserResult"
+            && result["layer"] == "config_fact"
+            && result["reliability"] == "config_fact"
+    }));
+}
+
+#[test]
 fn verbose_index_build_emits_diagnostics_to_stderr() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
@@ -5775,6 +5881,63 @@ fn write_java_scip_index_for_paths(path: &std::path::Path, rel_paths: &[&str]) {
             text_document_encoding: proto::TextEncoding::Utf8 as i32,
         }),
         documents,
+        ..Default::default()
+    };
+
+    let mut buf = Vec::new();
+    index.encode(&mut buf).unwrap();
+    fs::write(path, buf).unwrap();
+}
+
+fn write_java_mapper_scip_index(path: &std::path::Path) {
+    use codetrail::scip_proto::proto;
+    use prost::Message;
+
+    let index = proto::Index {
+        metadata: Some(proto::Metadata {
+            version: proto::ProtocolVersion::UnspecifiedProtocolVersion as i32,
+            tool_info: Some(proto::ToolInfo {
+                name: "test-jvm-indexer".to_string(),
+                version: "0.1.0".to_string(),
+                arguments: vec![],
+            }),
+            project_root: "file:///test".to_string(),
+            text_document_encoding: proto::TextEncoding::Utf8 as i32,
+        }),
+        documents: vec![proto::Document {
+            language: "java".to_string(),
+            relative_path: "src/main/java/com/example/SysUserMapper.java".to_string(),
+            occurrences: vec![
+                proto::Occurrence {
+                    range: vec![2, 12, 2, 33],
+                    symbol: "local java-select-user-by-login-name".to_string(),
+                    symbol_roles: 1,
+                    ..Default::default()
+                },
+                proto::Occurrence {
+                    range: vec![4, 18, 4, 31],
+                    symbol: "local java-sys-user-result".to_string(),
+                    symbol_roles: 0,
+                    ..Default::default()
+                },
+            ],
+            symbols: vec![
+                proto::SymbolInformation {
+                    symbol: "local java-select-user-by-login-name".to_string(),
+                    kind: proto::symbol_information::Kind::Method as i32,
+                    display_name: "selectUserByLoginName".to_string(),
+                    ..Default::default()
+                },
+                proto::SymbolInformation {
+                    symbol: "local java-sys-user-result".to_string(),
+                    kind: proto::symbol_information::Kind::Class as i32,
+                    display_name: "SysUserResult".to_string(),
+                    ..Default::default()
+                },
+            ],
+            position_encoding: proto::PositionEncoding::Utf8CodeUnitOffsetFromLineStart as i32,
+            ..Default::default()
+        }],
         ..Default::default()
     };
 

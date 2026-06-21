@@ -403,6 +403,12 @@ impl QueryService {
             scip_index::defs(&self.workspace, &scan, identifier)?
         {
             if has_results(&precise.results) {
+                let mut results = precise.results;
+                let mut index = precise.index;
+                if let Some(config) = config_index::defs(&self.workspace, &scan, identifier)? {
+                    append_results(&mut results, config.results);
+                    append_config_index(&mut index, config.index);
+                }
                 let response = output::response_with_index(
                     "defs",
                     "defs",
@@ -415,7 +421,7 @@ impl QueryService {
                     ),
                     &self.workspace.snapshot_id,
                     output::precise_fact(),
-                    output::IndexedResponseParts::new(precise.index, precise.results, Vec::new()),
+                    output::IndexedResponseParts::new(index, results, Vec::new()),
                 );
                 let response =
                     code_context::enrich_response(&self.workspace, &scan, response, code_options)?;
@@ -483,26 +489,31 @@ impl QueryService {
         let scan = opts.to_scan_options();
 
         // 1. Try SCIP precise index first.
-        let precise_empty = if let Some(precise) =
-            scip_index::refs(&self.workspace, &scan, identifier)?
-        {
-            if has_results(&precise.results) {
-                return Ok(self.finalize(output::response_with_index(
-                    "refs",
-                    "refs",
-                    scoped_query(
-                        json!({ "identifier": identifier, "producer": "scip" }),
-                        &scan,
-                    ),
-                    &self.workspace.snapshot_id,
-                    output::precise_fact(),
-                    output::IndexedResponseParts::new(precise.index, precise.results, Vec::new()),
-                )));
-            }
-            Some(precise)
-        } else {
-            None
-        };
+        let precise_empty =
+            if let Some(precise) = scip_index::refs(&self.workspace, &scan, identifier)? {
+                if has_results(&precise.results) {
+                    let mut results = precise.results;
+                    let mut index = precise.index;
+                    if let Some(config) = config_index::refs(&self.workspace, &scan, identifier)? {
+                        append_results(&mut results, config.results);
+                        append_config_index(&mut index, config.index);
+                    }
+                    return Ok(self.finalize(output::response_with_index(
+                        "refs",
+                        "refs",
+                        scoped_query(
+                            json!({ "identifier": identifier, "producer": "scip" }),
+                            &scan,
+                        ),
+                        &self.workspace.snapshot_id,
+                        output::precise_fact(),
+                        output::IndexedResponseParts::new(index, results, Vec::new()),
+                    )));
+                }
+                Some(precise)
+            } else {
+                None
+            };
 
         // 2. Fall back to identifier-boundary text search.
         let mut qo = search::find(
@@ -577,8 +588,14 @@ impl QueryService {
             scip_index::symbols(&self.workspace, &scan, query)?
         {
             if has_results(&precise.results) {
+                let mut results = precise.results;
+                let mut index = precise.index;
+                if let Some(config) = config_index::symbols(&self.workspace, &scan, query)? {
+                    append_results(&mut results, config.results);
+                    append_config_index(&mut index, config.index);
+                }
                 let page = search::page_results(
-                    precise.results,
+                    results,
                     &scan,
                     "symbols",
                     code_context::query_with_code_options(
@@ -599,11 +616,7 @@ impl QueryService {
                     ),
                     &self.workspace.snapshot_id,
                     output::precise_fact(),
-                    output::IndexedResponseParts::new(
-                        precise.index,
-                        page.results.clone(),
-                        Vec::new(),
-                    ),
+                    output::IndexedResponseParts::new(index, page.results.clone(), Vec::new()),
                 );
                 let response =
                     output::with_page_meta(response, page.truncated, page.next_cursor, page.facets);
