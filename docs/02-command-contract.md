@@ -12,7 +12,7 @@ flowchart TB
   CS --> Ops["index / query / watch / serve / mcp"]
   CS --> Wrapper["npm wrapper"]
 
-  L0 --> Search["find / grep"]
+  L0 --> Search["search / find / grep"]
   L0 --> Paths["files / find-path / glob"]
   CS --> State["changed / status"]
   L1 --> Nav["defs / refs / symbols / routes"]
@@ -25,7 +25,7 @@ flowchart TB
 
 | 族 | 命令 | 契约 |
 | --- | --- | --- |
-| 内容搜索 | `find`, `grep` | 优先使用 text index/LanceDB 取候选；index 不可用时 live scan |
+| 内容搜索 | `search`, `find`, `grep` | 优先使用 text index/LanceDB 取候选；index 不可用时 live scan |
 | 路径搜索 | `files`, `find-path`, `glob` | 优先使用 indexed file catalog；index 不可用时 live scan |
 | Git 状态 | `changed`, `status` | 返回当前 workspace 与 snapshot 状态 |
 | 跳转 | `defs`, `refs`, `symbols`, `routes` | 优先 SCIP，缺失时降级为 parser/text fallback；`routes` 为 framework route parser scan |
@@ -59,9 +59,10 @@ codetrail --dir src/main --ext java --file-pattern '*Service.java' find user
 - `--file-mode literal|regex|wildcard|glob` 控制 `--file-pattern`，默认
   `wildcard`。
 - `--case-sensitive` 和 `--ignore-case` 互斥；默认是 ignore-case。
-- `--mode literal|regex|wildcard` 控制内容或路径匹配。`find` 默认
-  `literal`，`grep` 默认 `regex`，`files/find-path` 默认 `literal`，`glob`
-  默认 `glob`。
+- `--mode literal|regex|wildcard` 控制内容或路径匹配。`search` 和 `find`
+  默认 `literal`，`grep` 默认 `regex`，`files/find-path` 默认 `literal`，
+  `glob` 默认 `glob`。`search` 额外支持 `--regex`、`--literal` 和
+  `--wildcard` 作为 `--mode` 的短路径开关。
 
 wildcard 中 `*` 匹配任意长度，`?` 匹配单字符；内容 wildcard 不跨行。路径
 `glob` 支持 `**` 跨目录。
@@ -173,7 +174,7 @@ tree-sitter parser fallback；其他语言的关系查询主要依赖 fresh grap
 
 ## 性能契约
 
-Index-backed discovery 命令包括 `find`、`grep`、`files`、`find-path`、
+Index-backed discovery 命令包括 `search`、`find`、`grep`、`files`、`find-path`、
 `glob`、`defs`、`refs`、`symbols`、`routes`、`calls`、`callers`、
 `explore node` 和 `explore flow`。
 CLI/MCP 不再暴露 `list`、`tree` 或 `read`；源码验证由宿主编辑器或 Agent read
@@ -206,9 +207,10 @@ public JSON 不暴露内部计时和扫描统计。
 
 以下格式是调用方可以依赖的稳定输入约束：
 
-- `find <text>` 默认 `--mode literal`；`grep <pattern>` 默认 `--mode regex`。
-  内容搜索支持 `literal`、`regex` 和 `wildcard`。`regex` 使用 Rust `regex`
-  语法，非法 regex 返回错误而不是无匹配。
+- `search <query>` 和 `find <text>` 默认 `--mode literal`；`grep <pattern>`
+  默认 `--mode regex`。内容搜索支持 `literal`、`regex` 和 `wildcard`；
+  `search --regex <query>` 等价于 `search <query> --mode regex`。`regex`
+  使用 Rust `regex` 语法，非法 regex 返回错误而不是无匹配。
 - `files <pattern>` 和 `find-path <pattern>` 默认 literal path substring；
   `glob <pattern>` 默认 glob match，例如 `src/**/*.rs`。三者都支持
   `--mode literal|regex|wildcard|glob`。
@@ -361,7 +363,7 @@ flowchart LR
 
 ## Saved Query Replay
 
-可保存的命令包括 `find`、`grep`、`files`、`find-path`、`glob`、`refs`、`defs`、`symbols`、`calls` 和 `callers`。
+可保存的命令包括 `search`、`find`、`grep`、`files`、`find-path`、`glob`、`refs`、`defs`、`symbols`、`calls` 和 `callers`。
 
 规则：
 

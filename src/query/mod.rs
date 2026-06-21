@@ -233,6 +233,16 @@ impl QueryService {
         self.text_search("find", text, SearchPatternMode::Literal, opts.context, opts)
     }
 
+    /// Content search with an explicit pattern mode.
+    pub fn search(
+        &self,
+        query: &str,
+        mode: SearchPatternMode,
+        opts: &QueryOptions,
+    ) -> Result<Value> {
+        self.text_search("search", query, mode, opts.context, opts)
+    }
+
     /// Regex search (delegates to `search::find` with mode=regex).
     pub fn grep(&self, pattern: &str, opts: &QueryOptions) -> Result<Value> {
         self.text_search(

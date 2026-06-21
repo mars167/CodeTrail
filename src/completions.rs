@@ -1,6 +1,7 @@
 use crate::cli::CompletionShell;
 
 const COMMANDS: &[&str] = &[
+    "search",
     "find",
     "grep",
     "files",

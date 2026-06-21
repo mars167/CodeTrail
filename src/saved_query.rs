@@ -87,7 +87,7 @@ pub fn replay(workspace: &Workspace, name: &str, mode: &ReplaySnapshot) -> Resul
         .ok_or_else(|| anyhow!("saved query is missing query"))?;
 
     let mut value = match command {
-        "find" | "grep" => {
+        "search" | "find" | "grep" => {
             let default_mode = if command == "grep" {
                 "regex"
             } else {
@@ -363,6 +363,7 @@ fn is_replayable_command(command: &str) -> bool {
     matches!(
         command,
         "find"
+            | "search"
             | "grep"
             | "files"
             | "find-path"

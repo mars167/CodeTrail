@@ -83,8 +83,8 @@ stale, the language is unsupported, candidate names are unknown, or navigation
 returns no useful results:
 
 ```bash
-codetrail --output json find <literal> --limit 20
-codetrail --output json grep <regex> --limit 20
+codetrail --output json search <literal> --limit 20
+codetrail --output json search --regex <regex> --limit 20
 ```
 
 ## Core Commands
@@ -98,7 +98,7 @@ codetrail --output json grep <regex> --limit 20
 - `routes <term>`: framework route declarations.
 - `calls <name>` / `callers <name>`: inferred call candidates.
 - `files`, `find-path`, `glob`: indexed path discovery.
-- `find`, `grep`: content fallback.
+- `search`, `find`, `grep`: content fallback; prefer `search --regex` for regex.
 
 ## Scope Controls
 
@@ -145,7 +145,7 @@ File-only paths are leads, not evidence.
 
 - Do not call nonexistent `codetrail read`, `codetrail list`, or `codetrail tree`.
 - Do not treat `parser_fact` or `inferred_candidate` as `precise_fact`.
-- Do not use `find`/`grep` before `explore flow` or compact `explore node` when likely names exist.
+- Do not use `search`/`find`/`grep` before `explore flow` or compact `explore node` when likely names exist.
 - Do not paste whole files into the conversation when a range or snippet is enough.
 - Do not add fields to public JSON casually; the public shape is `results`, `page`, `caveats`.
 - Do not load long provider tables or agent schemas by default.
