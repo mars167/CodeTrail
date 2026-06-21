@@ -6063,6 +6063,37 @@ cp "$CODETRAIL_TEST_SCIP_FIXTURE" "$out"
         })
         .count();
     assert_eq!(fresh_java_roots, 6, "{manifests:#?}");
+    let roots = status_json["results"][0]["semanticStatus"]["roots"]
+        .as_array()
+        .unwrap();
+    assert!(
+        roots.iter().all(|root| root["rootId"] != "java:."),
+        "{roots:#?}"
+    );
+
+    let summary = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "json", "index", "status", "--summary"])
+        .env(
+            "CODETRAIL_SCIP_JAVA",
+            provider.to_string_lossy().to_string(),
+        )
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let summary_json: Value = serde_json::from_slice(&summary).unwrap();
+    let coverage = summary_json["results"][0]["semanticStatus"]["languageCoverage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|coverage| coverage["language"] == "java")
+        .unwrap();
+    assert_eq!(coverage["precise"], "fresh");
+    assert_eq!(coverage["mode"], "precise");
+    assert_eq!(coverage["rootCount"], 6);
 
     let provider_output = dir
         .path()

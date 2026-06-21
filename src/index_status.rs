@@ -11,6 +11,7 @@ use crate::{
     lsp::registry::resolve_binary,
     project_graph::{
         discover_project_graph, ProjectGraph, ProjectLanguage, ProjectRoot, ProjectRootKind,
+        SemanticFactPolicy,
     },
     provider_help::{env_keys_for_requirement, requirement_for_language, ProviderRequirement},
     scip,
@@ -328,6 +329,7 @@ fn semantic_roots_and_providers(
     let root_values = graph
         .roots
         .iter()
+        .filter(|root| root_has_precise_sources(graph, root))
         .map(|root| {
             let manifest = manifest_by_root.get(root.id.as_str()).copied();
             let mut value = json!({
@@ -353,7 +355,11 @@ fn semantic_roots_and_providers(
         .collect::<Vec<_>>();
 
     let mut languages = BTreeSet::<ProjectLanguage>::new();
-    for root in &graph.roots {
+    for root in graph
+        .roots
+        .iter()
+        .filter(|root| root_has_precise_sources(graph, root))
+    {
         languages.insert(root.language.clone());
     }
     let semantic_providers = languages
@@ -362,6 +368,13 @@ fn semantic_roots_and_providers(
         .collect::<Vec<_>>();
 
     (root_values, semantic_providers, None)
+}
+
+fn root_has_precise_sources(graph: &ProjectGraph, root: &ProjectRoot) -> bool {
+    graph.source_owners.iter().any(|owner| {
+        owner.root_id == root.id
+            && owner.semantic_fact_policy == SemanticFactPolicy::PreciseEligible
+    })
 }
 
 fn swift_config_status(workspace: &Workspace, root: &ProjectRoot) -> Option<Value> {

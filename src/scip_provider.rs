@@ -584,6 +584,11 @@ fn shell_words(input: &str) -> Vec<String> {
 fn normalize_index_paths(mut index: proto::Index, root_path: &str) -> proto::Index {
     for document in &mut index.documents {
         document.relative_path = normalize_document_path(root_path, &document.relative_path);
+        if document.language.is_empty() {
+            document.language =
+                crate::workspace::language_for_path(std::path::Path::new(&document.relative_path))
+                    .to_string();
+        }
     }
     index
 }
@@ -615,6 +620,7 @@ mod tests {
         let index = proto::Index {
             documents: vec![proto::Document {
                 relative_path: "src/main/java/example/App.java".to_string(),
+                language: String::new(),
                 ..Default::default()
             }],
             ..Default::default()
@@ -626,6 +632,7 @@ mod tests {
             normalized.documents[0].relative_path,
             "java/src/main/java/example/App.java"
         );
+        assert_eq!(normalized.documents[0].language, "java");
     }
 
     #[test]
