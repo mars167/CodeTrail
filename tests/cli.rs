@@ -1468,6 +1468,35 @@ fn routes_text_output_shows_method_route_and_location() {
 }
 
 #[test]
+fn routes_text_output_shows_next_page_cursor_when_limited() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("config")).unwrap();
+    fs::write(
+        dir.path().join("config/routes.rb"),
+        "get \"/one\", to: \"one#show\"\nget \"/two\", to: \"two#show\"\nget \"/three\", to: \"three#show\"\n",
+    )
+    .unwrap();
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["routes", "--framework", "rails", "--limit", "2"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+
+    assert!(text.contains("/one"));
+    assert!(text.contains("/two"));
+    assert!(!text.contains("/three"));
+    assert!(text.contains("more: showing first 2 results"));
+    assert!(text.contains("use --cursor "));
+    assert!(text.contains("increase --limit"));
+}
+
+#[test]
 fn routes_saved_query_replays_scope_and_filters() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("config")).unwrap();
