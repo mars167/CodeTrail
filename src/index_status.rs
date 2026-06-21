@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use crate::{
     generation_manifest::{GenerationManifest, ManifestState},
-    index::scip_root,
+    index::scip_root_for_snapshot,
     lsp::registry::resolve_binary,
     project_graph::{
         discover_project_graph, ProjectGraph, ProjectLanguage, ProjectRoot, ProjectRootKind,
@@ -30,14 +30,15 @@ pub(crate) fn indexed_languages(records: &[FileRecord]) -> Value {
     )
 }
 
-pub(crate) fn semantic_status(
+pub(crate) fn semantic_status_for_snapshot(
     workspace: &Workspace,
+    snapshot_id: &str,
     records: &[FileRecord],
     manifests: &[GenerationManifest],
 ) -> Value {
-    let db_path = scip_root(workspace).join("occurrences.db");
+    let db_path = scip_root_for_snapshot(workspace, snapshot_id).join("occurrences.db");
     let db_exists = db_path.exists();
-    let db_fresh = scip::occurrence_db_fresh(&db_path, &workspace.snapshot_id, &workspace.root);
+    let db_fresh = scip::occurrence_db_fresh(&db_path, snapshot_id, &workspace.root);
     let (scip_languages, scip_symbol_count, scip_read_error) = scip_language_summary(&db_path);
 
     let graph = discover_project_graph(&workspace.root);

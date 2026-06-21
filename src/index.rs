@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     graph,
-    index_status::{indexed_languages, semantic_status, summary_status},
+    index_status::{indexed_languages, semantic_status_for_snapshot, summary_status},
     lancedb_store, output,
     scan_diagnostics::SkippedFile,
     snapshot_store, text_index,
@@ -322,8 +322,6 @@ pub fn update(
 
 pub fn status(workspace: &Workspace) -> Result<Value> {
     let root = storage_root(workspace);
-    let semantic_manifests =
-        crate::lsp::scip_gen::read_generation_manifests(workspace).unwrap_or_default();
     let manifest_path = active_manifest_path(workspace, false);
     let active_manifest = manifest_path
         .exists()
@@ -338,6 +336,12 @@ pub fn status(workspace: &Workspace) -> Result<Value> {
                 .unwrap_or(&workspace.snapshot_id);
             if let Ok(Some(snapshot)) = store.read_snapshot(snapshot_id) {
                 if let Ok(records) = store.read_file_records(snapshot_id) {
+                    let semantic_manifests =
+                        crate::lsp::scip_gen::read_generation_manifests_for_snapshot(
+                            workspace,
+                            snapshot_id,
+                        )
+                        .unwrap_or_default();
                     let indexed_paths = records
                         .iter()
                         .map(|record| record.path.clone())
@@ -360,7 +364,7 @@ pub fn status(workspace: &Workspace) -> Result<Value> {
                         "manifest": manifest,
                         "freshness": freshness,
                         "indexedLanguages": indexed_languages(&records),
-                        "semanticStatus": semantic_status(workspace, &records, &semantic_manifests),
+                        "semanticStatus": semantic_status_for_snapshot(workspace, snapshot_id, &records, &semantic_manifests),
                         "semanticManifests": semantic_manifests,
                     }));
                 }
@@ -369,6 +373,8 @@ pub fn status(workspace: &Workspace) -> Result<Value> {
     }
 
     let Some(manifest) = active_manifest else {
+        let semantic_manifests =
+            crate::lsp::scip_gen::read_generation_manifests(workspace).unwrap_or_default();
         let remote = remote_status(workspace)?;
         let mut result = json!({
             "exists": false,
@@ -376,7 +382,7 @@ pub fn status(workspace: &Workspace) -> Result<Value> {
             "path": root,
             "reason": "index_missing",
             "indexedLanguages": [],
-            "semanticStatus": semantic_status(workspace, &[], &semantic_manifests),
+            "semanticStatus": semantic_status_for_snapshot(workspace, &workspace.snapshot_id, &[], &semantic_manifests),
             "semanticManifests": semantic_manifests,
         });
         if !remote.as_array().is_some_and(|a| a.is_empty()) {
@@ -386,6 +392,11 @@ pub fn status(workspace: &Workspace) -> Result<Value> {
     };
     let snapshot_path = snapshot_dir(workspace, &manifest.snapshot_key);
     let text_path = text_dir(workspace, &manifest.snapshot_key);
+    let semantic_manifests = crate::lsp::scip_gen::read_generation_manifests_for_snapshot(
+        workspace,
+        &manifest.snapshot_id,
+    )
+    .unwrap_or_default();
     let freshness = match snapshot_store::verify_snapshot(&snapshot_path, &workspace.root) {
         Ok(snap_fresh) => snapshot_freshness_json(snap_fresh),
         Err(error) if snapshot_store::is_legacy_parquet_catalog_error(&error) => {
@@ -397,6 +408,7 @@ pub fn status(workspace: &Workspace) -> Result<Value> {
     let remote = remote_status(workspace)?;
     let legacy_records = snapshot_store::read_files_parquet(&snapshot_path.join("files.parquet"))
         .unwrap_or_default();
+    let manifest_snapshot_id = manifest.snapshot_id.clone();
     let mut result = json!({
         "exists": true,
         "fresh": fresh,
@@ -406,7 +418,7 @@ pub fn status(workspace: &Workspace) -> Result<Value> {
         "manifest": manifest,
         "freshness": freshness,
         "indexedLanguages": indexed_languages(&legacy_records),
-        "semanticStatus": semantic_status(workspace, &legacy_records, &semantic_manifests),
+        "semanticStatus": semantic_status_for_snapshot(workspace, &manifest_snapshot_id, &legacy_records, &semantic_manifests),
         "semanticManifests": semantic_manifests,
     });
     if !remote.as_array().is_some_and(|a| a.is_empty()) {
@@ -885,9 +897,13 @@ pub fn serve_status(workspace: &Workspace, no_watch: bool) -> Value {
 }
 
 pub(crate) fn scip_root(workspace: &Workspace) -> PathBuf {
+    scip_root_for_snapshot(workspace, &workspace.snapshot_id)
+}
+
+pub(crate) fn scip_root_for_snapshot(workspace: &Workspace, snapshot_id: &str) -> PathBuf {
     storage_root(workspace)
         .join("scip")
-        .join(snapshot_key(&workspace.snapshot_id))
+        .join(snapshot_key(snapshot_id))
 }
 
 fn storage_root(workspace: &Workspace) -> PathBuf {

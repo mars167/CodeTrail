@@ -5625,6 +5625,55 @@ fn write_jvm_scip_index(path: &std::path::Path, include_java: bool, include_kotl
     fs::write(path, buf).unwrap();
 }
 
+fn write_java_scip_index_for_paths(path: &std::path::Path, rel_paths: &[&str]) {
+    use codetrail::scip_proto::proto;
+    use prost::Message;
+
+    let documents = rel_paths
+        .iter()
+        .enumerate()
+        .map(|(index, rel_path)| {
+            let symbol = format!("local java-app-{index}");
+            proto::Document {
+                language: "java".to_string(),
+                relative_path: (*rel_path).to_string(),
+                occurrences: vec![proto::Occurrence {
+                    range: vec![1, 13, 1, 16],
+                    symbol: symbol.clone(),
+                    symbol_roles: 1,
+                    ..Default::default()
+                }],
+                symbols: vec![proto::SymbolInformation {
+                    symbol,
+                    kind: proto::symbol_information::Kind::Class as i32,
+                    display_name: "App".to_string(),
+                    ..Default::default()
+                }],
+                position_encoding: proto::PositionEncoding::Utf8CodeUnitOffsetFromLineStart as i32,
+                ..Default::default()
+            }
+        })
+        .collect();
+    let index = proto::Index {
+        metadata: Some(proto::Metadata {
+            version: proto::ProtocolVersion::UnspecifiedProtocolVersion as i32,
+            tool_info: Some(proto::ToolInfo {
+                name: "test-jvm-indexer".to_string(),
+                version: "0.1.0".to_string(),
+                arguments: vec![],
+            }),
+            project_root: "file:///test".to_string(),
+            text_document_encoding: proto::TextEncoding::Utf8 as i32,
+        }),
+        documents,
+        ..Default::default()
+    };
+
+    let mut buf = Vec::new();
+    index.encode(&mut buf).unwrap();
+    fs::write(path, buf).unwrap();
+}
+
 fn build_native_scip_db_from_file(
     root: &std::path::Path,
     scip_path: &std::path::Path,
@@ -5879,6 +5928,160 @@ cp "$CODETRAIL_TEST_SCIP_FIXTURE" "$out"
             && manifest["providerName"] == "scip-java"
             && manifest["state"] == "fresh"
     }));
+}
+
+#[cfg(unix)]
+#[test]
+fn maven_reactor_roots_run_scip_java_once_at_aggregator_root() {
+    let dir = tempdir().unwrap();
+    let modules = [
+        "ruoyi-admin",
+        "ruoyi-framework",
+        "ruoyi-system",
+        "ruoyi-generator",
+        "ruoyi-quartz",
+        "ruoyi-common",
+    ];
+    let module_xml = modules
+        .iter()
+        .map(|module| format!("    <module>{module}</module>\n"))
+        .collect::<String>();
+    fs::write(
+        dir.path().join("pom.xml"),
+        format!("<project><modules>\n{module_xml}</modules></project>\n"),
+    )
+    .unwrap();
+    let mut scip_paths = Vec::new();
+    for module in modules {
+        fs::create_dir_all(dir.path().join(module).join("src/main/java/com/ruoyi")).unwrap();
+        fs::write(
+            dir.path().join(module).join("pom.xml"),
+            "<project><artifactId>module</artifactId></project>\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path()
+                .join(module)
+                .join("src/main/java/com/ruoyi/App.java"),
+            "package com.ruoyi;\npublic class App {}\n",
+        )
+        .unwrap();
+        scip_paths.push(format!("{module}/src/main/java/com/ruoyi/App.java"));
+    }
+
+    let fixture = dir.path().join("reactor.scip");
+    let scip_refs = scip_paths.iter().map(String::as_str).collect::<Vec<_>>();
+    write_java_scip_index_for_paths(&fixture, &scip_refs);
+    let log_file = dir.path().join("provider.log");
+    let provider = dir.path().join("fake-scip-java");
+    fs::write(
+        &provider,
+        r#"#!/bin/sh
+set -eu
+{
+  echo "cwd=$PWD"
+  printf 'args='
+  printf '%s ' "$@"
+  printf '\n'
+} >> "$CODETRAIL_TEST_PROVIDER_LOG"
+echo "reactor stdout"
+echo "reactor stderr" >&2
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output" ]; then
+    shift
+    out="$1"
+  fi
+  shift || true
+done
+cp "$CODETRAIL_TEST_SCIP_FIXTURE" "$out"
+"#,
+    )
+    .unwrap();
+    make_executable(&provider);
+
+    raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "json", "index", "build"])
+        .env(
+            "CODETRAIL_SCIP_JAVA",
+            provider.to_string_lossy().to_string(),
+        )
+        .env(
+            "CODETRAIL_TEST_SCIP_FIXTURE",
+            fixture.to_string_lossy().to_string(),
+        )
+        .env(
+            "CODETRAIL_TEST_PROVIDER_LOG",
+            log_file.to_string_lossy().to_string(),
+        )
+        .assert()
+        .success();
+
+    let provider_log = fs::read_to_string(&log_file).unwrap();
+    assert_eq!(
+        provider_log
+            .lines()
+            .filter(|line| line.starts_with("cwd="))
+            .count(),
+        1,
+        "{provider_log}"
+    );
+    let canonical_dir = fs::canonicalize(dir.path()).unwrap();
+    assert!(
+        provider_log.contains(&format!("cwd={}", canonical_dir.display())),
+        "{provider_log}"
+    );
+    assert!(provider_log.contains("--build-tool Maven"));
+    assert!(provider_log.contains("--targetroot "));
+    assert!(provider_log.contains("-- --batch-mode clean verify -DskipTests -DskipITs"));
+
+    let status = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "json", "index", "status"])
+        .env(
+            "CODETRAIL_SCIP_JAVA",
+            provider.to_string_lossy().to_string(),
+        )
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let status_json: Value = serde_json::from_slice(&status).unwrap();
+    let manifests = status_json["results"][0]["semanticManifests"]
+        .as_array()
+        .unwrap();
+    let fresh_java_roots = manifests
+        .iter()
+        .filter(|manifest| {
+            manifest["language"] == "java"
+                && manifest["providerName"] == "scip-java"
+                && manifest["state"] == "fresh"
+        })
+        .count();
+    assert_eq!(fresh_java_roots, 6, "{manifests:#?}");
+
+    let provider_output = dir
+        .path()
+        .join(".codetrail/scip/worktree_non-git/provider-output");
+    assert!(provider_output
+        .join("java-root-scip-java.stdout.log")
+        .exists());
+    assert!(provider_output
+        .join("java-root-scip-java.stderr.log")
+        .exists());
+    let command_json: Value = serde_json::from_slice(
+        &fs::read(provider_output.join("java-root-scip-java.command.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        command_json["cwd"].as_str(),
+        Some(canonical_dir.to_string_lossy().as_ref())
+    );
+    assert_eq!(command_json["exitCode"], 0);
 }
 
 #[test]

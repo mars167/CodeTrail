@@ -4,6 +4,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use quick_xml::{
+    events::{BytesStart, Event},
+    Reader,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -133,7 +137,7 @@ pub fn generate_best_effort(
     let mut manifests = Vec::new();
     let mut native_indexes = Vec::new();
 
-    for (_key, roots) in native_work_groups(&graph) {
+    for (key, roots) in native_work_groups(workspace, &graph) {
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             for (root, files) in roots {
                 let requirement = crate::provider_help::requirement_for_language(&root.language);
@@ -154,7 +158,14 @@ pub fn generate_best_effort(
             .find(|(root, _)| root.language == ProjectLanguage::Kotlin)
             .map(|(root, _)| *root)
             .unwrap_or(roots[0].0);
-        match crate::scip_provider::run_native_provider(workspace, run_root, verbose, remaining)? {
+        let run = crate::scip_provider::NativeProviderRun {
+            build_root: key.build_root.clone(),
+            output_stem: key.output_stem.clone(),
+            build_tool: key.build_tool.clone(),
+        };
+        match crate::scip_provider::run_native_provider(
+            workspace, run_root, &run, verbose, remaining,
+        )? {
             crate::scip_provider::NativeScipOutcome::Generated {
                 provider, index, ..
             } => {
@@ -427,14 +438,16 @@ fn source_files_for_root(graph: &ProjectGraph, root: &ProjectRoot) -> Vec<String
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct NativeGroupKey {
     provider: String,
-    root_path: String,
+    build_root: String,
+    build_tool: Option<crate::scip_provider::NativeBuildTool>,
+    output_stem: String,
     command: String,
     args: Vec<String>,
 }
 
 type NativeWorkGroups<'a> = BTreeMap<NativeGroupKey, Vec<(&'a ProjectRoot, Vec<String>)>>;
 
-fn native_work_groups<'a>(graph: &'a ProjectGraph) -> NativeWorkGroups<'a> {
+fn native_work_groups<'a>(workspace: &Workspace, graph: &'a ProjectGraph) -> NativeWorkGroups<'a> {
     let mut groups = BTreeMap::new();
     for root in &graph.roots {
         let requirement = crate::provider_help::requirement_for_language(&root.language);
@@ -445,9 +458,13 @@ fn native_work_groups<'a>(graph: &'a ProjectGraph) -> NativeWorkGroups<'a> {
         if files.is_empty() {
             continue;
         }
+        let (build_root, build_tool) = native_build_unit_for_root(workspace, root);
+        let output_stem = native_output_stem(requirement.provider, &build_root, root);
         let key = NativeGroupKey {
             provider: requirement.provider.to_string(),
-            root_path: root.path.clone(),
+            build_root,
+            build_tool,
+            output_stem,
             command: requirement.command.to_string(),
             args: requirement
                 .args
@@ -461,6 +478,176 @@ fn native_work_groups<'a>(graph: &'a ProjectGraph) -> NativeWorkGroups<'a> {
             .push((root, files));
     }
     groups
+}
+
+fn native_build_unit_for_root(
+    workspace: &Workspace,
+    root: &ProjectRoot,
+) -> (String, Option<crate::scip_provider::NativeBuildTool>) {
+    use crate::scip_provider::NativeBuildTool;
+
+    match root.kind {
+        ProjectRootKind::JavaMaven => (
+            maven_build_root(workspace, &root.path),
+            Some(NativeBuildTool::Maven),
+        ),
+        ProjectRootKind::JavaGradle | ProjectRootKind::KotlinGradle => (
+            gradle_build_root(workspace, &root.path),
+            Some(NativeBuildTool::Gradle),
+        ),
+        _ => (root.path.clone(), None),
+    }
+}
+
+fn native_output_stem(provider: &str, build_root: &str, root: &ProjectRoot) -> String {
+    if provider == "scip-java" {
+        let suffix = if build_root == "." {
+            "root"
+        } else {
+            build_root
+        };
+        format!("java-{suffix}")
+    } else {
+        root.id.clone()
+    }
+}
+
+fn maven_build_root(workspace: &Workspace, root_path: &str) -> String {
+    for candidate in ancestor_roots(root_path) {
+        let pom_path = workspace
+            .root
+            .join(rel_path_to_fs_path(&candidate))
+            .join("pom.xml");
+        if !pom_path.exists() {
+            continue;
+        }
+        if candidate == root_path {
+            return candidate;
+        }
+        if maven_modules_cover_root(&pom_path, &candidate, root_path) {
+            return candidate;
+        }
+    }
+    root_path.to_string()
+}
+
+fn maven_modules_cover_root(pom_path: &Path, pom_root: &str, root_path: &str) -> bool {
+    let modules = read_maven_modules(pom_path);
+    modules.iter().any(|module| {
+        let module_path = join_rel_path(pom_root, module);
+        root_path == module_path || root_path.starts_with(&format!("{module_path}/"))
+    })
+}
+
+fn read_maven_modules(pom_path: &Path) -> Vec<String> {
+    let Ok(source) = fs::read_to_string(pom_path) else {
+        return Vec::new();
+    };
+    let mut reader = Reader::from_str(&source);
+    reader.config_mut().trim_text(true);
+    reader.config_mut().check_end_names = true;
+    let mut buf = Vec::new();
+    let mut in_modules = false;
+    let mut in_module = false;
+    let mut modules = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(element)) => {
+                if tag_name_is(&element, b"modules") {
+                    in_modules = true;
+                } else if in_modules && tag_name_is(&element, b"module") {
+                    in_module = true;
+                }
+            }
+            Ok(Event::End(element)) => {
+                let name = element.local_name();
+                if name.as_ref() == b"module" {
+                    in_module = false;
+                } else if name.as_ref() == b"modules" {
+                    in_modules = false;
+                }
+            }
+            Ok(Event::Text(text)) if in_modules && in_module => {
+                if let Ok(value) = text.decode() {
+                    let value = normalize_rel_path(value.trim());
+                    if !value.is_empty() {
+                        modules.push(value);
+                    }
+                }
+            }
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            Err(_) => return Vec::new(),
+        }
+        buf.clear();
+    }
+    modules
+}
+
+fn tag_name_is(element: &BytesStart<'_>, expected: &[u8]) -> bool {
+    element.local_name().as_ref() == expected
+}
+
+fn gradle_build_root(workspace: &Workspace, root_path: &str) -> String {
+    ancestor_roots(root_path)
+        .into_iter()
+        .filter(|candidate| {
+            let dir = workspace.root.join(rel_path_to_fs_path(candidate));
+            dir.join("settings.gradle").exists() || dir.join("settings.gradle.kts").exists()
+        })
+        .next()
+        .unwrap_or_else(|| root_path.to_string())
+}
+
+fn ancestor_roots(root_path: &str) -> Vec<String> {
+    if root_path == "." || root_path.is_empty() {
+        return vec![".".to_string()];
+    }
+    let mut roots = vec![".".to_string()];
+    let parts = root_path.split('/').collect::<Vec<_>>();
+    for index in 1..=parts.len() {
+        roots.push(parts[..index].join("/"));
+    }
+    roots
+}
+
+fn join_rel_path(parent: &str, child: &str) -> String {
+    let child = normalize_rel_path(child);
+    if parent == "." || parent.is_empty() {
+        child
+    } else if child.is_empty() {
+        parent.to_string()
+    } else {
+        normalize_rel_path(&format!("{parent}/{child}"))
+    }
+}
+
+fn normalize_rel_path(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    let mut parts = Vec::new();
+    for part in normalized.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            value => parts.push(value),
+        }
+    }
+    if parts.is_empty() {
+        ".".to_string()
+    } else {
+        parts.join("/")
+    }
+}
+
+fn rel_path_to_fs_path(path: &str) -> PathBuf {
+    if path == "." {
+        PathBuf::new()
+    } else {
+        path.split('/').collect()
+    }
 }
 
 fn count_scip_occurrences_for_root(
@@ -1226,12 +1413,31 @@ pub fn generation_manifest_path(workspace: &Workspace) -> std::path::PathBuf {
     index::scip_root(workspace).join("generation.json")
 }
 
+pub fn generation_manifest_path_for_snapshot(
+    workspace: &Workspace,
+    snapshot_id: &str,
+) -> std::path::PathBuf {
+    index::scip_root_for_snapshot(workspace, snapshot_id).join("generation.json")
+}
+
 pub fn read_generation_manifests(workspace: &Workspace) -> Result<Vec<GenerationManifest>> {
     let path = generation_manifest_path(workspace);
+    read_generation_manifests_at(&path)
+}
+
+pub fn read_generation_manifests_for_snapshot(
+    workspace: &Workspace,
+    snapshot_id: &str,
+) -> Result<Vec<GenerationManifest>> {
+    let path = generation_manifest_path_for_snapshot(workspace, snapshot_id);
+    read_generation_manifests_at(&path)
+}
+
+fn read_generation_manifests_at(path: &Path) -> Result<Vec<GenerationManifest>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let data = fs::read(&path)?;
+    let data = fs::read(path)?;
     Ok(serde_json::from_slice(&data)?)
 }
 
