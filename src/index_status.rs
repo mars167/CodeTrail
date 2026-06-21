@@ -7,10 +7,11 @@ use serde_json::{json, Value};
 
 use crate::{
     generation_manifest::{GenerationManifest, ManifestState},
-    index::scip_root,
+    index::scip_root_for_snapshot,
     lsp::registry::resolve_binary,
     project_graph::{
         discover_project_graph, ProjectGraph, ProjectLanguage, ProjectRoot, ProjectRootKind,
+        SemanticFactPolicy,
     },
     provider_help::{env_keys_for_requirement, requirement_for_language, ProviderRequirement},
     scip,
@@ -30,14 +31,15 @@ pub(crate) fn indexed_languages(records: &[FileRecord]) -> Value {
     )
 }
 
-pub(crate) fn semantic_status(
+pub(crate) fn semantic_status_for_snapshot(
     workspace: &Workspace,
+    snapshot_id: &str,
     records: &[FileRecord],
     manifests: &[GenerationManifest],
 ) -> Value {
-    let db_path = scip_root(workspace).join("occurrences.db");
+    let db_path = scip_root_for_snapshot(workspace, snapshot_id).join("occurrences.db");
     let db_exists = db_path.exists();
-    let db_fresh = scip::occurrence_db_fresh(&db_path, &workspace.snapshot_id, &workspace.root);
+    let db_fresh = scip::occurrence_db_fresh(&db_path, snapshot_id, &workspace.root);
     let (scip_languages, scip_symbol_count, scip_read_error) = scip_language_summary(&db_path);
 
     let graph = discover_project_graph(&workspace.root);
@@ -93,14 +95,20 @@ pub(crate) fn summary_status(full: &Value) -> Value {
         })
     });
 
+    let scip_index = compact_scip_index(semantic_status.get("scipIndex"));
+    let language_coverage = language_coverage(&semantic_status);
+    let (query_mode, fallback_reason) = semantic_query_mode(&scip_index, &language_coverage);
+
     json!({
         "exists": full.get("exists").and_then(Value::as_bool).unwrap_or(false),
         "fresh": full.get("fresh").and_then(Value::as_bool).unwrap_or(false),
         "fileCount": file_count,
         "indexedLanguages": indexed_languages,
         "semanticStatus": {
-            "scipIndex": compact_scip_index(semantic_status.get("scipIndex")),
-            "languageCoverage": language_coverage(&semantic_status),
+            "scipIndex": scip_index,
+            "queryMode": query_mode,
+            "fallbackReason": fallback_reason,
+            "languageCoverage": language_coverage,
         }
     })
 }
@@ -183,6 +191,7 @@ fn language_coverage(semantic_status: &Value) -> Value {
                 "language": language,
                 "provider": provider,
                 "precise": precise_coverage_state(state, provider_available),
+                "mode": coverage_mode(precise_coverage_state(state, provider_available)),
                 "fallback": "tree_sitter_parser",
                 "rootCount": 0,
                 "partialReasons": []
@@ -197,10 +206,54 @@ fn language_coverage(semantic_status: &Value) -> Value {
             current,
             precise_coverage_state(state, provider_available),
         ));
+        let precise = entry
+            .get("precise")
+            .and_then(Value::as_str)
+            .unwrap_or("missing");
+        entry["mode"] = Value::String(coverage_mode(precise).to_string());
         append_unique_strings(&mut entry["partialReasons"], &partial_reasons);
     }
 
     Value::Array(coverage.into_values().collect())
+}
+
+fn semantic_query_mode(scip_index: &Value, language_coverage: &Value) -> (&'static str, Value) {
+    if scip_index
+        .get("usable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && scip_index
+            .get("fresh")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return ("precise", Value::Null);
+    }
+    if language_coverage
+        .as_array()
+        .is_some_and(|items| !items.is_empty())
+    {
+        let state = scip_index
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        return (
+            "parser_fallback",
+            Value::String(format!("scip_index_{state}")),
+        );
+    }
+    (
+        "source_only",
+        Value::String("no_semantic_roots".to_string()),
+    )
+}
+
+fn coverage_mode(precise: &str) -> &'static str {
+    if precise == "fresh" {
+        "precise"
+    } else {
+        "parser_fallback"
+    }
 }
 
 fn precise_coverage_state(state: &str, provider_available: bool) -> &'static str {
@@ -276,6 +329,7 @@ fn semantic_roots_and_providers(
     let root_values = graph
         .roots
         .iter()
+        .filter(|root| root_has_precise_sources(graph, root))
         .map(|root| {
             let manifest = manifest_by_root.get(root.id.as_str()).copied();
             let mut value = json!({
@@ -301,7 +355,11 @@ fn semantic_roots_and_providers(
         .collect::<Vec<_>>();
 
     let mut languages = BTreeSet::<ProjectLanguage>::new();
-    for root in &graph.roots {
+    for root in graph
+        .roots
+        .iter()
+        .filter(|root| root_has_precise_sources(graph, root))
+    {
         languages.insert(root.language.clone());
     }
     let semantic_providers = languages
@@ -310,6 +368,13 @@ fn semantic_roots_and_providers(
         .collect::<Vec<_>>();
 
     (root_values, semantic_providers, None)
+}
+
+fn root_has_precise_sources(graph: &ProjectGraph, root: &ProjectRoot) -> bool {
+    graph.source_owners.iter().any(|owner| {
+        owner.root_id == root.id
+            && owner.semantic_fact_policy == SemanticFactPolicy::PreciseEligible
+    })
 }
 
 fn swift_config_status(workspace: &Workspace, root: &ProjectRoot) -> Option<Value> {

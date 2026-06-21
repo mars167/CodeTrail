@@ -40,12 +40,15 @@ for repository investigations that would otherwise consume many turns of search
 and read output in the primary session.
 
 The subagent uses a low-token index-first workflow: check
-`codetrail --output json index status --summary` once, start with
-`codetrail --output json explore node <query> --max-candidates 5 --snippet-lines 24 --relation-limit 8`,
-then use at most one narrow `symbols`/`defs`/`refs`/`routes`/`calls`/`callers`
-supplement when needed. Use `files`, `find-path`, or `glob` for path discovery
-and `find`/`grep` only for explicit fallback cases. `list`, `tree`, and `read`
-are not CodeTrail CLI/MCP commands.
+`codetrail --output json index status --summary` once, then choose the cheapest
+command from the query shape. Prefer `routes` for endpoints and handlers,
+`defs`/`symbols` then `refs`/`calls`/`callers` for known identifiers, one
+bounded `files`/`find-path`/`glob`/scoped text search when names are unknown,
+and scoped text search for config/templates/SQL/XML/YAML or other non-code
+artifacts. Use compact `explore node` only for one ambiguous anchor, such as
+`--compact --max-candidates 2 --snippet-lines 3 --relation-limit 2 --max-bytes 5000`,
+then increase modestly only when the compact result proves the path. `list`,
+`tree`, and `read` are not CodeTrail CLI/MCP commands.
 
 ## OpenCode
 
@@ -72,9 +75,12 @@ investigations that would otherwise consume many turns of search and read
 output in the primary session.
 
 The subagent uses a low-token index-first workflow: check
-`codetrail --output json index status --summary` once, start with
-`codetrail --output json explore node <query> --max-candidates 5 --snippet-lines 24 --relation-limit 8`,
-then use at most one narrow `symbols`/`defs`/`refs`/`routes`/`calls`/`callers`
-supplement when needed. Use `files`, `find-path`, or `glob` for path discovery
-and `find`/`grep` only for explicit fallback cases. `list`, `tree`, and `read`
-are not CodeTrail CLI/MCP commands.
+`codetrail --output json index status --summary` once, then choose the cheapest
+command from the query shape. Prefer `routes` for endpoints and handlers,
+`defs`/`symbols` then `refs`/`calls`/`callers` for known identifiers, one
+bounded `files`/`find-path`/`glob`/scoped text search when names are unknown,
+and scoped text search for config/templates/SQL/XML/YAML or other non-code
+artifacts. Use compact `explore node` only for one ambiguous anchor, such as
+`--compact --max-candidates 2 --snippet-lines 3 --relation-limit 2 --max-bytes 5000`,
+then increase modestly only when the compact result proves the path. `list`,
+`tree`, and `read` are not CodeTrail CLI/MCP commands.

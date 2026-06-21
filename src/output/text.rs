@@ -68,6 +68,7 @@ pub(super) fn render_text(value: &Value, out: &mut dyn Write) -> io::Result<()> 
     }
 
     render_text_results(value, out)?;
+    render_text_page_hint(value, out)?;
     render_text_caveats(value, out)?;
     Ok(())
 }
@@ -261,6 +262,38 @@ fn render_text_caveats(value: &Value, out: &mut dyn Write) -> io::Result<()> {
         writeln!(out, "caveat: {code}: {message}")?;
     }
     Ok(())
+}
+
+fn render_text_page_hint(value: &Value, out: &mut dyn Write) -> io::Result<()> {
+    let Some(cursor) = next_cursor(value) else {
+        return Ok(());
+    };
+    let shown = value
+        .get("results")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    writeln!(out)?;
+    if shown > 0 {
+        writeln!(
+            out,
+            "more: showing first {shown} results; use --cursor {cursor} for the next page or increase --limit"
+        )?;
+    } else {
+        writeln!(
+            out,
+            "more: additional results available; use --cursor {cursor} for the next page or increase --limit"
+        )?;
+    }
+    Ok(())
+}
+
+fn next_cursor(value: &Value) -> Option<&str> {
+    value
+        .get("nextCursor")
+        .and_then(Value::as_str)
+        .or_else(|| value.pointer("/page/nextCursor").and_then(Value::as_str))
+        .filter(|cursor| !cursor.is_empty())
 }
 
 fn render_text_source_context(result: &Value, out: &mut dyn Write) -> io::Result<()> {

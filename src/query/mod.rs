@@ -135,14 +135,43 @@ pub struct ExploreNodeOptions {
     pub max_candidates: usize,
     pub snippet_lines: usize,
     pub relation_limit: usize,
+    pub compact: bool,
+    pub max_bytes: usize,
 }
 
 impl ExploreNodeOptions {
     pub fn bounded(max_candidates: usize, snippet_lines: usize, relation_limit: usize) -> Self {
+        Self::with_budget(max_candidates, snippet_lines, relation_limit, false, 12_000)
+    }
+
+    pub fn with_budget(
+        max_candidates: usize,
+        snippet_lines: usize,
+        relation_limit: usize,
+        compact: bool,
+        max_bytes: usize,
+    ) -> Self {
+        let max_candidates = max_candidates.clamp(1, 20);
+        let snippet_lines = snippet_lines.clamp(1, 80);
+        let relation_limit = relation_limit.min(20);
         Self {
-            max_candidates: max_candidates.clamp(1, 20),
-            snippet_lines: snippet_lines.clamp(1, 80),
-            relation_limit: relation_limit.min(20),
+            max_candidates: if compact {
+                max_candidates.min(2)
+            } else {
+                max_candidates
+            },
+            snippet_lines: if compact {
+                snippet_lines.min(8)
+            } else {
+                snippet_lines
+            },
+            relation_limit: if compact {
+                relation_limit.min(4)
+            } else {
+                relation_limit
+            },
+            compact,
+            max_bytes: max_bytes.clamp(1_000, 100_000),
         }
     }
 }
@@ -355,6 +384,13 @@ impl QueryService {
             scip_index::defs(&self.workspace, &scan, identifier)?
         {
             if has_results(&precise.results) {
+                let mut results = precise.results;
+                let mut index = precise.index;
+                if let Some(config) = config_index::defs(&self.workspace, &scan, identifier)? {
+                    append_results(&mut results, config.results);
+                    truncate_results_to_limit(&mut results, scan.limit);
+                    append_config_index(&mut index, config.index);
+                }
                 let response = output::response_with_index(
                     "defs",
                     "defs",
@@ -367,7 +403,7 @@ impl QueryService {
                     ),
                     &self.workspace.snapshot_id,
                     output::precise_fact(),
-                    output::IndexedResponseParts::new(precise.index, precise.results, Vec::new()),
+                    output::IndexedResponseParts::new(index, results, Vec::new()),
                 );
                 let response =
                     code_context::enrich_response(&self.workspace, &scan, response, code_options)?;
@@ -383,6 +419,7 @@ impl QueryService {
         let parser_had_results = has_results(&results);
         if let Some(config) = config_index::defs(&self.workspace, &scan, identifier)? {
             append_results(&mut results, config.results);
+            truncate_results_to_limit(&mut results, scan.limit);
         }
         if !has_results(&results) {
             if let Some(precise) = precise_empty {
@@ -435,26 +472,32 @@ impl QueryService {
         let scan = opts.to_scan_options();
 
         // 1. Try SCIP precise index first.
-        let precise_empty = if let Some(precise) =
-            scip_index::refs(&self.workspace, &scan, identifier)?
-        {
-            if has_results(&precise.results) {
-                return Ok(self.finalize(output::response_with_index(
-                    "refs",
-                    "refs",
-                    scoped_query(
-                        json!({ "identifier": identifier, "producer": "scip" }),
-                        &scan,
-                    ),
-                    &self.workspace.snapshot_id,
-                    output::precise_fact(),
-                    output::IndexedResponseParts::new(precise.index, precise.results, Vec::new()),
-                )));
-            }
-            Some(precise)
-        } else {
-            None
-        };
+        let precise_empty =
+            if let Some(precise) = scip_index::refs(&self.workspace, &scan, identifier)? {
+                if has_results(&precise.results) {
+                    let mut results = precise.results;
+                    let mut index = precise.index;
+                    if let Some(config) = config_index::refs(&self.workspace, &scan, identifier)? {
+                        append_results(&mut results, config.results);
+                        truncate_results_to_limit(&mut results, scan.limit);
+                        append_config_index(&mut index, config.index);
+                    }
+                    return Ok(self.finalize(output::response_with_index(
+                        "refs",
+                        "refs",
+                        scoped_query(
+                            json!({ "identifier": identifier, "producer": "scip" }),
+                            &scan,
+                        ),
+                        &self.workspace.snapshot_id,
+                        output::precise_fact(),
+                        output::IndexedResponseParts::new(index, results, Vec::new()),
+                    )));
+                }
+                Some(precise)
+            } else {
+                None
+            };
 
         // 2. Fall back to identifier-boundary text search.
         let mut qo = search::find(
@@ -475,6 +518,7 @@ impl QueryService {
         let source_had_results = has_results(&qo.results);
         if let Some(config) = config_index::refs(&self.workspace, &scan, identifier)? {
             append_results(&mut qo.results, config.results);
+            truncate_results_to_limit(&mut qo.results, scan.limit);
             append_config_index(&mut qo.index, config.index);
         }
         if !has_results(&qo.results) {
@@ -529,8 +573,14 @@ impl QueryService {
             scip_index::symbols(&self.workspace, &scan, query)?
         {
             if has_results(&precise.results) {
+                let mut results = precise.results;
+                let mut index = precise.index;
+                if let Some(config) = config_index::symbols(&self.workspace, &scan, query)? {
+                    append_results(&mut results, config.results);
+                    append_config_index(&mut index, config.index);
+                }
                 let page = search::page_results(
-                    precise.results,
+                    results,
                     &scan,
                     "symbols",
                     code_context::query_with_code_options(
@@ -551,11 +601,7 @@ impl QueryService {
                     ),
                     &self.workspace.snapshot_id,
                     output::precise_fact(),
-                    output::IndexedResponseParts::new(
-                        precise.index,
-                        page.results.clone(),
-                        Vec::new(),
-                    ),
+                    output::IndexedResponseParts::new(index, page.results.clone(), Vec::new()),
                 );
                 let response =
                     output::with_page_meta(response, page.truncated, page.next_cursor, page.facets);
@@ -640,14 +686,32 @@ impl QueryService {
         methods: &[String],
         opts: &QueryOptions,
     ) -> Result<Value> {
+        self.routes_with_mode(
+            pattern,
+            SearchPatternMode::Literal,
+            frameworks,
+            methods,
+            opts,
+        )
+    }
+
+    pub fn routes_with_mode(
+        &self,
+        pattern: Option<&str>,
+        mode: SearchPatternMode,
+        frameworks: &[String],
+        methods: &[String],
+        opts: &QueryOptions,
+    ) -> Result<Value> {
         let scan = opts.to_scan_options();
-        let output = routes::scan(&self.workspace, &scan, pattern, frameworks, methods)?;
+        let output = routes::scan(&self.workspace, &scan, pattern, mode, frameworks, methods)?;
         let response = output::response_with_index(
             "routes",
             "routes",
             scoped_query(
                 json!({
                     "pattern": pattern,
+                    "mode": mode.as_str(),
                     "framework": frameworks,
                     "method": methods,
                     "producer": "framework_route_scanner"
@@ -671,10 +735,12 @@ impl QueryService {
         opts: &QueryOptions,
         explore: ExploreNodeOptions,
     ) -> Result<Value> {
-        let explore = ExploreNodeOptions::bounded(
+        let explore = ExploreNodeOptions::with_budget(
             explore.max_candidates,
             explore.snippet_lines,
             explore.relation_limit,
+            explore.compact,
+            explore.max_bytes,
         );
         let mut query_opts = opts.clone();
         query_opts.limit = explore.max_candidates;
@@ -710,10 +776,17 @@ impl QueryService {
             .as_array()
             .into_iter()
             .flatten()
+            .enumerate()
             .take(explore.max_candidates)
         {
+            let (result_index, result) = result;
+            let relation_limit = if explore.compact && result_index > 0 {
+                0
+            } else {
+                explore.relation_limit
+            };
             let (relations, relation_warnings) =
-                self.explore_relations(result, query, &query_opts, explore.relation_limit)?;
+                self.explore_relations(result, query, &query_opts, relation_limit)?;
             warnings.extend(relation_warnings);
             let item = compact_explore_result(
                 &self.workspace,
@@ -724,7 +797,7 @@ impl QueryService {
                     .and_then(Value::as_str),
                 explore.snippet_lines,
                 Some(&relations),
-                explore.relation_limit,
+                relation_limit,
             )?;
             relation_seen |= item
                 .get("relations")
@@ -739,6 +812,12 @@ impl QueryService {
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             compact.push(item);
+        }
+        if apply_result_byte_budget(&mut compact, explore.max_bytes) {
+            warnings.push(format!(
+                "output_truncated: explore node results were capped at {} bytes",
+                explore.max_bytes
+            ));
         }
 
         if relation_seen {
@@ -767,7 +846,9 @@ impl QueryService {
                     "producer": producer,
                     "maxCandidates": explore.max_candidates,
                     "snippetLines": explore.snippet_lines,
-                    "relationLimit": explore.relation_limit
+                    "relationLimit": explore.relation_limit,
+                    "compact": explore.compact,
+                    "maxBytes": explore.max_bytes
                 }),
                 &scan,
             ),
@@ -989,6 +1070,15 @@ fn append_results(target: &mut Value, extra: Value) {
     }
 }
 
+fn truncate_results_to_limit(results: &mut Value, limit: usize) {
+    if limit == 0 {
+        return;
+    }
+    if let Some(items) = results.as_array_mut() {
+        items.truncate(limit);
+    }
+}
+
 fn append_config_index(target: &mut Value, config_index: Value) {
     if let Some(object) = target.as_object_mut() {
         object.insert("configFacts".to_string(), config_index);
@@ -1120,6 +1210,14 @@ fn compact_explore_result(
             relation_limit,
         ),
     );
+    if let (Some(path), Some(range)) = (
+        object.get("path").and_then(Value::as_str),
+        object.get("range"),
+    ) {
+        if let Some(target) = cite_target(path, range) {
+            object.insert("citeTarget".to_string(), Value::String(target));
+        }
+    }
     Ok(Value::Object(object))
 }
 
@@ -1220,6 +1318,85 @@ fn relation_has_items(relations: &Value) -> Option<bool> {
                 .and_then(Value::as_array)
                 .is_some_and(|items| !items.is_empty()),
     )
+}
+
+fn cite_target(path: &str, range: &Value) -> Option<String> {
+    let start = range.pointer("/start/line").and_then(Value::as_u64)?;
+    let end = range
+        .pointer("/end/line")
+        .and_then(Value::as_u64)
+        .unwrap_or(start);
+    if start == end {
+        Some(format!("{path}:{start}"))
+    } else {
+        Some(format!("{path}:{start}-{end}"))
+    }
+}
+
+fn apply_result_byte_budget(results: &mut Vec<Value>, max_bytes: usize) -> bool {
+    if value_json_len(&Value::Array(results.clone())) <= max_bytes {
+        return false;
+    }
+    let mut truncated = trim_snippets(results, 800);
+    if value_json_len(&Value::Array(results.clone())) > max_bytes {
+        truncated |= trim_snippets(results, 400);
+    }
+    if value_json_len(&Value::Array(results.clone())) > max_bytes {
+        truncated |= trim_snippets(results, 160);
+    }
+    if value_json_len(&Value::Array(results.clone())) > max_bytes {
+        for result in results.iter_mut() {
+            if let Some(object) = result.as_object_mut() {
+                object.insert(
+                    "relations".to_string(),
+                    json!({ "calls": [], "callers": [], "truncated": true }),
+                );
+            }
+        }
+        truncated = true;
+    }
+    while results.len() > 1 && value_json_len(&Value::Array(results.clone())) > max_bytes {
+        results.pop();
+        truncated = true;
+    }
+    truncated
+}
+
+fn trim_snippets(values: &mut [Value], max_chars: usize) -> bool {
+    let mut changed = false;
+    for value in values {
+        changed |= trim_snippets_in_value(value, max_chars);
+    }
+    changed
+}
+
+fn trim_snippets_in_value(value: &mut Value, max_chars: usize) -> bool {
+    match value {
+        Value::Object(object) => {
+            let mut changed = false;
+            if let Some(snippet_value) = object.get_mut("snippet") {
+                let trimmed = snippet_value.as_str().and_then(|snippet| {
+                    (snippet.chars().count() > max_chars)
+                        .then(|| snippet.chars().take(max_chars).collect::<String>())
+                });
+                if let Some(trimmed) = trimmed {
+                    *snippet_value = Value::String(format!("{trimmed}\n..."));
+                    object.insert("snippetTruncated".to_string(), Value::Bool(true));
+                    changed = true;
+                };
+            }
+            for value in object.values_mut() {
+                changed |= trim_snippets_in_value(value, max_chars);
+            }
+            changed
+        }
+        Value::Array(values) => trim_snippets(values, max_chars),
+        _ => false,
+    }
+}
+
+fn value_json_len(value: &Value) -> usize {
+    serde_json::to_vec(value).map_or(usize::MAX, |bytes| bytes.len())
 }
 
 fn warning_strings(response: &Value) -> Vec<String> {

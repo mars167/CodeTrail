@@ -555,7 +555,9 @@ pub fn git_status(root: &Path) -> Result<Vec<ChangedFile>> {
     let output = String::from_utf8_lossy(&output.stdout);
     let mut changed = Vec::new();
     for line in output.lines() {
-        if let Some(file) = parse_git_status_line(line) {
+        if let Some(file) =
+            parse_git_status_line(line).filter(|file| !is_codetrail_storage_path(&file.path))
+        {
             changed.push(file);
         }
     }
@@ -597,6 +599,10 @@ fn parse_git_status_line(line: &str) -> Option<ChangedFile> {
         unstaged,
         untracked,
     })
+}
+
+fn is_codetrail_storage_path(path: &str) -> bool {
+    path == ".codetrail" || path.starts_with(".codetrail/")
 }
 
 pub fn read_staged_blob(root: &Path, path: &str) -> Result<Vec<u8>> {
@@ -914,5 +920,15 @@ mod tests {
 
         assert_eq!(changed.path, "new/main.rs");
         assert_eq!(changed.change_kind, "staged");
+    }
+
+    #[test]
+    fn codetrail_storage_paths_do_not_make_workspace_dirty() {
+        assert!(is_codetrail_storage_path(".codetrail/index.json"));
+        assert!(is_codetrail_storage_path(
+            ".codetrail/scip/worktree/occurrences.db"
+        ));
+        assert!(!is_codetrail_storage_path("src/.codetrail/index.json"));
+        assert!(!is_codetrail_storage_path("src/main.rs"));
     }
 }

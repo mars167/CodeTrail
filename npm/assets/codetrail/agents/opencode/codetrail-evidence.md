@@ -39,42 +39,50 @@ Required preflight, exactly once unless it fails:
 codetrail --output json index status --summary
 ```
 
-Primary entry for each candidate name:
+After preflight, choose the cheapest next command from the task shape. Use
+`compact-json` for evidence commands unless a full JSON page is required.
+
+- Route, endpoint, handler, filter, interceptor, or middleware task: start with
+  `routes`, then verify the handler or filter names with `defs` or `refs`.
+- Known class, method, function, interface, or identifier: start with `defs` or
+  `symbols`, then use `refs`, `calls`, or `callers` only for the relevant names.
+- Unknown names: use one bounded path/text discovery command, then return to
+  semantic or route navigation.
+- Config, template, SQL/XML/YAML, generated, or non-code evidence: use scoped
+  path/text commands because semantic indexes may not cover those artifacts.
+- Ambiguous single-node anchor: use compact `explore node` only after cheaper
+  commands fail to identify the path.
+
+Preferred navigation commands:
 
 ```bash
-codetrail --output json explore node <query> --max-candidates 5 --snippet-lines 24 --relation-limit 8
+codetrail --output compact-json routes <term> --limit 10
+codetrail --output compact-json routes <regex> --mode regex --limit 10
+codetrail --output compact-json defs <name> --limit 5
+codetrail --output compact-json symbols <name> --limit 5
+codetrail --output compact-json refs <name> --limit 10
+codetrail --output compact-json calls <name> --limit 10
+codetrail --output compact-json callers <name> --limit 10
 ```
 
-Allowed narrow supplements, at most one before source verification unless the
-task explicitly needs more:
+Discovery and text fallback commands:
 
 ```bash
-codetrail --output json defs <name> --limit 10
-codetrail --output json symbols <name> --limit 10
-codetrail --output json refs <name> --limit 20
-codetrail --output json routes <term> --limit 20
-codetrail --output json calls <name> --limit 20
-codetrail --output json callers <name> --limit 20
+codetrail --output compact-json files <substring> --limit 10
+codetrail --output compact-json find-path <substring> --limit 10
+codetrail --output compact-json glob '<pattern>' --limit 10
+codetrail --output compact-json find <literal> --limit 10
+codetrail --output compact-json grep <regex> --limit 10
 ```
 
-Fallbacks are allowed only for:
-
-- no candidates from `explore node`;
-- missing or stale index;
-- unsupported language or unsupported artifact;
-- literal-text task;
-- path/name discovery before returning to navigation;
-- an effective result cannot be produced from exploration.
-
-Fallback commands:
+Single-node exploration fallback:
 
 ```bash
-codetrail --output json files <substring> --limit 20
-codetrail --output json find-path <substring> --limit 20
-codetrail --output json glob '<pattern>' --limit 20
-codetrail --output json find <literal> --limit 20
-codetrail --output json grep <regex> --limit 20
+codetrail --output compact-json explore node <query> --compact --max-candidates 2 --snippet-lines 3 --relation-limit 2 --max-bytes 5000
 ```
+
+Increase to `--max-candidates 4`, `--snippet-lines 4`, or `--max-bytes 8000`
+only after the compact result proves the path but lacks enough evidence.
 
 Reliability:
 
@@ -95,6 +103,10 @@ caveats:
 - <missing/stale/fallback/ambiguous/inferred note>
 queries:
 - <command>
+index_usage:
+  index_available: <true|false>
+  scip_available: <true|false|null>
+  text_fallback_reason: <reason-or-null>
 ```
 
 Limits:
@@ -102,5 +114,8 @@ Limits:
 - `evidence` <= 6
 - `relationships` <= 8
 - `queries` <= 10
+- prefer <= 7 CodeTrail commands total, including preflight
 - every evidence item must be `path:line` or `path:start-end`
 - file-only paths are leads, not evidence
+- do not invent broad flow commands; use compact `explore node` only for one
+  ambiguous route, symbol, path, or literal anchor

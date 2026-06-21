@@ -536,6 +536,136 @@ fn index_build_exposes_mybatis_mapper_xml_as_config_facts() {
 }
 
 #[test]
+fn precise_scip_results_include_matching_mybatis_xml_config_facts() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("pom.xml"), "<project></project>\n").unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/com/example")).unwrap();
+    fs::write(
+        dir.path().join("src/main/java/com/example/SysUserMapper.java"),
+        "package com.example;\npublic interface SysUserMapper {\n    SysUser selectUserByLoginName(String userName);\n}\nclass UseMapper { SysUserResult result; }\nclass SysUser {}\nclass SysUserResult {}\n",
+    )
+    .unwrap();
+    fs::create_dir_all(dir.path().join("src/main/resources/mapper/system")).unwrap();
+    fs::write(
+        dir.path()
+            .join("src/main/resources/mapper/system/SysUserMapper.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<mapper namespace="com.example.SysUserMapper">
+  <resultMap id="SysUserResult" type="com.example.SysUser">
+    <id property="userId" column="user_id"/>
+  </resultMap>
+  <select id="selectUserByLoginName" parameterType="String" resultMap="SysUserResult">
+    select user_id, login_name from sys_user where login_name = #{userName}
+  </select>
+</mapper>
+"#,
+    )
+    .unwrap();
+
+    codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build", "--no-semantic"])
+        .assert()
+        .success();
+
+    let scip_path = dir.path().join("index.scip");
+    write_java_mapper_scip_index(&scip_path);
+    build_native_scip_db_from_file(dir.path(), &scip_path);
+
+    let defs_output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "selectUserByLoginName"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let defs: Value = serde_json::from_slice(&defs_output).unwrap();
+    assert_eq!(defs["reliability"]["level"], "precise_fact");
+    assert!(defs["results"].as_array().unwrap().iter().any(|result| {
+        result["path"] == "src/main/java/com/example/SysUserMapper.java"
+            && result["producer"] == "scip"
+            && result["reliability"] == "precise_fact"
+    }));
+    assert!(defs["results"].as_array().unwrap().iter().any(|result| {
+        result["path"] == "src/main/resources/mapper/system/SysUserMapper.xml"
+            && result["kind"] == "mapper_statement"
+            && result["name"] == "com.example.SysUserMapper.selectUserByLoginName"
+            && result["layer"] == "config_fact"
+            && result["reliability"] == "config_fact"
+    }));
+    assert_eq!(defs["index"]["source"], "scip_native");
+    assert_eq!(defs["index"]["configFacts"]["source"], "config_facts");
+
+    let limited_defs_output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "selectUserByLoginName", "--limit", "1"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let limited_defs: Value = serde_json::from_slice(&limited_defs_output).unwrap();
+    assert_eq!(limited_defs["results"].as_array().unwrap().len(), 1);
+
+    let symbols_output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["symbols", "selectUserByLoginName"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let symbols: Value = serde_json::from_slice(&symbols_output).unwrap();
+    assert_eq!(symbols["reliability"]["level"], "precise_fact");
+    assert!(symbols["results"].as_array().unwrap().iter().any(|result| {
+        result["path"] == "src/main/resources/mapper/system/SysUserMapper.xml"
+            && result["kind"] == "mapper_statement"
+            && result["layer"] == "config_fact"
+    }));
+
+    let refs_output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["refs", "SysUserResult"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let refs: Value = serde_json::from_slice(&refs_output).unwrap();
+    assert_eq!(refs["reliability"]["level"], "precise_fact");
+    assert!(refs["results"].as_array().unwrap().iter().any(|result| {
+        result["path"] == "src/main/java/com/example/SysUserMapper.java"
+            && result["producer"] == "scip"
+            && result["reliability"] == "precise_fact"
+    }));
+    assert!(refs["results"].as_array().unwrap().iter().any(|result| {
+        result["path"] == "src/main/resources/mapper/system/SysUserMapper.xml"
+            && result["kind"] == "mapper_reference"
+            && result["name"] == "com.example.SysUserMapper.SysUserResult"
+            && result["layer"] == "config_fact"
+            && result["reliability"] == "config_fact"
+    }));
+
+    let limited_refs_output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["refs", "SysUserResult", "--limit", "1"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let limited_refs: Value = serde_json::from_slice(&limited_refs_output).unwrap();
+    assert_eq!(limited_refs["results"].as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn verbose_index_build_emits_diagnostics_to_stderr() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
@@ -1041,6 +1171,21 @@ fn invalid_regex_is_not_reported_as_no_match() {
     assert_eq!(json["ok"], false);
     assert!(json.get("noMatch").is_none());
     assert_ne!(json["error"]["code"], "no_match");
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["routes", "[", "--mode", "regex"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(json["ok"], false);
+    assert!(json.get("noMatch").is_none());
+    assert_ne!(json["error"]["code"], "no_match");
 }
 
 #[test]
@@ -1318,6 +1463,59 @@ end
 }
 
 #[test]
+fn routes_search_matches_route_metadata_and_supports_regex() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("modules/ruoyi-quartz/config")).unwrap();
+    fs::create_dir_all(dir.path().join("config")).unwrap();
+    fs::write(
+        dir.path().join("modules/ruoyi-quartz/config/routes.rb"),
+        "get \"/monitor/job\", to: \"jobs#index\"\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("config/routes.rb"),
+        "get \"/health\", to: \"health#show\"\n",
+    )
+    .unwrap();
+
+    let by_path = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["routes", "quartz"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let by_path_json: Value = serde_json::from_slice(&by_path).unwrap();
+    let by_path_results = by_path_json["results"].as_array().unwrap();
+
+    assert_eq!(by_path_json["query"]["mode"], "literal");
+    assert_eq!(by_path_results.len(), 1);
+    assert_eq!(by_path_results[0]["routePattern"], "/monitor/job");
+    assert!(by_path_results[0]["path"]
+        .as_str()
+        .unwrap()
+        .contains("ruoyi-quartz"));
+
+    let by_handler_regex = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["routes", "jobs#.*", "--mode", "regex"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let by_handler_json: Value = serde_json::from_slice(&by_handler_regex).unwrap();
+    let by_handler_results = by_handler_json["results"].as_array().unwrap();
+
+    assert_eq!(by_handler_json["query"]["mode"], "regex");
+    assert_eq!(by_handler_results.len(), 1);
+    assert_eq!(by_handler_results[0]["handler"], "jobs#index");
+}
+
+#[test]
 fn routes_scans_vapor_swift_routes() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("Sources/App")).unwrap();
@@ -1468,6 +1666,35 @@ fn routes_text_output_shows_method_route_and_location() {
 }
 
 #[test]
+fn routes_text_output_shows_next_page_cursor_when_limited() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("config")).unwrap();
+    fs::write(
+        dir.path().join("config/routes.rb"),
+        "get \"/one\", to: \"one#show\"\nget \"/two\", to: \"two#show\"\nget \"/three\", to: \"three#show\"\n",
+    )
+    .unwrap();
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["routes", "--framework", "rails", "--limit", "2"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+
+    assert!(text.contains("/one"));
+    assert!(text.contains("/two"));
+    assert!(!text.contains("/three"));
+    assert!(text.contains("more: showing first 2 results"));
+    assert!(text.contains("use --cursor "));
+    assert!(text.contains("increase --limit"));
+}
+
+#[test]
 fn routes_saved_query_replays_scope_and_filters() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("config")).unwrap();
@@ -1482,9 +1709,20 @@ fn routes_saved_query_replays_scope_and_filters() {
         .arg(dir.path())
         .arg("--save-query")
         .arg("rails-routes")
-        .args(["routes", "health", "--framework", "rails"])
+        .args([
+            "routes",
+            "health|missing",
+            "--mode",
+            "regex",
+            "--framework",
+            "rails",
+        ])
         .assert()
         .success();
+
+    let saved_path = dir.path().join(".codetrail/queries/rails-routes.json");
+    let saved_file: Value = serde_json::from_slice(&fs::read(&saved_path).unwrap()).unwrap();
+    assert_eq!(saved_file["query"]["mode"], "regex");
 
     let output = codetrail()
         .arg("--path")
@@ -1497,6 +1735,7 @@ fn routes_saved_query_replays_scope_and_filters() {
         .clone();
     let json: Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(json["command"], "routes");
+    assert_eq!(json["query"]["mode"], "regex");
     assert_eq!(json["results"][0]["routePattern"], "/health");
     assert_eq!(json["results"][0]["framework"], "rails");
 }
@@ -1824,8 +2063,14 @@ class Response
         .iter()
         .find(|coverage| coverage["language"] == "kotlin")
         .expect("kotlin coverage");
+    assert_eq!(summary["semanticStatus"]["queryMode"], "parser_fallback");
+    assert_eq!(
+        summary["semanticStatus"]["fallbackReason"],
+        "scip_index_not_generated"
+    );
     assert_eq!(kotlin_coverage["provider"], "scip-java");
     assert_eq!(kotlin_coverage["precise"], "manual_required");
+    assert_eq!(kotlin_coverage["mode"], "parser_fallback");
     assert_eq!(kotlin_coverage["fallback"], "tree_sitter_parser");
     assert!(summary["manifest"].is_null());
     assert!(summary["semanticManifests"].is_null());
@@ -1860,6 +2105,40 @@ class Response
     assert!(first["source"].is_null());
     assert!(first["relations"]["calls"].as_array().unwrap().len() <= 4);
     assert!(first["relations"]["callers"].as_array().unwrap().len() <= 4);
+
+    let compact_explore = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args([
+            "explore",
+            "node",
+            "RealCall",
+            "--compact",
+            "--max-candidates",
+            "5",
+            "--snippet-lines",
+            "24",
+            "--relation-limit",
+            "8",
+            "--max-bytes",
+            "5000",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(
+        compact_explore.len() < 8_000,
+        "compact explore output too large: {} bytes",
+        compact_explore.len()
+    );
+    let compact_json: Value = serde_json::from_slice(&compact_explore).unwrap();
+    assert!(compact_json["results"].as_array().unwrap().len() <= 2);
+    assert!(compact_json["results"][0]["citeTarget"]
+        .as_str()
+        .unwrap()
+        .contains("RealCall.kt:"));
 }
 
 #[test]
@@ -5532,6 +5811,112 @@ fn write_jvm_scip_index(path: &std::path::Path, include_java: bool, include_kotl
     fs::write(path, buf).unwrap();
 }
 
+fn write_java_scip_index_for_paths(path: &std::path::Path, rel_paths: &[&str]) {
+    use codetrail::scip_proto::proto;
+    use prost::Message;
+
+    let documents = rel_paths
+        .iter()
+        .enumerate()
+        .map(|(index, rel_path)| {
+            let symbol = format!("local java-app-{index}");
+            proto::Document {
+                language: "java".to_string(),
+                relative_path: (*rel_path).to_string(),
+                occurrences: vec![proto::Occurrence {
+                    range: vec![1, 13, 1, 16],
+                    symbol: symbol.clone(),
+                    symbol_roles: 1,
+                    ..Default::default()
+                }],
+                symbols: vec![proto::SymbolInformation {
+                    symbol,
+                    kind: proto::symbol_information::Kind::Class as i32,
+                    display_name: "App".to_string(),
+                    ..Default::default()
+                }],
+                position_encoding: proto::PositionEncoding::Utf8CodeUnitOffsetFromLineStart as i32,
+                ..Default::default()
+            }
+        })
+        .collect();
+    let index = proto::Index {
+        metadata: Some(proto::Metadata {
+            version: proto::ProtocolVersion::UnspecifiedProtocolVersion as i32,
+            tool_info: Some(proto::ToolInfo {
+                name: "test-jvm-indexer".to_string(),
+                version: "0.1.0".to_string(),
+                arguments: vec![],
+            }),
+            project_root: "file:///test".to_string(),
+            text_document_encoding: proto::TextEncoding::Utf8 as i32,
+        }),
+        documents,
+        ..Default::default()
+    };
+
+    let mut buf = Vec::new();
+    index.encode(&mut buf).unwrap();
+    fs::write(path, buf).unwrap();
+}
+
+fn write_java_mapper_scip_index(path: &std::path::Path) {
+    use codetrail::scip_proto::proto;
+    use prost::Message;
+
+    let index = proto::Index {
+        metadata: Some(proto::Metadata {
+            version: proto::ProtocolVersion::UnspecifiedProtocolVersion as i32,
+            tool_info: Some(proto::ToolInfo {
+                name: "test-jvm-indexer".to_string(),
+                version: "0.1.0".to_string(),
+                arguments: vec![],
+            }),
+            project_root: "file:///test".to_string(),
+            text_document_encoding: proto::TextEncoding::Utf8 as i32,
+        }),
+        documents: vec![proto::Document {
+            language: "java".to_string(),
+            relative_path: "src/main/java/com/example/SysUserMapper.java".to_string(),
+            occurrences: vec![
+                proto::Occurrence {
+                    range: vec![2, 12, 2, 33],
+                    symbol: "local java-select-user-by-login-name".to_string(),
+                    symbol_roles: 1,
+                    ..Default::default()
+                },
+                proto::Occurrence {
+                    range: vec![4, 18, 4, 31],
+                    symbol: "local java-sys-user-result".to_string(),
+                    symbol_roles: 0,
+                    ..Default::default()
+                },
+            ],
+            symbols: vec![
+                proto::SymbolInformation {
+                    symbol: "local java-select-user-by-login-name".to_string(),
+                    kind: proto::symbol_information::Kind::Method as i32,
+                    display_name: "selectUserByLoginName".to_string(),
+                    ..Default::default()
+                },
+                proto::SymbolInformation {
+                    symbol: "local java-sys-user-result".to_string(),
+                    kind: proto::symbol_information::Kind::Class as i32,
+                    display_name: "SysUserResult".to_string(),
+                    ..Default::default()
+                },
+            ],
+            position_encoding: proto::PositionEncoding::Utf8CodeUnitOffsetFromLineStart as i32,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    let mut buf = Vec::new();
+    index.encode(&mut buf).unwrap();
+    fs::write(path, buf).unwrap();
+}
+
 fn build_native_scip_db_from_file(
     root: &std::path::Path,
     scip_path: &std::path::Path,
@@ -5786,6 +6171,191 @@ cp "$CODETRAIL_TEST_SCIP_FIXTURE" "$out"
             && manifest["providerName"] == "scip-java"
             && manifest["state"] == "fresh"
     }));
+}
+
+#[cfg(unix)]
+#[test]
+fn maven_reactor_roots_run_scip_java_once_at_aggregator_root() {
+    let dir = tempdir().unwrap();
+    let modules = [
+        "ruoyi-admin",
+        "ruoyi-framework",
+        "ruoyi-system",
+        "ruoyi-generator",
+        "ruoyi-quartz",
+        "ruoyi-common",
+    ];
+    let module_xml = modules
+        .iter()
+        .map(|module| format!("    <module>{module}</module>\n"))
+        .collect::<String>();
+    fs::write(
+        dir.path().join("pom.xml"),
+        format!("<project><modules>\n{module_xml}</modules></project>\n"),
+    )
+    .unwrap();
+    let mut scip_paths = Vec::new();
+    for module in modules {
+        fs::create_dir_all(dir.path().join(module).join("src/main/java/com/ruoyi")).unwrap();
+        fs::write(
+            dir.path().join(module).join("pom.xml"),
+            "<project><artifactId>module</artifactId></project>\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.path()
+                .join(module)
+                .join("src/main/java/com/ruoyi/App.java"),
+            "package com.ruoyi;\npublic class App {}\n",
+        )
+        .unwrap();
+        scip_paths.push(format!("{module}/src/main/java/com/ruoyi/App.java"));
+    }
+
+    let fixture = dir.path().join("reactor.scip");
+    let scip_refs = scip_paths.iter().map(String::as_str).collect::<Vec<_>>();
+    write_java_scip_index_for_paths(&fixture, &scip_refs);
+    let log_file = dir.path().join("provider.log");
+    let provider = dir.path().join("fake-scip-java");
+    fs::write(
+        &provider,
+        r#"#!/bin/sh
+set -eu
+{
+  echo "cwd=$PWD"
+  printf 'args='
+  printf '%s ' "$@"
+  printf '\n'
+} >> "$CODETRAIL_TEST_PROVIDER_LOG"
+echo "reactor stdout"
+echo "reactor stderr" >&2
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output" ]; then
+    shift
+    out="$1"
+  fi
+  shift || true
+done
+cp "$CODETRAIL_TEST_SCIP_FIXTURE" "$out"
+"#,
+    )
+    .unwrap();
+    make_executable(&provider);
+
+    raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "json", "index", "build"])
+        .env(
+            "CODETRAIL_SCIP_JAVA",
+            provider.to_string_lossy().to_string(),
+        )
+        .env(
+            "CODETRAIL_TEST_SCIP_FIXTURE",
+            fixture.to_string_lossy().to_string(),
+        )
+        .env(
+            "CODETRAIL_TEST_PROVIDER_LOG",
+            log_file.to_string_lossy().to_string(),
+        )
+        .assert()
+        .success();
+
+    let provider_log = fs::read_to_string(&log_file).unwrap();
+    assert_eq!(
+        provider_log
+            .lines()
+            .filter(|line| line.starts_with("cwd="))
+            .count(),
+        1,
+        "{provider_log}"
+    );
+    let canonical_dir = fs::canonicalize(dir.path()).unwrap();
+    assert!(
+        provider_log.contains(&format!("cwd={}", canonical_dir.display())),
+        "{provider_log}"
+    );
+    assert!(provider_log.contains("--build-tool Maven"));
+    assert!(provider_log.contains("--targetroot "));
+    assert!(provider_log.contains("-- --batch-mode clean verify -DskipTests -DskipITs"));
+
+    let status = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "json", "index", "status"])
+        .env(
+            "CODETRAIL_SCIP_JAVA",
+            provider.to_string_lossy().to_string(),
+        )
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let status_json: Value = serde_json::from_slice(&status).unwrap();
+    let manifests = status_json["results"][0]["semanticManifests"]
+        .as_array()
+        .unwrap();
+    let fresh_java_roots = manifests
+        .iter()
+        .filter(|manifest| {
+            manifest["language"] == "java"
+                && manifest["providerName"] == "scip-java"
+                && manifest["state"] == "fresh"
+        })
+        .count();
+    assert_eq!(fresh_java_roots, 6, "{manifests:#?}");
+    let roots = status_json["results"][0]["semanticStatus"]["roots"]
+        .as_array()
+        .unwrap();
+    assert!(
+        roots.iter().all(|root| root["rootId"] != "java:."),
+        "{roots:#?}"
+    );
+
+    let summary = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["--output", "json", "index", "status", "--summary"])
+        .env(
+            "CODETRAIL_SCIP_JAVA",
+            provider.to_string_lossy().to_string(),
+        )
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let summary_json: Value = serde_json::from_slice(&summary).unwrap();
+    let coverage = summary_json["results"][0]["semanticStatus"]["languageCoverage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|coverage| coverage["language"] == "java")
+        .unwrap();
+    assert_eq!(coverage["precise"], "fresh");
+    assert_eq!(coverage["mode"], "precise");
+    assert_eq!(coverage["rootCount"], 6);
+
+    let provider_output = dir
+        .path()
+        .join(".codetrail/scip/worktree_non-git/provider-output");
+    assert!(provider_output
+        .join("java-root-scip-java.stdout.log")
+        .exists());
+    assert!(provider_output
+        .join("java-root-scip-java.stderr.log")
+        .exists());
+    let command_json: Value = serde_json::from_slice(
+        &fs::read(provider_output.join("java-root-scip-java.command.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        command_json["cwd"].as_str(),
+        Some(canonical_dir.to_string_lossy().as_ref())
+    );
+    assert_eq!(command_json["exitCode"], 0);
 }
 
 #[test]
@@ -6358,6 +6928,9 @@ fn mcp_stdio_explore_node_is_registered_and_returns_public_projection() {
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "codetrail_explore_node"));
+    assert!(!tools
+        .iter()
+        .any(|tool| tool["name"] == "codetrail_explore_flow"));
 
     let explore: Value =
         serde_json::from_str(lines[1]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();

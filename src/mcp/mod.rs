@@ -304,7 +304,8 @@ fn tool_definitions() -> Vec<ToolDef> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "pattern": { "type": "string", "description": "Optional route path substring to match" },
+                    "pattern": { "type": "string", "description": "Optional route search pattern matched against route path, handler, framework, method, file path, and language" },
+                    "mode": { "type": "string", "enum": ["literal", "regex", "wildcard"], "default": "literal", "description": "Route search match mode" },
                     "framework": { "type": "array", "items": { "type": "string" }, "description": "Framework names to include" },
                     "method": { "type": "array", "items": { "type": "string" }, "description": "HTTP methods to include" },
                     "dir": { "type": "array", "items": { "type": "string" }, "description": "Workspace-relative directories to search (OR filter)" },
@@ -386,6 +387,8 @@ fn tool_definitions() -> Vec<ToolDef> {
                     "maxCandidates": { "type": "integer", "minimum": 1, "maximum": 20, "default": 5 },
                     "snippetLines": { "type": "integer", "minimum": 1, "maximum": 80, "default": 12 },
                     "relationLimit": { "type": "integer", "minimum": 0, "maximum": 20, "default": 8 },
+                    "compact": { "type": "boolean", "default": false, "description": "Use LLM-oriented compact caps: at most 2 candidates, 8 snippet lines, and 4 relations" },
+                    "maxBytes": { "type": "integer", "minimum": 1000, "maximum": 100000, "default": 12000 },
                     "dir": { "type": "array", "items": { "type": "string" }, "description": "Workspace-relative directories to search (OR filter)" },
                     "ext": { "type": "array", "items": { "type": "string" }, "description": "File extensions to search, with or without a leading dot" },
                     "filePattern": { "type": "array", "items": { "type": "string" }, "description": "Path patterns applied before exploration" },
@@ -627,6 +630,12 @@ impl Server {
             }
             "codetrail_routes" => {
                 let pattern = optional_str(args, "pattern");
+                let mode = optional_pattern_mode_arg(args, SearchPatternMode::Literal)?;
+                if mode == SearchPatternMode::Glob {
+                    return Err(anyhow::anyhow!(
+                        "invalid_mcp_argument: routes mode must be literal, regex, or wildcard"
+                    ));
+                }
                 let frameworks = args
                     .and_then(Value::as_object)
                     .map(|obj| extract_string_array(obj, "framework"))
@@ -635,7 +644,8 @@ impl Server {
                     .and_then(Value::as_object)
                     .map(|obj| extract_string_array(obj, "method"))
                     .unwrap_or_default();
-                self.service.routes(pattern, &frameworks, &methods, &opts)
+                self.service
+                    .routes_with_mode(pattern, mode, &frameworks, &methods, &opts)
             }
             "codetrail_explore_node" => {
                 let query = required_str(args, "query")?;
@@ -815,13 +825,18 @@ fn parse_explore_node_options(args: Option<&Value>) -> Result<ExploreNodeOptions
         &["relationLimit", "relation_limit", "relation-limit"],
         8,
     )?;
+    let compact = obj.get("compact").and_then(Value::as_bool).unwrap_or(false);
+    let max_bytes = optional_usize_fields(obj, &["maxBytes", "max_bytes", "max-bytes"], 12_000)?;
     validate_explore_bound("maxCandidates", max_candidates, 1, 20)?;
     validate_explore_bound("snippetLines", snippet_lines, 1, 80)?;
     validate_explore_bound("relationLimit", relation_limit, 0, 20)?;
-    Ok(ExploreNodeOptions::bounded(
+    validate_explore_bound("maxBytes", max_bytes, 1_000, 100_000)?;
+    Ok(ExploreNodeOptions::with_budget(
         max_candidates,
         snippet_lines,
         relation_limit,
+        compact,
+        max_bytes,
     ))
 }
 
@@ -1345,6 +1360,15 @@ mod tests {
         assert_eq!(routes[0]["method"], "GET");
         assert_eq!(routes[0]["routePattern"], "/health");
         assert_eq!(routes[0]["handler"], "health#show");
+
+        let result = call_tool_json(
+            &server,
+            "codetrail_routes",
+            json!({ "pattern": "health#.*", "mode": "regex" }),
+        );
+        let routes = result["results"].as_array().unwrap();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0]["handler"], "health#show");
     }
 
     #[test]
@@ -1358,6 +1382,15 @@ mod tests {
         let parsed: Value = serde_json::from_str(&result.content[0].text).unwrap();
         assert!(!has_caveat(&parsed, "no_match"));
         assert!(parsed["caveats"][0]["code"].as_str().is_some());
+
+        let result = call_tool(
+            &server,
+            "codetrail_routes",
+            json!({ "pattern": "[", "mode": "regex" }),
+        );
+        assert!(result.is_error);
+        let parsed: Value = serde_json::from_str(&result.content[0].text).unwrap();
+        assert!(!has_caveat(&parsed, "no_match"));
     }
 
     #[test]

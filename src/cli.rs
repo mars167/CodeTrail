@@ -160,6 +160,8 @@ pub enum Command {
     },
     Routes {
         pattern: Option<String>,
+        #[arg(long, value_enum, default_value_t = ContentPatternMode::Literal, help = "Route search match mode")]
+        mode: ContentPatternMode,
         #[arg(long)]
         framework: Vec<String>,
         #[arg(long)]
@@ -224,6 +226,10 @@ pub enum ExploreCommand {
         snippet_lines: usize,
         #[arg(long, default_value_t = 8, value_parser = parse_relation_limit)]
         relation_limit: usize,
+        #[arg(long)]
+        compact: bool,
+        #[arg(long, default_value_t = 12_000, value_parser = parse_max_bytes)]
+        max_bytes: usize,
     },
 }
 
@@ -237,6 +243,10 @@ fn parse_snippet_lines(value: &str) -> Result<usize, String> {
 
 fn parse_relation_limit(value: &str) -> Result<usize, String> {
     parse_bounded_usize(value, 0, 20, "relation-limit")
+}
+
+fn parse_max_bytes(value: &str) -> Result<usize, String> {
+    parse_bounded_usize(value, 1_000, 100_000, "max-bytes")
 }
 
 fn parse_bounded_usize(value: &str, min: usize, max: usize, name: &str) -> Result<usize, String> {

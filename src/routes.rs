@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 
 use crate::{
     index, search,
+    search_pattern::{PatternMatcher, PatternTarget, SearchPatternMode},
     workspace::{FileRecord, ScanOptions, Workspace},
 };
 
@@ -14,6 +15,7 @@ pub fn scan(
     workspace: &Workspace,
     opts: &ScanOptions,
     pattern: Option<&str>,
+    mode: SearchPatternMode,
     frameworks: &[String],
     methods: &[String],
 ) -> Result<search::QueryOutput> {
@@ -32,7 +34,7 @@ pub fn scan(
     }
     let files = workspace.scan_files(&scan_opts)?;
     let mut results = Vec::new();
-    let filter = RouteFilter::new(pattern, frameworks, methods, opts.case_sensitive);
+    let filter = RouteFilter::new(pattern, mode, frameworks, methods, opts.case_sensitive)?;
     for file in &files {
         let path = workspace.abs_path(&file.path);
         let Ok(content) = std::fs::read_to_string(path) else {
@@ -53,6 +55,7 @@ pub fn scan(
         "routes",
         json!({
             "pattern": pattern,
+            "mode": mode.as_str(),
             "framework": frameworks,
             "method": methods,
             "producer": PRODUCER
@@ -75,21 +78,25 @@ pub fn scan(
 }
 
 struct RouteFilter {
-    pattern: Option<String>,
+    pattern: Option<PatternMatcher>,
     frameworks: Vec<String>,
     methods: Vec<String>,
-    case_sensitive: bool,
 }
 
 impl RouteFilter {
     fn new(
         pattern: Option<&str>,
+        mode: SearchPatternMode,
         frameworks: &[String],
         methods: &[String],
         case_sensitive: bool,
-    ) -> Self {
-        Self {
-            pattern: pattern.map(normalize_filter_value(case_sensitive)),
+    ) -> Result<Self> {
+        Ok(Self {
+            pattern: pattern
+                .map(|value| {
+                    PatternMatcher::compile(value, mode, case_sensitive, PatternTarget::Content)
+                })
+                .transpose()?,
             frameworks: frameworks
                 .iter()
                 .map(|value| normalize_filter_value(false)(value))
@@ -98,12 +105,11 @@ impl RouteFilter {
                 .iter()
                 .map(|value| value.to_ascii_uppercase())
                 .collect(),
-            case_sensitive,
-        }
+        })
     }
 
-    fn accepts(&self, framework: &str, method: &str, route: &str) -> bool {
-        let framework = framework.to_ascii_lowercase();
+    fn accepts(&self, file: &FileRecord, route: &RouteMatch<'_>) -> bool {
+        let framework = route.framework.to_ascii_lowercase();
         if !self.frameworks.is_empty() && !self.frameworks.iter().any(|value| value == &framework) {
             return false;
         }
@@ -111,15 +117,23 @@ impl RouteFilter {
             && !self
                 .methods
                 .iter()
-                .any(|value| value == &method.to_ascii_uppercase())
+                .any(|value| value == &route.method.to_ascii_uppercase())
         {
             return false;
         }
-        let Some(pattern) = &self.pattern else {
+        let Some(matcher) = &self.pattern else {
             return true;
         };
-        let route = normalize_filter_value(self.case_sensitive)(route);
-        route.contains(pattern)
+        matcher.is_match(route.path)
+            || matcher.is_match(route.framework)
+            || matcher.is_match(route.method)
+            || matcher.is_match(route.handler_kind)
+            || route
+                .handler
+                .as_deref()
+                .is_some_and(|handler| matcher.is_match(handler))
+            || matcher.is_match(&file.path)
+            || matcher.is_match(&file.language)
     }
 }
 
@@ -158,7 +172,7 @@ fn push_route(
     route: RouteMatch<'_>,
     results: &mut Vec<Value>,
 ) {
-    if !filter.accepts(route.framework, route.method, route.path) {
+    if !filter.accepts(file, &route) {
         return;
     }
     results.push(json!({
