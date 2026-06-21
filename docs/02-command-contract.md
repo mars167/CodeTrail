@@ -92,7 +92,6 @@ codetrail symbols <query>
 codetrail calls <caller-name>
 codetrail callers <callee-name>
 codetrail explore node <query>
-codetrail explore flow <query>
 ```
 
 如果字符串包含空格、括号或 shell 特殊字符，调用方必须按普通 shell 规则加引号；
@@ -152,21 +151,6 @@ codetrail explore node <query> \
 - `relations` 始终是 `inferred_candidate` 候选关系；fallback、截断和关系候选都会
   进入 caveats。
 
-`explore flow <query>` 是给 agent 的低 token flow bundle 原语：
-
-```bash
-codetrail explore flow <query> \
-  [--max-nodes 8] [--snippet-lines 8] [--relation-limit 8] [--max-bytes 12000]
-```
-
-- 输入可以是自然语言短语、功能名或 symbol terms。命令会扩展 query terms，
-  用 `defs`/`symbols` 收集候选节点，并为前几个节点补 capped inferred relationships。
-- 输出为一个结果对象，包含 `nodes`、`relationships`、`nodeCount`、
-  `relationshipCount` 和 `truncated`。节点带短 `snippet` 和 `citeTarget`；
-  relationships 带 `from`、`to`、`kind`、定位和 `citeTarget`。
-- 该命令是启发式聚合，不是任务分析器；所有 relationships 仍是
-  `inferred_candidate`，必须用源码范围验证。
-
 Go、Rust、Python、TypeScript、JavaScript、Java、Kotlin、Ruby 和 Swift 有
 tree-sitter parser fallback；其他语言的关系查询主要依赖 fresh graph/SCIP
 派生结果。所有
@@ -177,7 +161,7 @@ tree-sitter parser fallback；其他语言的关系查询主要依赖 fresh grap
 
 Index-backed discovery 命令包括 `find`、`grep`、`files`、`find-path`、
 `glob`、`defs`、`refs`、`symbols`、`routes`、`calls`、`callers`、
-`explore node` 和 `explore flow`。
+`explore node`。
 CLI/MCP 不再暴露 `list`、`tree` 或 `read`；源码验证由宿主编辑器或 Agent read
 工具按结果中的 `path` 和 `range` 完成。
 
@@ -241,9 +225,6 @@ public JSON 不暴露内部计时和扫描统计。
 - MCP 的 `codetrail_explore_node` 对应 CLI `explore node`，接受
   `query`、`maxCandidates`、`snippetLines`、`relationLimit`、`compact`、
   `maxBytes` 与常规 scope/filter 参数，输出仍为公开 `results/page/caveats` 投影。
-- MCP 的 `codetrail_explore_flow` 对应 CLI `explore flow`，接受
-  `query`、`maxNodes`、`snippetLines`、`relationLimit`、`maxBytes` 与常规
-  scope/filter 参数，输出仍为公开 `results/page/caveats` 投影。
 
 ## 输出契约
 

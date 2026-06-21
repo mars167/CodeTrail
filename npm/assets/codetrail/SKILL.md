@@ -17,7 +17,7 @@ It can return:
 
 - source/path facts;
 - symbols, definitions, references, routes, calls, and callers;
-- bounded `explore flow` and compact `explore node` evidence;
+- compact `explore node` evidence;
 - index freshness and semantic provider status;
 - reliability labels and caveats.
 
@@ -44,54 +44,64 @@ cargo run --quiet -- <command> ...
 
 Use `--path <dir>` when the target checkout is not the current directory.
 
-## Fast Path
+## Search Strategy
 
-For multi-step repository investigations:
+For multi-step repository investigations, first run one compact preflight:
 
 ```bash
 codetrail --output json index status --summary
-codetrail --output json explore flow "<feature or flow>" --max-nodes 8 --snippet-lines 8 --relation-limit 8 --max-bytes 12000
 ```
 
-Use compact node exploration only when the flow bundle misses an obvious node:
+Then choose the cheapest evidence command from the query shape. Prefer
+`compact-json` after preflight unless you need full pagination metadata.
+
+- Route, endpoint, handler, filter, or middleware questions: start with
+  `routes` and narrow by path, framework term, directory, extension, or regex.
+- Known class, function, method, interface, or identifier: start with `defs`
+  or `symbols`, then use `refs`, `calls`, or `callers` only for the few names
+  that matter.
+- Unknown names: do one bounded discovery step with `find-path`, `files`,
+  `glob`, or a scoped `find`/`grep`, then return to navigation commands.
+- Config, templates, SQL/XML/YAML, generated files, or other non-code
+  artifacts: use scoped path/text commands; semantic navigation may not cover
+  those files.
+- Ambiguous single-node anchors: use compact `explore node` only after cheaper
+  commands cannot identify the path, and keep the first budget small.
+
+Common narrow commands:
 
 ```bash
-codetrail --output json explore node <name> --compact --max-candidates 2 --snippet-lines 8 --relation-limit 4 --max-bytes 8000
+codetrail --output compact-json routes <term> --limit 10
+codetrail --output compact-json routes <regex> --mode regex --limit 10
+codetrail --output compact-json defs <name> --limit 5
+codetrail --output compact-json symbols <name> --limit 5
+codetrail --output compact-json refs <name> --limit 10
+codetrail --output compact-json calls <name> --limit 10
+codetrail --output compact-json callers <name> --limit 10
 ```
 
-Use one narrow supplement only when still needed:
+Discovery and text fallback commands:
 
 ```bash
-codetrail --output json defs <name> --limit 10
-codetrail --output json symbols <name> --limit 10
-codetrail --output json refs <name> --limit 20
-codetrail --output json calls <name> --limit 20
-codetrail --output json callers <name> --limit 20
-codetrail --output json routes <term> --limit 20
-codetrail --output json routes <regex> --mode regex --limit 20
+codetrail --output compact-json files <substring> --limit 10
+codetrail --output compact-json find-path <substring> --limit 10
+codetrail --output compact-json glob '<pattern>' --limit 10
+codetrail --output compact-json find <literal> --limit 10
+codetrail --output compact-json grep <regex> --limit 10
 ```
 
-Use path discovery to find names or reduce scope:
+Single-node exploration fallback:
 
 ```bash
-codetrail --output json files <substring> --limit 20
-codetrail --output json find-path <substring> --limit 20
-codetrail --output json glob '<pattern>' --limit 20
+codetrail --output compact-json explore node <name> --compact --max-candidates 2 --snippet-lines 3 --relation-limit 2 --max-bytes 5000
 ```
 
-Use content search only when the task is literal text, the index is missing or
-stale, the language is unsupported, candidate names are unknown, or navigation
-returns no useful results:
-
-```bash
-codetrail --output json find <literal> --limit 20
-codetrail --output json grep <regex> --limit 20
-```
+Increase to `--max-candidates 4`, `--snippet-lines 4`, or `--max-bytes 8000`
+only when the first compact result proves the path but lacks enough evidence.
 
 ## Core Commands
 
 - `index status --summary`: compact index and semantic coverage status.
-- `explore flow <query>`: compact flow bundle with nodes, short snippets, and capped relationships.
 - `explore node <query> --compact`: bounded defs -> symbols -> files exploration for one node.
 - `defs <name>`: definition candidates; prefers SCIP.
 - `symbols <name>`: symbol candidates; prefers SCIP.
@@ -146,7 +156,8 @@ File-only paths are leads, not evidence.
 
 - Do not call nonexistent `codetrail read`, `codetrail list`, or `codetrail tree`.
 - Do not treat `parser_fact` or `inferred_candidate` as `precise_fact`.
-- Do not use `find`/`grep` before `explore flow` or compact `explore node` when likely names exist.
+- Do not invent broad flow commands; use cheap primitives and only bounded `explore node` for one ambiguous anchor.
+- Do not use broad `find`/`grep` before navigation when likely symbols, routes, or paths exist.
 - Do not paste whole files into the conversation when a range or snippet is enough.
 - Do not add fields to public JSON casually; the public shape is `results`, `page`, `caveats`.
 - Do not load long provider tables or agent schemas by default.

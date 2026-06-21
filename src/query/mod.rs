@@ -176,25 +176,6 @@ impl ExploreNodeOptions {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct ExploreFlowOptions {
-    pub max_nodes: usize,
-    pub snippet_lines: usize,
-    pub relation_limit: usize,
-    pub max_bytes: usize,
-}
-
-impl ExploreFlowOptions {
-    pub fn bounded(max_nodes: usize, snippet_lines: usize, relation_limit: usize) -> Self {
-        Self {
-            max_nodes: max_nodes.clamp(1, 20),
-            snippet_lines: snippet_lines.clamp(1, 40),
-            relation_limit: relation_limit.min(20),
-            max_bytes: 12_000,
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // QueryService
 // ---------------------------------------------------------------------------
@@ -407,6 +388,7 @@ impl QueryService {
                 let mut index = precise.index;
                 if let Some(config) = config_index::defs(&self.workspace, &scan, identifier)? {
                     append_results(&mut results, config.results);
+                    truncate_results_to_limit(&mut results, scan.limit);
                     append_config_index(&mut index, config.index);
                 }
                 let response = output::response_with_index(
@@ -437,6 +419,7 @@ impl QueryService {
         let parser_had_results = has_results(&results);
         if let Some(config) = config_index::defs(&self.workspace, &scan, identifier)? {
             append_results(&mut results, config.results);
+            truncate_results_to_limit(&mut results, scan.limit);
         }
         if !has_results(&results) {
             if let Some(precise) = precise_empty {
@@ -496,6 +479,7 @@ impl QueryService {
                     let mut index = precise.index;
                     if let Some(config) = config_index::refs(&self.workspace, &scan, identifier)? {
                         append_results(&mut results, config.results);
+                        truncate_results_to_limit(&mut results, scan.limit);
                         append_config_index(&mut index, config.index);
                     }
                     return Ok(self.finalize(output::response_with_index(
@@ -534,6 +518,7 @@ impl QueryService {
         let source_had_results = has_results(&qo.results);
         if let Some(config) = config_index::refs(&self.workspace, &scan, identifier)? {
             append_results(&mut qo.results, config.results);
+            truncate_results_to_limit(&mut qo.results, scan.limit);
             append_config_index(&mut qo.index, config.index);
         }
         if !has_results(&qo.results) {
@@ -914,166 +899,6 @@ impl QueryService {
         ))
     }
 
-    pub fn explore_flow(
-        &self,
-        query: &str,
-        opts: &QueryOptions,
-        flow: ExploreFlowOptions,
-    ) -> Result<Value> {
-        let flow = ExploreFlowOptions {
-            max_nodes: flow.max_nodes.clamp(1, 20),
-            snippet_lines: flow.snippet_lines.clamp(1, 40),
-            relation_limit: flow.relation_limit.min(20),
-            max_bytes: flow.max_bytes.clamp(1_000, 100_000),
-        };
-        let mut query_opts = opts.clone();
-        query_opts.limit = flow.max_nodes;
-        query_opts.allow_broad = true;
-        let code_options = CodeContextOptions {
-            include_code: true,
-            code_context: 0,
-            code_max_lines: flow.snippet_lines,
-        };
-        let variants = flow_query_variants(query);
-        let mut warnings = vec![
-            "flow_heuristic: explore flow expands query terms and inferred relations; verify cited ranges"
-                .to_string(),
-        ];
-        let mut nodes = Vec::<Value>::new();
-        let mut relationships = Vec::<Value>::new();
-        let mut seen_nodes = std::collections::BTreeSet::new();
-        let mut relation_seen = false;
-        let mut relation_truncated = false;
-        let mut source_truncated = false;
-
-        for variant in variants {
-            if nodes.len() >= flow.max_nodes {
-                break;
-            }
-            let mut producer = "defs";
-            let mut response = self.defs_with_code(&variant, &query_opts, &code_options)?;
-            if !has_results(&response["results"]) {
-                producer = "symbols";
-                response = self.symbols_with_code(&variant, &query_opts, &code_options)?;
-            }
-            if !has_results(&response["results"]) {
-                continue;
-            }
-            warnings.extend(warning_strings(&response));
-            for result in response["results"].as_array().into_iter().flatten() {
-                if nodes.len() >= flow.max_nodes {
-                    break;
-                }
-                let remaining_relations = flow.relation_limit.saturating_sub(relationships.len());
-                let relation_limit = if nodes.len() < 3 {
-                    remaining_relations.min(4)
-                } else {
-                    0
-                };
-                let (relations, relation_warnings) =
-                    self.explore_relations(result, &variant, &query_opts, relation_limit)?;
-                warnings.extend(relation_warnings);
-                let item = compact_explore_result(
-                    &self.workspace,
-                    result,
-                    producer,
-                    response
-                        .pointer("/reliability/level")
-                        .and_then(Value::as_str),
-                    flow.snippet_lines,
-                    Some(&relations),
-                    relation_limit,
-                )?;
-                let key = flow_node_key(&item);
-                if !seen_nodes.insert(key) {
-                    continue;
-                }
-                relation_seen |= relations
-                    .as_object()
-                    .is_some_and(|_| relation_has_items(&relations).unwrap_or(false));
-                relation_truncated |= relations
-                    .get("truncated")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                source_truncated |= item
-                    .get("snippetTruncated")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                append_flow_relationships(
-                    &mut relationships,
-                    relation_identifier(&item).unwrap_or(&variant),
-                    &relations,
-                    flow.relation_limit,
-                );
-                nodes.push(item);
-            }
-        }
-
-        if relation_seen {
-            warnings.push(
-                "inferred_candidate: explore flow relationships are candidate call graph evidence"
-                    .to_string(),
-            );
-        }
-        if relation_truncated || relationships.len() >= flow.relation_limit {
-            warnings
-                .push("relations_truncated: explore flow relationships were capped".to_string());
-        }
-        if source_truncated {
-            warnings.push("source_truncated: explore flow snippets were capped".to_string());
-        }
-
-        let mut result = json!({
-            "query": query,
-            "nodes": nodes,
-            "relationships": relationships,
-            "nodeCount": 0,
-            "relationshipCount": 0,
-            "truncated": false,
-        });
-        if apply_flow_byte_budget(&mut result, flow.max_bytes) {
-            result["truncated"] = Value::Bool(true);
-            warnings.push(format!(
-                "output_truncated: explore flow result was capped at {} bytes",
-                flow.max_bytes
-            ));
-        }
-        let node_count = result
-            .get("nodes")
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len);
-        let relationship_count = result
-            .get("relationships")
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len);
-        result["nodeCount"] = json!(node_count);
-        result["relationshipCount"] = json!(relationship_count);
-
-        let scan = query_opts.to_scan_options();
-        Ok(self.finalize(output::response(
-            "explore flow",
-            "explore flow",
-            scoped_query(
-                json!({
-                    "query": query,
-                    "maxNodes": flow.max_nodes,
-                    "snippetLines": flow.snippet_lines,
-                    "relationLimit": flow.relation_limit,
-                    "maxBytes": flow.max_bytes
-                }),
-                &scan,
-            ),
-            &self.workspace.snapshot_id,
-            output::parser_fact(),
-            if node_count == 0 {
-                Value::Array(Vec::new())
-            } else {
-                json!([result])
-            },
-            dedupe_warnings(warnings),
-        )))
-    }
-
     // ------------------------------------------------------------------
     //  Relation queries  (graph → tree-sitter fallback)
     // ------------------------------------------------------------------
@@ -1242,6 +1067,15 @@ fn append_results(target: &mut Value, extra: Value) {
     };
     if let Value::Array(mut extra_items) = extra {
         target_items.append(&mut extra_items);
+    }
+}
+
+fn truncate_results_to_limit(results: &mut Value, limit: usize) {
+    if limit == 0 {
+        return;
+    }
+    if let Some(items) = results.as_array_mut() {
+        items.truncate(limit);
     }
 }
 
@@ -1486,221 +1320,6 @@ fn relation_has_items(relations: &Value) -> Option<bool> {
     )
 }
 
-fn flow_query_variants(query: &str) -> Vec<String> {
-    let mut variants = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    let mut tokens = Vec::new();
-    let mut seen_tokens = std::collections::BTreeSet::new();
-    let mut push = |value: String| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            return;
-        }
-        let key = trimmed.to_ascii_lowercase();
-        if seen.insert(key) {
-            variants.push(trimmed.to_string());
-        }
-    };
-    let mut push_token = |value: String| {
-        let token = value.trim().to_ascii_lowercase();
-        if token.len() >= 3 && seen_tokens.insert(token.clone()) {
-            tokens.push(token);
-        }
-    };
-    push(query.to_string());
-    let terms = query
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .filter(|token| token.len() >= 3)
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    for term in &terms {
-        push(term.to_string());
-        push(term.to_ascii_lowercase());
-        push_token(term.to_string());
-        let words = identifier_words(term);
-        for word in &words {
-            push(word.to_string());
-            push_token(word.to_string());
-        }
-        if !words.is_empty() {
-            let refs = words.iter().map(String::as_str).collect::<Vec<_>>();
-            push(camel_case(&refs));
-            push(lower_camel_case(&refs));
-        }
-    }
-    for token in &tokens {
-        push(token.to_string());
-        push(camel_case(&[token.as_str()]));
-        push(lower_camel_case(&[token.as_str()]));
-    }
-    for pair in tokens.windows(2) {
-        let words = pair.iter().map(String::as_str).collect::<Vec<_>>();
-        let camel = camel_case(&words);
-        push(camel.clone());
-        push(lower_camel_case(&words));
-        push(format!("Real{camel}"));
-        push(format!("getResponseWith{camel}"));
-    }
-    if tokens.len() > 1 {
-        let words = tokens.iter().map(String::as_str).collect::<Vec<_>>();
-        let camel = camel_case(&words);
-        push(camel.clone());
-        push(lower_camel_case(&words));
-        push(format!("Real{camel}"));
-        push(format!("getResponseWith{camel}"));
-    }
-    if tokens
-        .iter()
-        .any(|token| token == "okhttp" || token == "okhttpclient")
-    {
-        push("OkHttpClient".to_string());
-        push("newCall".to_string());
-    }
-    if tokens.iter().any(|token| token == "interceptor")
-        && tokens.iter().any(|token| token == "chain")
-    {
-        push("RealInterceptorChain".to_string());
-        push("getResponseWithInterceptorChain".to_string());
-        push("RealCall".to_string());
-        push("proceed".to_string());
-    }
-    variants
-}
-
-fn identifier_words(term: &str) -> Vec<String> {
-    let chars = term.chars().collect::<Vec<_>>();
-    let mut words = Vec::new();
-    let mut current = String::new();
-    for (index, ch) in chars.iter().copied().enumerate() {
-        if !ch.is_ascii_alphanumeric() {
-            continue;
-        }
-        let previous = index
-            .checked_sub(1)
-            .and_then(|prev| chars.get(prev).copied());
-        let next = chars.get(index + 1).copied();
-        let boundary = previous.is_some_and(|prev| {
-            (ch.is_ascii_uppercase() && (prev.is_ascii_lowercase() || prev.is_ascii_digit()))
-                || (ch.is_ascii_uppercase()
-                    && prev.is_ascii_uppercase()
-                    && next.is_some_and(|next| next.is_ascii_lowercase()))
-                || (ch.is_ascii_digit() && !prev.is_ascii_digit())
-                || (!ch.is_ascii_digit() && prev.is_ascii_digit())
-        });
-        if boundary && !current.is_empty() {
-            words.push(std::mem::take(&mut current));
-        }
-        current.push(ch.to_ascii_lowercase());
-    }
-    if !current.is_empty() {
-        words.push(current);
-    }
-    words
-}
-
-fn camel_case(words: &[&str]) -> String {
-    let mut output = String::new();
-    for word in words {
-        let mut chars = word.chars();
-        if let Some(first) = chars.next() {
-            output.push(first.to_ascii_uppercase());
-            output.extend(chars);
-        }
-    }
-    output
-}
-
-fn lower_camel_case(words: &[&str]) -> String {
-    let Some((first, rest)) = words.split_first() else {
-        return String::new();
-    };
-    let mut output = first.to_ascii_lowercase();
-    for word in rest {
-        let mut chars = word.chars();
-        if let Some(first) = chars.next() {
-            output.push(first.to_ascii_uppercase());
-            output.extend(chars);
-        }
-    }
-    output
-}
-
-fn flow_node_key(node: &Value) -> String {
-    let path = node.get("path").and_then(Value::as_str).unwrap_or("");
-    let range = node
-        .get("range")
-        .map(|range| serde_json::to_string(range).unwrap_or_default())
-        .unwrap_or_default();
-    let name = relation_identifier(node).unwrap_or("");
-    format!("{path}:{range}:{name}")
-}
-
-fn append_flow_relationships(
-    output: &mut Vec<Value>,
-    identifier: &str,
-    relations: &Value,
-    limit: usize,
-) {
-    if output.len() >= limit {
-        return;
-    }
-    for item in relations
-        .get("calls")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        if output.len() >= limit {
-            break;
-        }
-        output.push(flow_relationship("calls", identifier, item));
-    }
-    for item in relations
-        .get("callers")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        if output.len() >= limit {
-            break;
-        }
-        let from = item
-            .get("enclosingSymbol")
-            .and_then(Value::as_str)
-            .unwrap_or("caller");
-        let mut relationship = flow_relationship("callers", from, item);
-        if let Some(object) = relationship.as_object_mut() {
-            object.insert("to".to_string(), Value::String(identifier.to_string()));
-        }
-        output.push(relationship);
-    }
-}
-
-fn flow_relationship(kind: &str, from: &str, item: &Value) -> Value {
-    let mut object = Map::new();
-    object.insert("kind".to_string(), Value::String(kind.to_string()));
-    object.insert("from".to_string(), Value::String(from.to_string()));
-    let to = item
-        .get("target")
-        .and_then(Value::as_str)
-        .or_else(|| item.get("name").and_then(Value::as_str))
-        .unwrap_or("target");
-    object.insert("to".to_string(), Value::String(to.to_string()));
-    copy_field(item, &mut object, "path");
-    copy_field(item, &mut object, "range");
-    copy_field(item, &mut object, "language");
-    copy_field(item, &mut object, "layer");
-    if let (Some(path), Some(range)) = (
-        object.get("path").and_then(Value::as_str),
-        object.get("range"),
-    ) {
-        if let Some(target) = cite_target(path, range) {
-            object.insert("citeTarget".to_string(), Value::String(target));
-        }
-    }
-    Value::Object(object)
-}
-
 fn cite_target(path: &str, range: &Value) -> Option<String> {
     let start = range.pointer("/start/line").and_then(Value::as_u64)?;
     let end = range
@@ -1739,67 +1358,6 @@ fn apply_result_byte_budget(results: &mut Vec<Value>, max_bytes: usize) -> bool 
     while results.len() > 1 && value_json_len(&Value::Array(results.clone())) > max_bytes {
         results.pop();
         truncated = true;
-    }
-    truncated
-}
-
-fn apply_flow_byte_budget(result: &mut Value, max_bytes: usize) -> bool {
-    if value_json_len(result) <= max_bytes {
-        return false;
-    }
-    let mut truncated = false;
-    if let Some(nodes) = result.get_mut("nodes").and_then(Value::as_array_mut) {
-        truncated |= trim_snippets(nodes, 800);
-        if value_json_len(result) > max_bytes {
-            if let Some(nodes) = result.get_mut("nodes").and_then(Value::as_array_mut) {
-                truncated |= trim_snippets(nodes, 400);
-            }
-        }
-        if value_json_len(result) > max_bytes {
-            if let Some(nodes) = result.get_mut("nodes").and_then(Value::as_array_mut) {
-                truncated |= trim_snippets(nodes, 160);
-            }
-        }
-    }
-    if value_json_len(result) > max_bytes {
-        while value_json_len(result) > max_bytes {
-            let popped = if let Some(relationships) = result
-                .get_mut("relationships")
-                .and_then(Value::as_array_mut)
-            {
-                if relationships.is_empty() {
-                    false
-                } else {
-                    relationships.pop();
-                    true
-                }
-            } else {
-                false
-            };
-            if !popped {
-                break;
-            }
-            truncated = true;
-        }
-    }
-    if value_json_len(result) > max_bytes {
-        while value_json_len(result) > max_bytes {
-            let popped = if let Some(nodes) = result.get_mut("nodes").and_then(Value::as_array_mut)
-            {
-                if nodes.len() <= 1 {
-                    false
-                } else {
-                    nodes.pop();
-                    true
-                }
-            } else {
-                false
-            };
-            if !popped {
-                break;
-            }
-            truncated = true;
-        }
     }
     truncated
 }

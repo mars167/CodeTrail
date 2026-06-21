@@ -101,9 +101,9 @@ codetrail --output json defs SymbolName
 
 1. 先调用 `codetrail --output json index status --summary`，检查 SCIP freshness 和语言覆盖。
 2. 从任务中抽取候选 symbol、type、function、method、route 或 config 名称。
-3. 首轮优先调用
-   `codetrail --output json explore flow <query> --max-nodes 8 --snippet-lines 8 --relation-limit 8 --max-bytes 12000`。
-4. 只有 flow bundle 漏掉必要节点时，才调用 compact node：
+3. 首轮优先调用最便宜的相关命令：`routes`、`defs`、`symbols`、
+   `refs`、`calls`、`callers`，或一个 bounded path/text discovery。
+4. 只有单个必要锚点仍然歧义时，才调用 compact node：
    `codetrail --output json explore node <query> --compact --max-candidates 2 --snippet-lines 8 --relation-limit 4 --max-bytes 8000`。
 5. 仍不足时，再用一个窄的 `symbols`、`defs`、`refs`、`routes`、
    `calls` 或 `callers` 补充。
@@ -126,9 +126,10 @@ codetrail --output json defs SymbolName
 Load the codetrail skill, then delegate repository investigation to the
 codetrail-evidence subagent. Do not inspect the agent template file. Do not
 force the subagent to use only CodeTrail. The subagent must use an index-first
-workflow: check codetrail index status --summary, start with explore flow,
-use compact explore node only if the flow bundle misses a needed node, use at
-most one narrow semantic/navigation supplement before find/grep, use
+workflow: check codetrail index status --summary, start with the cheapest
+route/symbol/reference/call/path primitive that matches the task, use compact
+explore node only if one necessary anchor remains ambiguous, use at most one
+narrow semantic/navigation supplement before find/grep, use
 files/find-path/glob for indexed path discovery, and explain any non-index or
 text-search fallback in index_usage.text_fallback_reason.
 Every final evidence string must be path:line or path:start-end.

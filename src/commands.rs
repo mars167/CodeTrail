@@ -11,7 +11,7 @@ use crate::{
     completions, config_index, graph, index,
     install::{IndexProviderInstallOptions, SkillInstallOptions},
     output,
-    query::{ExploreFlowOptions, ExploreNodeOptions, QueryOptions, QueryService},
+    query::{ExploreNodeOptions, QueryOptions, QueryService},
     query_input::InputPlan,
     routes, saved_query, scip_index, search,
     search_pattern::SearchPatternMode,
@@ -200,6 +200,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                     let mut index = precise.index;
                     if let Some(config) = config_index::refs(&workspace, &scan_opts, identifier)? {
                         append_results(&mut results, config.results);
+                        truncate_results_to_limit(&mut results, scan_opts.limit);
                         append_config_index(&mut index, config.index);
                     }
                     return emit_response(
@@ -245,6 +246,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             let source_had_results = has_results(&query_output.results);
             if let Some(config) = config_index::refs(&workspace, &scan_opts, identifier)? {
                 append_results(&mut query_output.results, config.results);
+                truncate_results_to_limit(&mut query_output.results, scan_opts.limit);
                 append_config_index(&mut query_output.index, config.index);
             }
             if !has_results(&query_output.results) {
@@ -456,6 +458,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                     let mut index = precise.index;
                     if let Some(config) = config_index::defs(&workspace, &scan_opts, identifier)? {
                         append_results(&mut results, config.results);
+                        truncate_results_to_limit(&mut results, scan_opts.limit);
                         append_config_index(&mut index, config.index);
                     }
                     let response = code_context::enrich_response(
@@ -496,6 +499,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             let parser_had_results = has_results(&results);
             if let Some(config) = config_index::defs(&workspace, &scan_opts, identifier)? {
                 append_results(&mut results, config.results);
+                truncate_results_to_limit(&mut results, scan_opts.limit);
             }
             if !has_results(&results) {
                 if let Some(precise) = precise_empty {
@@ -728,28 +732,6 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                         snippet_lines: *snippet_lines,
                         relation_limit: *relation_limit,
                         compact: *compact,
-                        max_bytes: *max_bytes,
-                    },
-                )?;
-                exit_code = output::no_match_exit(&response["results"]);
-                response
-            }
-            ExploreCommand::Flow {
-                query,
-                max_nodes,
-                snippet_lines,
-                relation_limit,
-                max_bytes,
-            } => {
-                let service = QueryService::from_workspace(workspace.clone());
-                let opts = QueryOptions::from_scan_options(&scan_opts, cli.context);
-                let response = service.explore_flow(
-                    query,
-                    &opts,
-                    ExploreFlowOptions {
-                        max_nodes: *max_nodes,
-                        snippet_lines: *snippet_lines,
-                        relation_limit: *relation_limit,
                         max_bytes: *max_bytes,
                     },
                 )?;
@@ -1298,6 +1280,15 @@ fn append_results(target: &mut Value, extra: Value) {
     };
     if let Value::Array(mut extra_items) = extra {
         target_items.append(&mut extra_items);
+    }
+}
+
+fn truncate_results_to_limit(results: &mut Value, limit: usize) {
+    if limit == 0 {
+        return;
+    }
+    if let Some(items) = results.as_array_mut() {
+        items.truncate(limit);
     }
 }
 

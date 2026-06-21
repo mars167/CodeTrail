@@ -20,11 +20,15 @@ For multi-step repository investigations:
 
 ```bash
 codetrail --output json index status --summary
-codetrail --output json explore flow "<feature or flow>" --max-nodes 8 --snippet-lines 8 --relation-limit 8 --max-bytes 12000
 ```
 
-Use compact node exploration only when the flow bundle misses a necessary
-symbol:
+Choose the cheapest matching primitive after preflight: `routes` for endpoints
+and handlers, `defs` or `symbols` for known identifiers, `refs`/`calls`/
+`callers` only for relevant names, and one bounded path/text discovery when
+names are unknown.
+
+Use compact node exploration only when one necessary symbol or path anchor
+remains ambiguous:
 
 ```bash
 codetrail --output json explore node <name> --compact --max-candidates 2 --snippet-lines 8 --relation-limit 4 --max-bytes 8000

@@ -599,6 +599,18 @@ fn precise_scip_results_include_matching_mybatis_xml_config_facts() {
     assert_eq!(defs["index"]["source"], "scip_native");
     assert_eq!(defs["index"]["configFacts"]["source"], "config_facts");
 
+    let limited_defs_output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "selectUserByLoginName", "--limit", "1"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let limited_defs: Value = serde_json::from_slice(&limited_defs_output).unwrap();
+    assert_eq!(limited_defs["results"].as_array().unwrap().len(), 1);
+
     let symbols_output = codetrail()
         .arg("--path")
         .arg(dir.path())
@@ -639,6 +651,18 @@ fn precise_scip_results_include_matching_mybatis_xml_config_facts() {
             && result["layer"] == "config_fact"
             && result["reliability"] == "config_fact"
     }));
+
+    let limited_refs_output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["refs", "SysUserResult", "--limit", "1"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let limited_refs: Value = serde_json::from_slice(&limited_refs_output).unwrap();
+    assert_eq!(limited_refs["results"].as_array().unwrap().len(), 1);
 }
 
 #[test]
@@ -2115,59 +2139,6 @@ class Response
         .as_str()
         .unwrap()
         .contains("RealCall.kt:"));
-}
-
-#[test]
-fn explore_flow_returns_compact_nodes_and_relationships() {
-    let dir = tempdir().unwrap();
-    fs::create_dir_all(dir.path().join("src")).unwrap();
-    fs::write(
-        dir.path().join("src/lib.rs"),
-        "fn alpha() {\n    beta();\n}\n\nfn beta() {}\n",
-    )
-    .unwrap();
-
-    let flow = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args([
-            "explore",
-            "flow",
-            "alpha beta",
-            "--max-nodes",
-            "4",
-            "--snippet-lines",
-            "4",
-            "--relation-limit",
-            "4",
-            "--max-bytes",
-            "6000",
-        ])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    assert!(flow.len() < 8_000, "flow output too large: {}", flow.len());
-    let flow_json: Value = serde_json::from_slice(&flow).unwrap();
-    let result = &flow_json["results"][0];
-    let nodes = result["nodes"].as_array().unwrap();
-    assert!(nodes.len() <= 4);
-    assert!(nodes.iter().any(|node| node["name"] == "alpha"));
-    assert!(nodes.iter().any(|node| node["name"] == "beta"));
-    assert!(nodes.iter().all(|node| node["citeTarget"]
-        .as_str()
-        .unwrap()
-        .starts_with("src/lib.rs:")));
-    assert!(result["relationships"].as_array().unwrap().len() <= 4);
-    let caveats = flow_json
-        .get("caveats")
-        .and_then(Value::as_array)
-        .or_else(|| flow_json.get("warnings").and_then(Value::as_array))
-        .expect("flow caveats or warnings");
-    assert!(caveats
-        .iter()
-        .any(|caveat| caveat["code"] == "flow_heuristic"));
 }
 
 #[test]
@@ -6937,28 +6908,11 @@ fn mcp_stdio_explore_node_is_registered_and_returns_public_projection() {
             }
         }
     });
-    let flow_request = json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "tools/call",
-        "params": {
-            "name": "codetrail_explore_flow",
-            "arguments": {
-                "query": "alpha beta",
-                "maxNodes": 4,
-                "snippetLines": 4,
-                "relationLimit": 4,
-                "maxBytes": 6000
-            }
-        }
-    });
     let output = codetrail()
         .arg("--path")
         .arg(dir.path())
         .arg("mcp")
-        .write_stdin(format!(
-            "{list_request}\n{explore_request}\n{flow_request}\n"
-        ))
+        .write_stdin(format!("{list_request}\n{explore_request}\n"))
         .assert()
         .success()
         .get_output()
@@ -6974,7 +6928,7 @@ fn mcp_stdio_explore_node_is_registered_and_returns_public_projection() {
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "codetrail_explore_node"));
-    assert!(tools
+    assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "codetrail_explore_flow"));
 
@@ -6989,18 +6943,6 @@ fn mcp_stdio_explore_node_is_registered_and_returns_public_projection() {
         .as_str()
         .unwrap()
         .contains("fn alpha"));
-
-    let flow: Value =
-        serde_json::from_str(lines[2]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
-    assert!(flow.get("results").is_some());
-    assert!(flow.get("page").is_some());
-    assert!(flow.get("caveats").is_some());
-    assert_eq!(flow.as_object().unwrap().len(), 3);
-    assert!(flow["results"][0]["nodes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|node| node["name"] == "alpha"));
 }
 
 // ---------------------------------------------------------------------------
