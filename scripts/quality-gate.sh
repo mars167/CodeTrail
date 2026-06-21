@@ -4,7 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_TEST_REPO="$ROOT/../RuoYi"
 TEST_REPO="${TEST_REPO:-$DEFAULT_TEST_REPO}"
-CS_BIN="${CS_BIN:-$ROOT/target/release/codetrail}"
+DEFAULT_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
+CS_BIN="${CS_BIN:-$DEFAULT_TARGET_DIR/release/codetrail}"
 CARGO_BIN="${CARGO_BIN:-}"
 
 PASS=0
@@ -28,7 +29,9 @@ Environment:
   TEST_REPO  Fixture repository path for CLI smoke and benchmarks.
   REQUIRE_TEST_REPO
              When set to 1, missing TEST_REPO fails smoke/bench gates.
-  CS_BIN     codetrail binary path. Defaults to target/release/codetrail.
+  CS_BIN     codetrail binary path. Defaults to
+             $CARGO_TARGET_DIR/release/codetrail when CARGO_TARGET_DIR is set,
+             otherwise target/release/codetrail.
   CARGO_BIN  Cargo binary path. Defaults to `rustup which cargo` when available.
 USAGE
 }
@@ -181,9 +184,9 @@ run_ruoyi_smoke() {
     glob '**/*Controller.java'
 
   assert_codetrail \
-    "read exact range returns verified source fact" \
-    '.results[0].path == "ruoyi-admin/src/main/java/com/ruoyi/RuoYiApplication.java" and .results[0].range.start.line == 12 and .results[0].range.end.line == 16' \
-    read ruoyi-admin/src/main/java/com/ruoyi/RuoYiApplication.java:12-16
+    "defs include-code returns definition source excerpt" \
+    '(.results | length >= 1) and .results[0].path == "ruoyi-admin/src/main/java/com/ruoyi/RuoYiApplication.java" and .results[0].role == "definition" and .results[0].source.path == "ruoyi-admin/src/main/java/com/ruoyi/RuoYiApplication.java" and (.results[0].source.content | contains("SpringApplication.run(RuoYiApplication.class, args);")) and (.results[0].source.truncated == false)' \
+    defs RuoYiApplication --include-code
 
   assert_codetrail \
     "refs ShiroUtils returns source references" \
