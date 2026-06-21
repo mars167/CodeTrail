@@ -87,7 +87,7 @@ pub fn replay(workspace: &Workspace, name: &str, mode: &ReplaySnapshot) -> Resul
         .ok_or_else(|| anyhow!("saved query is missing query"))?;
 
     let mut value = match command {
-        "search" | "find" | "grep" => {
+        "find" | "grep" => {
             let default_mode = if command == "grep" {
                 "regex"
             } else {
@@ -133,12 +133,19 @@ pub fn replay(workspace: &Workspace, name: &str, mode: &ReplaySnapshot) -> Resul
             &opts,
             &code_context::options_from_query(query),
         )?,
-        "routes" => service.routes(
-            query.get("pattern").and_then(Value::as_str),
-            &string_array(query.get("framework")),
-            &string_array(query.get("method")),
-            &opts,
-        )?,
+        "routes" => {
+            let mode = query
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or("literal");
+            service.routes_with_mode(
+                query.get("pattern").and_then(Value::as_str),
+                SearchPatternMode::parse(mode)?,
+                &string_array(query.get("framework")),
+                &string_array(query.get("method")),
+                &opts,
+            )?
+        }
         "calls" => service.calls(required_str(query, "identifier")?, &opts)?,
         "callers" => service.callers(required_str(query, "identifier")?, &opts)?,
         other => return Err(anyhow!("saved query command is not replayable: {other}")),
@@ -363,7 +370,6 @@ fn is_replayable_command(command: &str) -> bool {
     matches!(
         command,
         "find"
-            | "search"
             | "grep"
             | "files"
             | "find-path"

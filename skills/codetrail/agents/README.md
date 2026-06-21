@@ -45,7 +45,7 @@ The subagent uses a low-token index-first workflow: check
 Use compact `explore node --compact --max-candidates 2 --snippet-lines 8 --relation-limit 4 --max-bytes 8000`
 only when the flow bundle misses a needed node, then at most one narrow
 `symbols`/`defs`/`refs`/`routes`/`calls`/`callers` supplement when needed.
-Use `files`, `find-path`, or `glob` for path discovery and `search`/`find`/`grep` only
+Use `files`, `find-path`, or `glob` for path discovery and `find`/`grep` only
 for explicit fallback cases. `list`, `tree`, and `read` are not CodeTrail
 CLI/MCP commands.
 
@@ -79,6 +79,6 @@ The subagent uses a low-token index-first workflow: check
 Use compact `explore node --compact --max-candidates 2 --snippet-lines 8 --relation-limit 4 --max-bytes 8000`
 only when the flow bundle misses a needed node, then at most one narrow
 `symbols`/`defs`/`refs`/`routes`/`calls`/`callers` supplement when needed.
-Use `files`, `find-path`, or `glob` for path discovery and `search`/`find`/`grep` only
+Use `files`, `find-path`, or `glob` for path discovery and `find`/`grep` only
 for explicit fallback cases. `list`, `tree`, and `read` are not CodeTrail
 CLI/MCP commands.

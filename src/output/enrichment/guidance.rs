@@ -5,8 +5,7 @@ use super::command::command_action;
 pub(in crate::output) fn supports_no_match(command: &str, canonical_command: &str) -> bool {
     matches!(
         command,
-        "search"
-            | "find"
+        "find"
             | "grep"
             | "files"
             | "find-path"
@@ -60,15 +59,17 @@ fn no_match_next_actions(value: &Value) -> Vec<Value> {
 
     let mut actions = Vec::new();
     if canonical == "find" && query.get("mode").and_then(Value::as_str) == Some("literal") {
-        let try_regex = if command == "search" {
-            vec!["codetrail", "search", "--regex", term]
-        } else {
-            vec!["codetrail", "grep", term]
-        };
         actions.push(command_action(
             "try_regex",
-            try_regex,
+            vec!["codetrail", "grep", term],
             "try the same text as a regex search",
+        ));
+    }
+    if canonical == "routes" && query.get("mode").and_then(Value::as_str) == Some("literal") {
+        actions.push(command_action(
+            "try_regex",
+            vec!["codetrail", "routes", term, "--mode", "regex"],
+            "try the same route search as a regex",
         ));
     }
     if matches!(canonical, "find" | "defs" | "refs" | "symbols") {

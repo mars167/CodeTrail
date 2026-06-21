@@ -233,16 +233,6 @@ impl QueryService {
         self.text_search("find", text, SearchPatternMode::Literal, opts.context, opts)
     }
 
-    /// Content search with an explicit pattern mode.
-    pub fn search(
-        &self,
-        query: &str,
-        mode: SearchPatternMode,
-        opts: &QueryOptions,
-    ) -> Result<Value> {
-        self.text_search("search", query, mode, opts.context, opts)
-    }
-
     /// Regex search (delegates to `search::find` with mode=regex).
     pub fn grep(&self, pattern: &str, opts: &QueryOptions) -> Result<Value> {
         self.text_search(
@@ -698,14 +688,32 @@ impl QueryService {
         methods: &[String],
         opts: &QueryOptions,
     ) -> Result<Value> {
+        self.routes_with_mode(
+            pattern,
+            SearchPatternMode::Literal,
+            frameworks,
+            methods,
+            opts,
+        )
+    }
+
+    pub fn routes_with_mode(
+        &self,
+        pattern: Option<&str>,
+        mode: SearchPatternMode,
+        frameworks: &[String],
+        methods: &[String],
+        opts: &QueryOptions,
+    ) -> Result<Value> {
         let scan = opts.to_scan_options();
-        let output = routes::scan(&self.workspace, &scan, pattern, frameworks, methods)?;
+        let output = routes::scan(&self.workspace, &scan, pattern, mode, frameworks, methods)?;
         let response = output::response_with_index(
             "routes",
             "routes",
             scoped_query(
                 json!({
                     "pattern": pattern,
+                    "mode": mode.as_str(),
                     "framework": frameworks,
                     "method": methods,
                     "producer": "framework_route_scanner"

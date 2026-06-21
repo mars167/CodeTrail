@@ -109,19 +109,6 @@ pub enum OutputFormat {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    Search {
-        query: String,
-        #[arg(long, value_enum, help = "Content match mode")]
-        mode: Option<ContentPatternMode>,
-        #[arg(long, conflicts_with_all = ["literal", "wildcard", "mode"], help = "Use regex content matching")]
-        regex: bool,
-        #[arg(long, conflicts_with_all = ["regex", "wildcard", "mode"], help = "Use literal content matching")]
-        literal: bool,
-        #[arg(long, conflicts_with_all = ["regex", "literal", "mode"], help = "Use wildcard content matching")]
-        wildcard: bool,
-        #[arg(long)]
-        context: Option<u16>,
-    },
     Find {
         text: String,
         #[arg(long, value_enum, default_value_t = ContentPatternMode::Literal, help = "Content match mode")]
@@ -173,6 +160,8 @@ pub enum Command {
     },
     Routes {
         pattern: Option<String>,
+        #[arg(long, value_enum, default_value_t = ContentPatternMode::Literal, help = "Route search match mode")]
+        mode: ContentPatternMode,
         #[arg(long)]
         framework: Vec<String>,
         #[arg(long)]

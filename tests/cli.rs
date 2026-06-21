@@ -255,7 +255,6 @@ fn schema_contract_covers_core_commands_and_errors() {
     fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
 
     for args in [
-        vec!["search", "main"],
         vec!["files", "main"],
         vec!["glob", "**/*.rs"],
         vec!["status"],
@@ -861,42 +860,6 @@ fn l0_literal_and_regex_modes_are_predictable() {
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src/main.rs"), "literal a.b\nregex acb\n").unwrap();
 
-    let search_output = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["search", "a.b"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let search_json: Value = serde_json::from_slice(&search_output).unwrap();
-    assert_eq!(search_json["command"], "search");
-    assert_eq!(search_json["canonicalCommand"], "find");
-    assert_eq!(search_json["query"]["mode"], "literal");
-    assert_eq!(search_json["results"].as_array().unwrap().len(), 1);
-    assert_eq!(search_json["results"][0]["matchText"], "a.b");
-
-    let search_regex_output = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["search", "--regex", "a.b"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let search_regex_json: Value = serde_json::from_slice(&search_regex_output).unwrap();
-    let search_regex_matches: Vec<&str> = search_regex_json["results"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|result| result["matchText"].as_str())
-        .collect();
-    assert_eq!(search_regex_json["query"]["mode"], "regex");
-    assert!(search_regex_matches.contains(&"a.b"));
-    assert!(search_regex_matches.contains(&"acb"));
-
     let find_output = codetrail()
         .arg("--path")
         .arg(dir.path())
@@ -1060,35 +1023,6 @@ fn find_no_match_returns_structured_next_actions() {
 }
 
 #[test]
-fn search_no_match_suggests_regex_search() {
-    let dir = tempdir().unwrap();
-    fs::create_dir_all(dir.path().join("src")).unwrap();
-    fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
-
-    let output = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["search", "MissingThing"])
-        .assert()
-        .code(2)
-        .get_output()
-        .stdout
-        .clone();
-    let json: Value = serde_json::from_slice(&output).unwrap();
-
-    assert_eq!(json["noMatch"]["query"]["pattern"], "MissingThing");
-    assert!(json["nextActions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|action| action["kind"] == "try_regex"
-            && action["command"]
-                .as_str()
-                .unwrap()
-                .contains("search --regex MissingThing")));
-}
-
-#[test]
 fn invalid_regex_is_not_reported_as_no_match() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
@@ -1111,7 +1045,7 @@ fn invalid_regex_is_not_reported_as_no_match() {
     let output = codetrail()
         .arg("--path")
         .arg(dir.path())
-        .args(["search", "--regex", "["])
+        .args(["routes", "[", "--mode", "regex"])
         .assert()
         .failure()
         .get_output()
@@ -1399,6 +1333,59 @@ end
 }
 
 #[test]
+fn routes_search_matches_route_metadata_and_supports_regex() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("modules/ruoyi-quartz/config")).unwrap();
+    fs::create_dir_all(dir.path().join("config")).unwrap();
+    fs::write(
+        dir.path().join("modules/ruoyi-quartz/config/routes.rb"),
+        "get \"/monitor/job\", to: \"jobs#index\"\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("config/routes.rb"),
+        "get \"/health\", to: \"health#show\"\n",
+    )
+    .unwrap();
+
+    let by_path = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["routes", "quartz"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let by_path_json: Value = serde_json::from_slice(&by_path).unwrap();
+    let by_path_results = by_path_json["results"].as_array().unwrap();
+
+    assert_eq!(by_path_json["query"]["mode"], "literal");
+    assert_eq!(by_path_results.len(), 1);
+    assert_eq!(by_path_results[0]["routePattern"], "/monitor/job");
+    assert!(by_path_results[0]["path"]
+        .as_str()
+        .unwrap()
+        .contains("ruoyi-quartz"));
+
+    let by_handler_regex = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["routes", "jobs#.*", "--mode", "regex"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let by_handler_json: Value = serde_json::from_slice(&by_handler_regex).unwrap();
+    let by_handler_results = by_handler_json["results"].as_array().unwrap();
+
+    assert_eq!(by_handler_json["query"]["mode"], "regex");
+    assert_eq!(by_handler_results.len(), 1);
+    assert_eq!(by_handler_results[0]["handler"], "jobs#index");
+}
+
+#[test]
 fn routes_scans_vapor_swift_routes() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("Sources/App")).unwrap();
@@ -1592,9 +1579,20 @@ fn routes_saved_query_replays_scope_and_filters() {
         .arg(dir.path())
         .arg("--save-query")
         .arg("rails-routes")
-        .args(["routes", "health", "--framework", "rails"])
+        .args([
+            "routes",
+            "health|missing",
+            "--mode",
+            "regex",
+            "--framework",
+            "rails",
+        ])
         .assert()
         .success();
+
+    let saved_path = dir.path().join(".codetrail/queries/rails-routes.json");
+    let saved_file: Value = serde_json::from_slice(&fs::read(&saved_path).unwrap()).unwrap();
+    assert_eq!(saved_file["query"]["mode"], "regex");
 
     let output = codetrail()
         .arg("--path")
@@ -1607,6 +1605,7 @@ fn routes_saved_query_replays_scope_and_filters() {
         .clone();
     let json: Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(json["command"], "routes");
+    assert_eq!(json["query"]["mode"], "regex");
     assert_eq!(json["results"][0]["routePattern"], "/health");
     assert_eq!(json["results"][0]["framework"], "rails");
 }
@@ -2563,48 +2562,6 @@ fn saved_query_replay_matches_direct_query_and_can_be_deleted() {
         .assert()
         .success();
     assert!(!saved_path.exists());
-}
-
-#[test]
-fn search_saved_query_replays_regex_mode() {
-    let dir = tempdir().unwrap();
-    fs::write(dir.path().join("a.txt"), "literal a.b\nregex acb\n").unwrap();
-
-    let saved_output = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .arg("--save-query")
-        .arg("search-regex")
-        .args(["search", "--regex", "a.b"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let saved_json: Value = serde_json::from_slice(&saved_output).unwrap();
-    assert_eq!(saved_json["command"], "search");
-    assert_eq!(saved_json["query"]["mode"], "regex");
-
-    let saved_path = dir.path().join(".codetrail/queries/search-regex.json");
-    let saved_file: Value = serde_json::from_slice(&fs::read(&saved_path).unwrap()).unwrap();
-    assert_eq!(saved_file["command"], "search");
-    assert_eq!(saved_file["query"]["pattern"], "a.b");
-    assert_eq!(saved_file["query"]["mode"], "regex");
-
-    let replay_output = codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["query", "replay", "search-regex"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let replay_json: Value = serde_json::from_slice(&replay_output).unwrap();
-
-    assert_eq!(replay_json["command"], "search");
-    assert_eq!(replay_json["query"]["mode"], "regex");
-    assert_eq!(replay_json["results"].as_array().unwrap().len(), 2);
 }
 
 #[test]
@@ -5165,7 +5122,7 @@ fn completions_print_shell_script_without_workspace() {
     let script = String::from_utf8(output).unwrap();
 
     assert!(script.contains("complete -F _codetrail codetrail"));
-    assert!(script.contains("search find grep files"));
+    assert!(script.contains("find grep files"));
     assert!(script.contains("build update status skipped verify clean pack unpack"));
     assert!(!script.contains("generate-scip"));
     assert!(!script.contains("import-scip"));

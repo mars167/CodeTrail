@@ -304,7 +304,8 @@ fn tool_definitions() -> Vec<ToolDef> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "pattern": { "type": "string", "description": "Optional route path substring to match" },
+                    "pattern": { "type": "string", "description": "Optional route search pattern matched against route path, handler, framework, method, file path, and language" },
+                    "mode": { "type": "string", "enum": ["literal", "regex", "wildcard"], "default": "literal", "description": "Route search match mode" },
                     "framework": { "type": "array", "items": { "type": "string" }, "description": "Framework names to include" },
                     "method": { "type": "array", "items": { "type": "string" }, "description": "HTTP methods to include" },
                     "dir": { "type": "array", "items": { "type": "string" }, "description": "Workspace-relative directories to search (OR filter)" },
@@ -657,6 +658,12 @@ impl Server {
             }
             "codetrail_routes" => {
                 let pattern = optional_str(args, "pattern");
+                let mode = optional_pattern_mode_arg(args, SearchPatternMode::Literal)?;
+                if mode == SearchPatternMode::Glob {
+                    return Err(anyhow::anyhow!(
+                        "invalid_mcp_argument: routes mode must be literal, regex, or wildcard"
+                    ));
+                }
                 let frameworks = args
                     .and_then(Value::as_object)
                     .map(|obj| extract_string_array(obj, "framework"))
@@ -665,7 +672,8 @@ impl Server {
                     .and_then(Value::as_object)
                     .map(|obj| extract_string_array(obj, "method"))
                     .unwrap_or_default();
-                self.service.routes(pattern, &frameworks, &methods, &opts)
+                self.service
+                    .routes_with_mode(pattern, mode, &frameworks, &methods, &opts)
             }
             "codetrail_explore_node" => {
                 let query = required_str(args, "query")?;
@@ -1414,6 +1422,15 @@ mod tests {
         assert_eq!(routes[0]["method"], "GET");
         assert_eq!(routes[0]["routePattern"], "/health");
         assert_eq!(routes[0]["handler"], "health#show");
+
+        let result = call_tool_json(
+            &server,
+            "codetrail_routes",
+            json!({ "pattern": "health#.*", "mode": "regex" }),
+        );
+        let routes = result["results"].as_array().unwrap();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0]["handler"], "health#show");
     }
 
     #[test]
@@ -1427,6 +1444,15 @@ mod tests {
         let parsed: Value = serde_json::from_str(&result.content[0].text).unwrap();
         assert!(!has_caveat(&parsed, "no_match"));
         assert!(parsed["caveats"][0]["code"].as_str().is_some());
+
+        let result = call_tool(
+            &server,
+            "codetrail_routes",
+            json!({ "pattern": "[", "mode": "regex" }),
+        );
+        assert!(result.is_error);
+        let parsed: Value = serde_json::from_str(&result.content[0].text).unwrap();
+        assert!(!has_caveat(&parsed, "no_match"));
     }
 
     #[test]

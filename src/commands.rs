@@ -14,7 +14,7 @@ use crate::{
     query::{ExploreFlowOptions, ExploreNodeOptions, QueryOptions, QueryService},
     query_input::InputPlan,
     routes, saved_query, scip_index, search,
-    search_pattern::{ContentPatternMode, SearchPatternMode},
+    search_pattern::SearchPatternMode,
     syntax,
     workspace::{ScanOptions, Workspace},
     AppResult,
@@ -62,38 +62,6 @@ pub fn run(cli: Cli) -> AppResult<i32> {
     let scope_warnings = scope_warnings(&workspace, &scan_opts);
 
     let value = match &cli.command {
-        Command::Search {
-            query,
-            mode,
-            regex,
-            literal,
-            wildcard,
-            context,
-        } => {
-            let mode = search_content_mode(*mode, *regex, *literal, *wildcard);
-            let context = context.unwrap_or(cli.context);
-            let query_output =
-                search::find(&workspace, &scan_opts, query, mode.into(), context, false)?;
-            exit_code = output::no_match_exit(&query_output.results);
-            page_response(
-                output::response_with_index(
-                    "search",
-                    "find",
-                    scoped_query(
-                        json!({ "pattern": query, "mode": mode.as_str(), "caseSensitive": scan_opts.case_sensitive, "context": context }),
-                        &scan_opts,
-                    ),
-                    &workspace.snapshot_id,
-                    output::source_fact(),
-                    output::IndexedResponseParts::new(
-                        query_output.index.clone(),
-                        query_output.results.clone(),
-                        scope_warnings.clone(),
-                    ),
-                ),
-                query_output,
-            )
-        }
         Command::Find { text, mode } => {
             let query_output = search::find(
                 &workspace,
@@ -574,6 +542,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
         }
         Command::Routes {
             pattern,
+            mode,
             framework,
             method,
         } => {
@@ -581,6 +550,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 &workspace,
                 &scan_opts,
                 pattern.as_deref(),
+                (*mode).into(),
                 framework,
                 method,
             )?;
@@ -592,6 +562,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                     scoped_query(
                         json!({
                             "pattern": pattern,
+                            "mode": mode.as_str(),
                             "framework": framework,
                             "method": method,
                             "producer": "framework_route_scanner"
@@ -1339,26 +1310,8 @@ fn path_mode_label(command: &str, mode: SearchPatternMode) -> &'static str {
     }
 }
 
-fn search_content_mode(
-    mode: Option<ContentPatternMode>,
-    regex: bool,
-    literal: bool,
-    wildcard: bool,
-) -> ContentPatternMode {
-    if regex {
-        ContentPatternMode::Regex
-    } else if literal {
-        ContentPatternMode::Literal
-    } else if wildcard {
-        ContentPatternMode::Wildcard
-    } else {
-        mode.unwrap_or(ContentPatternMode::Literal)
-    }
-}
-
 fn command_name(command: &Command) -> &'static str {
     match command {
-        Command::Search { .. } => "search",
         Command::Find { .. } => "find",
         Command::Grep { .. } => "grep",
         Command::Files { .. } => "files",

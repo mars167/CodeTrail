@@ -87,8 +87,8 @@ Fallback commands:
 codetrail --output json files <substring> --limit 20
 codetrail --output json find-path <substring> --limit 20
 codetrail --output json glob '<pattern>' --limit 20
-codetrail --output json search <literal> --limit 20
-codetrail --output json search --regex <regex> --limit 20
+codetrail --output json find <literal> --limit 20
+codetrail --output json grep <regex> --limit 20
 ```
 
 Reliability:

@@ -68,6 +68,7 @@ codetrail --output json refs <name> --limit 20
 codetrail --output json calls <name> --limit 20
 codetrail --output json callers <name> --limit 20
 codetrail --output json routes <term> --limit 20
+codetrail --output json routes <regex> --mode regex --limit 20
 ```
 
 Use path discovery to find names or reduce scope:
@@ -83,8 +84,8 @@ stale, the language is unsupported, candidate names are unknown, or navigation
 returns no useful results:
 
 ```bash
-codetrail --output json search <literal> --limit 20
-codetrail --output json search --regex <regex> --limit 20
+codetrail --output json find <literal> --limit 20
+codetrail --output json grep <regex> --limit 20
 ```
 
 ## Core Commands
@@ -95,10 +96,10 @@ codetrail --output json search --regex <regex> --limit 20
 - `defs <name>`: definition candidates; prefers SCIP.
 - `symbols <name>`: symbol candidates; prefers SCIP.
 - `refs <name>`: references; falls back to identifier-boundary text search.
-- `routes <term>`: framework route declarations.
+- `routes <term> [--mode regex]`: framework route declarations; searches route path, handler, framework, method, file path, and language.
 - `calls <name>` / `callers <name>`: inferred call candidates.
 - `files`, `find-path`, `glob`: indexed path discovery.
-- `search`, `find`, `grep`: content fallback; prefer `search --regex` for regex.
+- `find`, `grep`: content fallback.
 
 ## Scope Controls
 
@@ -145,7 +146,7 @@ File-only paths are leads, not evidence.
 
 - Do not call nonexistent `codetrail read`, `codetrail list`, or `codetrail tree`.
 - Do not treat `parser_fact` or `inferred_candidate` as `precise_fact`.
-- Do not use `search`/`find`/`grep` before `explore flow` or compact `explore node` when likely names exist.
+- Do not use `find`/`grep` before `explore flow` or compact `explore node` when likely names exist.
 - Do not paste whole files into the conversation when a range or snippet is enough.
 - Do not add fields to public JSON casually; the public shape is `results`, `page`, `caveats`.
 - Do not load long provider tables or agent schemas by default.
