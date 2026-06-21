@@ -9,7 +9,7 @@ use crate::{
 #[derive(Debug, Parser)]
 #[command(name = "codetrail")]
 #[command(version)]
-#[command(about = "CodeTrail: deterministic-first code search with reliability-labeled evidence")]
+#[command(about = "CodeTrail: semantic index frontend for symbols, refs, and call chains")]
 pub struct Cli {
     #[arg(short, long, default_value = ".")]
     pub path: String,
@@ -92,7 +92,7 @@ pub struct Cli {
     #[arg(long, global = true, default_value_t = 0)]
     pub context: u16,
 
-    #[arg(long, global = true)]
+    #[arg(long, global = true, hide = true)]
     pub save_query: Option<String>,
 
     #[command(subcommand)]
@@ -109,11 +109,13 @@ pub enum OutputFormat {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    #[command(hide = true)]
     Find {
         text: String,
         #[arg(long, value_enum, default_value_t = ContentPatternMode::Literal, help = "Content match mode")]
         mode: ContentPatternMode,
     },
+    #[command(hide = true)]
     Grep {
         pattern: String,
         #[arg(long, value_enum, default_value_t = ContentPatternMode::Regex, help = "Content match mode")]
@@ -121,17 +123,19 @@ pub enum Command {
         #[arg(long)]
         context: Option<u16>,
     },
+    #[command(hide = true)]
     Files {
         pattern: String,
         #[arg(long, value_enum, default_value_t = SearchPatternMode::Literal, help = "Path match mode")]
         mode: SearchPatternMode,
     },
-    #[command(alias = "findpath", alias = "path")]
+    #[command(alias = "findpath", alias = "path", hide = true)]
     FindPath {
         pattern: String,
         #[arg(long, value_enum, default_value_t = SearchPatternMode::Literal, help = "Path match mode")]
         mode: SearchPatternMode,
     },
+    #[command(hide = true)]
     Glob {
         pattern: String,
         #[arg(long, value_enum, default_value_t = SearchPatternMode::Glob, help = "Path match mode")]
@@ -158,6 +162,7 @@ pub enum Command {
         #[arg(long, requires = "include_code", value_parser = parse_code_max_lines, help = "Maximum source lines returned per result")]
         code_max_lines: Option<usize>,
     },
+    #[command(hide = true)]
     Routes {
         pattern: Option<String>,
         #[arg(long, value_enum, default_value_t = ContentPatternMode::Literal, help = "Route search match mode")]
@@ -173,23 +178,30 @@ pub enum Command {
     Callers {
         identifier: String,
     },
+    #[command(hide = true)]
     Explore {
         #[command(subcommand)]
         command: ExploreCommand,
     },
+    #[command(hide = true)]
     Changed,
+    #[command(hide = true)]
     Status,
+    #[command(hide = true)]
     Mcp,
+    #[command(hide = true)]
     Watch {
         #[arg(long)]
         once: bool,
         #[arg(long)]
         status: bool,
     },
+    #[command(hide = true)]
     Serve {
         #[arg(long)]
         no_watch: bool,
     },
+    #[command(hide = true)]
     Query {
         #[command(subcommand)]
         command: QueryCommand,
@@ -198,14 +210,17 @@ pub enum Command {
         #[command(subcommand)]
         command: IndexCommand,
     },
+    #[command(hide = true)]
     IndexProvider {
         #[command(subcommand)]
         command: IndexProviderCommand,
     },
+    #[command(hide = true)]
     Skill {
         #[command(subcommand)]
         command: SkillCommand,
     },
+    #[command(hide = true)]
     Hooks {
         #[command(subcommand)]
         command: HooksCommand,
@@ -304,21 +319,28 @@ pub enum IndexCommand {
         #[arg(long)]
         no_semantic: bool,
     },
+    #[command(hide = true)]
     Update,
     Status {
         #[arg(long)]
         summary: bool,
     },
+    Doctor,
+    #[command(hide = true)]
     Skipped {
         #[arg(long)]
         staged: bool,
     },
+    #[command(hide = true)]
     Verify,
+    #[command(hide = true)]
     Clean,
+    #[command(hide = true)]
     Pack {
         #[arg(long, default_value = "output.tar.gz")]
         output: String,
     },
+    #[command(hide = true)]
     Unpack {
         path: String,
     },

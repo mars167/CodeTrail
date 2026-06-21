@@ -709,21 +709,21 @@ fn warnings_are_structured_with_stable_codes() {
         .arg(dir.path())
         .args(["refs", "helper"])
         .assert()
-        .success()
+        .code(2)
         .get_output()
         .stdout
         .clone();
     let json: Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(
         json["warnings"][0]["code"],
-        "refs_identifier_boundary_text_search_unless_a_precise_occurrence_index_is_available"
+        "precise_scip_index_unavailable"
     );
     assert_eq!(json["warnings"][0]["severity"], "info");
     assert_eq!(json["warnings"][0]["category"], "capability");
     assert!(json["warnings"][0]["message"]
         .as_str()
         .unwrap()
-        .contains("precise occurrence index"));
+        .contains("fresh SCIP occurrence index"));
 }
 
 #[test]
@@ -755,21 +755,21 @@ fn public_json_classifies_advanced_command_caveats_by_severity_and_category() {
         ["calls", "alpha"],
         ["callers", "beta"],
     ] {
-        let output = raw_codetrail()
+        let mut assert = raw_codetrail()
             .arg("--path")
             .arg(dir.path())
             .args(["--output", "json"])
             .args(args)
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone();
+            .assert();
+        assert = if args[0] == "refs" {
+            assert.code(2)
+        } else {
+            assert.success()
+        };
+        let output = assert.get_output().stdout.clone();
         let json: Value = serde_json::from_slice(&output).unwrap();
         let expected_code = match args[0] {
-            "refs" => {
-                "refs_identifier_boundary_text_search_unless_a_precise_occurrence_index_is_available"
-            }
+            "refs" => "precise_scip_index_unavailable",
             "calls" | "callers" => "inferred_candidate",
             _ => "precise_scip_index_unavailable",
         };
@@ -1039,7 +1039,7 @@ fn l0_literal_and_regex_modes_are_predictable() {
 }
 
 #[test]
-fn refs_text_fallback_uses_identifier_boundaries() {
+fn refs_requires_precise_scip_index_and_does_not_text_search() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(
@@ -1053,37 +1053,28 @@ fn refs_text_fallback_uses_identifier_boundaries() {
         .arg(dir.path())
         .args(["refs", "User"])
         .assert()
-        .success()
+        .code(2)
         .get_output()
         .stdout
         .clone();
     let json: Value = serde_json::from_slice(&output).unwrap();
 
-    let match_texts = json["results"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|result| result["matchText"].as_str().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(match_texts, vec!["User", "user", "User"]);
-    assert_eq!(json["results"][0]["symbolName"], "User");
-    assert_eq!(json["results"][0]["role"], "definition");
-    assert_eq!(json["results"][0]["kind"], "unknown");
+    assert_eq!(json["results"].as_array().unwrap().len(), 0);
+    assert_eq!(json["reliability"]["level"], "freshness");
     assert_eq!(
-        json["results"][0]["fallbackReason"],
+        json["warnings"][0]["code"],
         "precise_scip_index_unavailable"
     );
-    assert_eq!(json["results"][0]["range"]["start"]["line"], 1);
-    assert_eq!(json["results"][0]["sourceTarget"], "src/main.rs");
-    assert_eq!(json["results"][1]["role"], "reference_candidate");
-    assert_eq!(json["results"][1]["range"]["start"]["line"], 3);
-    assert_eq!(json["results"][1]["sourceTarget"], "src/main.rs");
+    assert!(json["warnings"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("use ripgrep for textual matches"));
     let source = fs::read_to_string(dir.path().join("src/main.rs")).unwrap();
     assert!(source.contains("let user = User;"));
 }
 
 #[test]
-fn refs_text_fallback_only_marks_definition_name_as_definition() {
+fn refs_without_scip_ignores_textual_occurrences_even_when_identifier_exists() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(
@@ -1097,20 +1088,19 @@ fn refs_text_fallback_only_marks_definition_name_as_definition() {
         .arg(dir.path())
         .args(["refs", "needle"])
         .assert()
-        .success()
+        .code(2)
         .get_output()
         .stdout
         .clone();
     let json: Value = serde_json::from_slice(&output).unwrap();
     let results = json["results"].as_array().unwrap();
 
-    assert_eq!(results.len(), 3);
-    assert_eq!(results[0]["range"]["start"]["line"], 1);
-    assert_eq!(results[0]["role"], "definition");
-    assert_eq!(results[1]["range"]["start"]["line"], 2);
-    assert_eq!(results[1]["role"], "reference_candidate");
-    assert_eq!(results[2]["range"]["start"]["line"], 5);
-    assert_eq!(results[2]["role"], "reference_candidate");
+    assert!(results.is_empty());
+    assert!(json["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|warning| warning["code"] == "precise_scip_index_unavailable"));
 }
 
 #[test]
@@ -3649,6 +3639,33 @@ fn index_status_metadata_does_not_emit_read_next_actions() {
 }
 
 #[test]
+fn index_doctor_reports_semantic_frontend_readiness() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/lib.rs"), "fn alpha() {}\n").unwrap();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "doctor"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let doctor = &json["results"][0];
+
+    assert_eq!(doctor["mode"], "scip_index_frontend");
+    assert!(doctor["preciseIndex"]["usable"].as_bool().is_some());
+    assert_eq!(doctor["nativeFallback"]["tool"], "ripgrep");
+    assert_eq!(
+        doctor["nativeFallback"]["reason"],
+        "CodeTrail no longer wraps text, path, read, or git workflows."
+    );
+}
+
+#[test]
 fn index_status_reports_semantic_status_languages_and_missing_servers() {
     let dir = tempdir().unwrap();
     let path_dir = tempdir().unwrap();
@@ -5199,8 +5216,10 @@ fn completions_print_shell_script_without_workspace() {
     let script = String::from_utf8(output).unwrap();
 
     assert!(script.contains("complete -F _codetrail codetrail"));
-    assert!(script.contains("find grep files"));
-    assert!(script.contains("build update status skipped verify clean pack unpack"));
+    assert!(script.contains("refs symbols defs calls callers index completions"));
+    assert!(script.contains("build status doctor"));
+    assert!(!script.contains("find grep files"));
+    assert!(!script.contains("build update status skipped verify clean pack unpack"));
     assert!(!script.contains("generate-scip"));
     assert!(!script.contains("import-scip"));
 }
@@ -6010,6 +6029,24 @@ fn prebuilt_native_scip_db_drives_precise_defs_refs_and_symbols() {
     assert_eq!(refs_json["results"][0]["range"]["start"]["line"], 2);
     assert_eq!(refs_json["index"]["source"], "scip_native");
 
+    let missing_refs = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["refs", "missing"])
+        .assert()
+        .code(2)
+        .get_output()
+        .stdout
+        .clone();
+    let missing_refs_json: Value = serde_json::from_slice(&missing_refs).unwrap();
+    assert_eq!(missing_refs_json["reliability"]["level"], "precise_fact");
+    assert!(missing_refs_json["results"].as_array().unwrap().is_empty());
+    assert!(!missing_refs_json["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|warning| warning["code"] == "precise_scip_index_unavailable"));
+
     // symbols
     let symbols = codetrail()
         .arg("--path")
@@ -6795,11 +6832,10 @@ fn serve_with_watch_includes_watcher_status() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn mcp_subcommand_is_registered_in_help() {
+fn mcp_subcommand_is_hidden_from_help() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "hello\n").unwrap();
 
-    // Verify "mcp" appears in the subcommand list
     let output = codetrail()
         .arg("--path")
         .arg(dir.path())
@@ -6810,14 +6846,13 @@ fn mcp_subcommand_is_registered_in_help() {
         .stdout
         .clone();
     let help = String::from_utf8(output).unwrap();
-    assert!(
-        help.contains("mcp"),
-        "mcp subcommand not found in help: {help}"
-    );
+    assert!(!help
+        .lines()
+        .any(|line| line.trim_start().starts_with("mcp")));
 }
 
 #[test]
-fn mcp_stdio_find_matches_cli_core_json_and_read_flow() {
+fn mcp_stdio_legacy_find_returns_tool_error() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(
@@ -6825,18 +6860,6 @@ fn mcp_stdio_find_matches_cli_core_json_and_read_flow() {
         "fn main() {\n    let needle = 42;\n}\n",
     )
     .unwrap();
-
-    let cli_output = raw_codetrail()
-        .arg("--path")
-        .arg(dir.path())
-        .args(["--output", "json"])
-        .args(["find", "needle"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let cli_json: Value = serde_json::from_slice(&cli_output).unwrap();
 
     let find_request = json!({
         "jsonrpc": "2.0",
@@ -6863,24 +6886,18 @@ fn mcp_stdio_find_matches_cli_core_json_and_read_flow() {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
 
+    assert_eq!(lines[0]["result"]["isError"], true);
     let mcp_find: Value =
         serde_json::from_str(lines[0]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
-    assert!(mcp_find.get("command").is_none());
-    assert!(mcp_find.get("query").is_none());
-    assert_eq!(
-        mcp_find["results"][0]["path"],
-        cli_json["results"][0]["path"]
-    );
-    assert_eq!(
-        mcp_find["results"][0]["range"],
-        cli_json["results"][0]["range"]
-    );
-    assert!(mcp_find["results"][0].get("readCommandArgv").is_none());
-    assert!(mcp_find["results"][0].get("sourceTarget").is_none());
+    assert!(mcp_find["caveats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|caveat| caveat["code"] == "unknown_tool"));
 }
 
 #[test]
-fn mcp_stdio_explore_node_is_registered_and_returns_public_projection() {
+fn mcp_stdio_explore_node_is_not_registered_and_returns_tool_error() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(
@@ -6925,24 +6942,26 @@ fn mcp_stdio_explore_node_is_registered_and_returns_public_projection() {
         .collect();
 
     let tools = lines[0]["result"]["tools"].as_array().unwrap();
-    assert!(tools
+    assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "codetrail_explore_node"));
     assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "codetrail_explore_flow"));
 
+    assert_eq!(lines[1]["result"]["isError"], true);
     let explore: Value =
         serde_json::from_str(lines[1]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert!(explore.get("results").is_some());
     assert!(explore.get("page").is_some());
     assert!(explore.get("caveats").is_some());
     assert_eq!(explore.as_object().unwrap().len(), 3);
-    assert_eq!(explore["results"][0]["name"], "alpha");
-    assert!(explore["results"][0]["snippet"]
-        .as_str()
+    assert!(explore["results"].as_array().unwrap().is_empty());
+    assert!(explore["caveats"]
+        .as_array()
         .unwrap()
-        .contains("fn alpha"));
+        .iter()
+        .any(|caveat| caveat["code"] == "unknown_tool"));
 }
 
 // ---------------------------------------------------------------------------

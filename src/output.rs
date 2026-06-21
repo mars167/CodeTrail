@@ -256,7 +256,7 @@ pub fn with_summary_field(mut value: Value, field: &str, field_value: Value) -> 
     value
 }
 
-fn live_scan_index() -> Value {
+pub(crate) fn live_scan_index() -> Value {
     json!({
         "used": false,
         "fresh": false,

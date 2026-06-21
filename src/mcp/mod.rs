@@ -113,7 +113,7 @@ fn with_code_context_schema(mut schema: Value) -> Value {
 
 /// Build the list of all available tools.
 fn tool_definitions() -> Vec<ToolDef> {
-    vec![
+    let mut tools = vec![
         ToolDef {
             name: "codetrail_find".to_string(),
             description:
@@ -247,7 +247,7 @@ fn tool_definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "codetrail_refs".to_string(),
             description:
-                "Find references to a given identifier. Prefers SCIP precise index; falls back to text search."
+                "Find precise references to a given identifier from a fresh SCIP occurrence index. Does not perform text fallback."
                     .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -426,7 +426,21 @@ fn tool_definitions() -> Vec<ToolDef> {
                 "required": []
             }),
         },
-    ]
+    ];
+    tools.retain(|tool| is_public_mcp_tool(&tool.name));
+    tools
+}
+
+fn is_public_mcp_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "codetrail_defs"
+            | "codetrail_refs"
+            | "codetrail_symbols"
+            | "codetrail_calls"
+            | "codetrail_callers"
+            | "codetrail_status"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -588,6 +602,12 @@ impl Server {
     }
 
     fn execute_tool_value(&self, name: &str, args: Option<&Value>) -> Result<Value> {
+        if !is_public_mcp_tool(name) {
+            return Err(anyhow::anyhow!(
+                "unknown tool: {name}; CodeTrail MCP now exposes only symbol, reference, call-chain, and status tools"
+            ));
+        }
+
         let opts = parse_query_options(args)?;
 
         match name {
@@ -1067,16 +1087,22 @@ mod tests {
             Envelope::SuccessResponse(sr) => {
                 let list: ToolsListResult = serde_json::from_value(sr.result).unwrap();
                 let names: Vec<&str> = list.tools.iter().map(|t| t.name.as_str()).collect();
-                assert!(names.contains(&"codetrail_find"));
                 assert!(names.contains(&"codetrail_defs"));
+                assert!(names.contains(&"codetrail_refs"));
+                assert!(names.contains(&"codetrail_symbols"));
+                assert!(names.contains(&"codetrail_calls"));
+                assert!(names.contains(&"codetrail_callers"));
                 assert!(!names.contains(&"codetrail_list"));
                 assert!(!names.contains(&"codetrail_tree"));
                 assert!(!names.contains(&"codetrail_read"));
-                assert!(names.contains(&"codetrail_routes"));
-                assert!(names.contains(&"codetrail_explore_node"));
+                assert!(!names.contains(&"codetrail_find"));
+                assert!(!names.contains(&"codetrail_grep"));
+                assert!(!names.contains(&"codetrail_files"));
+                assert!(!names.contains(&"codetrail_glob"));
+                assert!(!names.contains(&"codetrail_routes"));
+                assert!(!names.contains(&"codetrail_explore_node"));
                 assert!(names.contains(&"codetrail_status"));
-                // All core CLI-backed tools should be present.
-                assert_eq!(list.tools.len(), 13);
+                assert_eq!(list.tools.len(), 6);
             }
             _ => panic!("expected success response"),
         }
@@ -1102,7 +1128,7 @@ mod tests {
     }
 
     #[test]
-    fn server_handles_tools_call_find() {
+    fn server_rejects_legacy_text_search_tool() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("src")).unwrap();
         fs::write(
@@ -1126,13 +1152,10 @@ mod tests {
         match resp {
             Envelope::SuccessResponse(sr) => {
                 let result: ToolCallResult = serde_json::from_value(sr.result).unwrap();
-                assert!(!result.is_error);
+                assert!(result.is_error);
                 let text = &result.content[0].text;
                 let parsed: Value = serde_json::from_str(text).unwrap();
-                assert!(parsed.get("ok").is_none());
-                assert!(parsed.get("reliability").is_none());
-                assert_eq!(parsed["results"][0]["path"], "src/main.rs");
-                assert!(parsed["caveats"].as_array().unwrap().is_empty());
+                assert!(has_caveat(&parsed, "unknown_tool"));
             }
             _ => panic!("expected success response"),
         }
@@ -1275,7 +1298,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_call_changed_returns_results() {
+    fn tools_call_changed_is_legacy_and_rejected() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("sample.txt"), "hello\n").unwrap();
         let server = Server::new(dir.path()).unwrap();
@@ -1294,12 +1317,10 @@ mod tests {
         match resp {
             Envelope::SuccessResponse(sr) => {
                 let result: ToolCallResult = serde_json::from_value(sr.result).unwrap();
-                assert!(!result.is_error);
+                assert!(result.is_error);
                 let text = &result.content[0].text;
                 let parsed: Value = serde_json::from_str(text).unwrap();
-                assert!(parsed.get("ok").is_none());
-                assert!(parsed["results"].as_array().is_some());
-                assert!(parsed["page"].is_object());
+                assert!(has_caveat(&parsed, "unknown_tool"));
             }
             _ => panic!("expected success response"),
         }
@@ -1337,7 +1358,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_call_routes_scans_framework_routes() {
+    fn tools_call_routes_is_legacy_and_rejected() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("config")).unwrap();
         fs::write(
@@ -1347,32 +1368,18 @@ mod tests {
         .unwrap();
         let server = Server::new(dir.path()).unwrap();
 
-        let result = call_tool_json(
+        let result = call_tool(
             &server,
             "codetrail_routes",
             json!({ "framework": ["rails"], "method": ["GET"] }),
         );
-        assert!(result.get("ok").is_none());
-        let routes = result["results"].as_array().unwrap();
-        assert_eq!(routes.len(), 1);
-        assert_eq!(routes[0]["path"], "config/routes.rb");
-        assert_eq!(routes[0]["framework"], "rails");
-        assert_eq!(routes[0]["method"], "GET");
-        assert_eq!(routes[0]["routePattern"], "/health");
-        assert_eq!(routes[0]["handler"], "health#show");
-
-        let result = call_tool_json(
-            &server,
-            "codetrail_routes",
-            json!({ "pattern": "health#.*", "mode": "regex" }),
-        );
-        let routes = result["results"].as_array().unwrap();
-        assert_eq!(routes.len(), 1);
-        assert_eq!(routes[0]["handler"], "health#show");
+        assert!(result.is_error);
+        let parsed: Value = serde_json::from_str(&result.content[0].text).unwrap();
+        assert!(has_caveat(&parsed, "unknown_tool"));
     }
 
     #[test]
-    fn tools_call_invalid_regex_returns_tool_error_envelope() {
+    fn tools_call_legacy_grep_returns_tool_error_envelope() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("sample.txt"), "hello\n").unwrap();
         let server = Server::new(dir.path()).unwrap();
@@ -1380,21 +1387,11 @@ mod tests {
         let result = call_tool(&server, "codetrail_grep", json!({ "pattern": "[" }));
         assert!(result.is_error);
         let parsed: Value = serde_json::from_str(&result.content[0].text).unwrap();
-        assert!(!has_caveat(&parsed, "no_match"));
-        assert!(parsed["caveats"][0]["code"].as_str().is_some());
-
-        let result = call_tool(
-            &server,
-            "codetrail_routes",
-            json!({ "pattern": "[", "mode": "regex" }),
-        );
-        assert!(result.is_error);
-        let parsed: Value = serde_json::from_str(&result.content[0].text).unwrap();
-        assert!(!has_caveat(&parsed, "no_match"));
+        assert!(has_caveat(&parsed, "unknown_tool"));
     }
 
     #[test]
-    fn tools_call_find_rejects_invalid_context_values() {
+    fn tools_call_defs_rejects_invalid_code_context_values() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
         let server = Server::new(dir.path()).unwrap();
@@ -1402,8 +1399,8 @@ mod tests {
         for invalid_context in [json!(65536), json!(-1), json!(1.5)] {
             let result = call_tool(
                 &server,
-                "codetrail_find",
-                json!({ "text": "needle", "context": invalid_context }),
+                "codetrail_defs",
+                json!({ "identifier": "needle", "includeCode": true, "codeContext": invalid_context }),
             );
             assert!(result.is_error);
             let parsed: Value = serde_json::from_str(&result.content[0].text).unwrap();
@@ -1412,7 +1409,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_call_find_returns_verifiable_source_range() {
+    fn tools_call_legacy_find_is_rejected_instead_of_returning_source_range() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join("src")).unwrap();
         fs::write(
@@ -1422,20 +1419,18 @@ mod tests {
         .unwrap();
         let server = Server::new(dir.path()).unwrap();
 
-        let found = call_tool_json(
+        let result = call_tool(
             &server,
             "codetrail_find",
             json!({ "text": "needle", "context": 1 }),
         );
-        assert!(found.get("ok").is_none());
-        assert_eq!(found["results"][0]["path"], "src/main.rs");
-        assert!(found["results"][0].get("readCommandArgv").is_none());
-        assert!(found["results"][0].get("sourceTarget").is_none());
-        assert_eq!(found["results"][0]["range"]["start"]["line"], 2);
+        assert!(result.is_error);
+        let parsed: Value = serde_json::from_str(&result.content[0].text).unwrap();
+        assert!(has_caveat(&parsed, "unknown_tool"));
     }
 
     #[test]
-    fn tools_call_broad_query_uses_guarded_cli_contract() {
+    fn tools_call_broad_legacy_find_is_rejected() {
         let dir = tempdir().unwrap();
         for idx in 0..8 {
             fs::write(
@@ -1446,10 +1441,10 @@ mod tests {
         }
         let server = Server::new(dir.path()).unwrap();
 
-        let found = call_tool_json(&server, "codetrail_find", json!({ "text": "public" }));
-        assert!(found["results"].as_array().unwrap().len() <= 5);
-        assert!(has_caveat(&found, "broad_query_guard"));
-        assert_eq!(found["caveats"].as_array().unwrap().len(), 1);
+        let result = call_tool(&server, "codetrail_find", json!({ "text": "public" }));
+        assert!(result.is_error);
+        let parsed: Value = serde_json::from_str(&result.content[0].text).unwrap();
+        assert!(has_caveat(&parsed, "unknown_tool"));
     }
 
     // ------------------------------------------------------------------

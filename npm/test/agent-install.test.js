@@ -36,25 +36,26 @@ test("doctor reports missing and installed states", () => {
   assert.equal(after.ok, true);
 });
 
-test("codetrail skill stays compact and routes agents to cheap commands", () => {
+test("codetrail skill stays compact and routes agents to semantic-index commands", () => {
   assertAgentAssetsSynced(path.resolve(__dirname, "..", ".."));
   const skill = fs.readFileSync(
     path.resolve(__dirname, "..", "assets", "codetrail", "SKILL.md"),
     "utf8"
   );
-  assert.equal(skill.includes("index status --summary"), true);
+  assert.equal(skill.includes("index doctor"), true);
   assert.equal(skill.includes("explore flow"), false);
   assert.equal(skill.includes("explore node"), true);
-  assert.equal(skill.includes("--compact"), true);
+  assert.equal(skill.includes("--compact"), false);
   assert.equal(skill.includes("precise_fact"), true);
   assert.equal(skill.includes("parser_fact"), true);
   assert.equal(skill.includes("inferred_candidate"), true);
-  assert.equal(skill.includes("source_fact"), true);
+  assert.equal(skill.includes("source_fact"), false);
   assert.equal(skill.includes("| Language | Provider command |"), false);
   assert.equal(skill.includes("\"evidence\""), false);
   assert.equal(skill.includes("RuoYi"), false);
-  assert.equal(skill.includes("codetrail read"), true);
-  assert.equal(skill.split(/\r?\n/).length <= 170, true);
+  assert.equal(skill.includes("codetrail read"), false);
+  assert.equal(skill.includes("rg"), true);
+  assert.equal(skill.split(/\r?\n/).length <= 90, true);
 });
 
 test("codetrail subagent templates avoid duplicate skill loading", () => {
@@ -85,12 +86,13 @@ test("codetrail subagent templates avoid duplicate skill loading", () => {
   for (const template of [codex, opencode]) {
     assert.equal(template.includes("skill: deny"), true);
     assert.equal(template.includes("Use `$codetrail`"), false);
-    assert.equal(template.includes("index status --summary"), true);
+    assert.equal(template.includes("index doctor"), true);
     assert.equal(template.includes("explore flow"), false);
-    assert.equal(template.includes("explore node <query> --compact"), true);
+    assert.equal(template.includes("explore node <query> --compact"), false);
+    assert.equal(template.includes("find-path"), true);
     assert.equal(template.includes("evidence` <= 6"), true);
     assert.equal(template.includes("relationships` <= 8"), true);
-    assert.equal(template.includes("queries` <= 10"), true);
-    assert.equal(template.includes("prefer <= 7 CodeTrail commands total"), true);
+    assert.equal(template.includes("queries` <= 8"), true);
+    assert.equal(template.includes("prefer <= 5 CodeTrail commands total"), true);
   }
 });

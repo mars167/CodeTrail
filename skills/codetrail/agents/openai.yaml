@@ -1,9 +1,10 @@
 interface:
   display_name: "CodeTrail"
-  short_description: "Use indexed CodeTrail search with evidence subagents"
+  short_description: "Use CodeTrail only for semantic index lookups"
   search_terms:
     - "codetrail"
-    - "code search"
-    - "source evidence"
-    - "subagent evidence"
-  default_prompt: "Use $codetrail for narrow, verifiable source evidence. For multi-step investigations, check codetrail --output json index status --summary once, then choose the cheapest command from the query shape: routes for endpoints/handlers, defs or symbols for known identifiers, refs/calls/callers only for relevant names, one bounded files/find-path/glob/scoped text search when names are unknown, and scoped text search for config/templates/SQL/XML/YAML or non-code artifacts. Use compact-json for evidence commands. Use compact explore node only when a single necessary symbol or path anchor remains ambiguous, for example --compact --max-candidates 2 --snippet-lines 3 --relation-limit 2 --max-bytes 5000. CodeTrail does not provide read/list/tree; use host source-read tools for verification. Treat precise_fact, parser_fact, inferred_candidate, and source_fact according to their caveats."
+    - "semantic index"
+    - "definitions"
+    - "references"
+    - "callers"
+  default_prompt: "Use $codetrail only for symbols, definitions, precise references, and call/caller relationships that bash search cannot answer cleanly. Use rg/fd/git/host reads for text, path, file, and Git workflows. Do not use CodeTrail for broad exploration or call explore node/find/grep/files/glob/read/list/tree. If refs reports missing precise SCIP index, use rg for textual matches or run codetrail --output json index doctor."

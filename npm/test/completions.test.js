@@ -3,16 +3,16 @@ const assert = require("node:assert/strict");
 const { augmentCompletionScript } = require("../lib/completions");
 
 test("adds node wrapper commands to bash completions", () => {
-  const script = augmentCompletionScript("bash", 'commands="find index completions"');
-  assert.match(script, /commands="find index completions update skills agents"/);
+  const script = augmentCompletionScript("bash", 'commands="refs index completions"');
+  assert.match(script, /commands="refs index completions update skills agents"/);
   assert.match(script, /update_cmds="check install"/);
   assert.match(script, /skill_cmds="list add remove doctor"/);
   assert.match(script, /agent_cmds="list add remove doctor"/);
 });
 
 test("adds node wrapper commands to zsh completions", () => {
-  const script = augmentCompletionScript("zsh", "commands=(find index completions)");
-  assert.match(script, /commands=\(find index completions update skills agents\)/);
+  const script = augmentCompletionScript("zsh", "commands=(refs index completions)");
+  assert.match(script, /commands=\(refs index completions update skills agents\)/);
   assert.match(script, /update_cmds=\(check install\)/);
   assert.match(script, /skill_cmds=\(list add remove doctor\)/);
   assert.match(script, /agent_cmds=\(list add remove doctor\)/);
