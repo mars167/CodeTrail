@@ -3946,6 +3946,7 @@ fn skill_install_supports_project_scope_and_dry_run() {
     assert_eq!(result["scope"], "project");
     assert_eq!(result["dryRun"], true);
     assert_eq!(result["changed"], false);
+    assert_eq!(result["files"].as_array().unwrap().len(), 1);
     assert_eq!(
         project
             .path()
@@ -3973,7 +3974,7 @@ fn skill_install_supports_project_scope_and_dry_run() {
         .path()
         .join(".codex/skills/codetrail/SKILL.md")
         .exists());
-    assert!(project
+    assert!(!project
         .path()
         .join(".codex/agents/codetrail-evidence.toml")
         .exists());
@@ -4001,7 +4002,9 @@ fn skill_install_requires_target_without_interactive_terminal() {
     assert_eq!(caveat["severity"], "error");
     assert!(message.contains("skill target is required in non-interactive mode"));
     assert!(message.contains("codex"));
-    assert!(message.contains("openai"));
+    assert!(message.contains("roo"));
+    assert!(!message.contains("opencode"));
+    assert!(!message.contains("openai"));
 }
 
 #[test]

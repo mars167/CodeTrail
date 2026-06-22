@@ -153,13 +153,16 @@ Core boundaries:
 
 ## Agent Skill
 
-This repository includes an LLM Agent Skill and agent templates:
+This repository includes a single, intentionally small LLM Agent Skill:
 
 ```text
-skills/codetrail/
+skills/codetrail/SKILL.md
 ```
 
-It explains how an agent should use `codetrail` to collect verifiable source evidence, apply reliability grading, replay saved queries, check index freshness, and validate MCP/JSON contracts. When using with this repository, install the Skill from the repo:
+It is a routing card: use `codetrail` only for semantic-index lookups
+(`symbols`, `defs`, `refs`, `calls`, `callers`) that ordinary bash search
+cannot answer cleanly, and use `rg`/`fd`/`git`/host reads for everything else.
+Install it from the repo:
 
 ```bash
 npx skills add https://github.com/mars167/CodeTrail --skill codetrail
@@ -171,21 +174,13 @@ If you are already inside this repository checkout, install from local root:
 npx skills add . --skill codetrail
 ```
 
-For multi-step repository investigation, install the OpenCode subagent template:
+There is intentionally no CodeTrail "evidence subagent" template. Once the
+command surface is just a handful of single-shot semantic lookups, a subagent
+only adds a round-trip and latency without compressing any exploration loop;
+the host agent should call the commands directly. Do not add task-specific CLI
+commands such as `brief`, `context`, or `analyze-*`.
 
-```text
-skills/codetrail/agents/opencode/codetrail-evidence.md
-```
-
-into `.opencode/agents/` or `~/.config/opencode/agents/`. The subagent owns
-task-aware query sequencing and evidence compression; CodeTrail itself remains
-the index-backed search/navigation tool layer. The subagent may use normal
-source-read tools for verification and should not be forced to use CodeTrail
-for every file read. Do not add task-specific CLI commands such as `brief`,
-`context`, or `analyze-*`.
-
-For benchmark-backed guidance on when to use the CLI directly and when to
-delegate to the subagent, see
+For the historical Docker/OpenCode benchmark that informed this boundary, see
 [`docs/04-agent-benchmark.md`](docs/04-agent-benchmark.md).
 
 ## Documentation

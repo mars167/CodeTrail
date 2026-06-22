@@ -153,13 +153,15 @@ flowchart TB
 
 ## Agent Skill
 
-本仓库包含给 LLM Agent 使用的 Skill 和 agent 模板：
+本仓库包含一个刻意做小的 LLM Agent Skill：
 
 ```text
-skills/codetrail/
+skills/codetrail/SKILL.md
 ```
 
-它说明了 agent 应如何用 `codetrail` 获取可验证的源码证据、处理 reliability 分级、重放 saved query、检查 index freshness，并验证 MCP/JSON 契约。需要随项目使用时，可以通过 skills CLI 从仓库安装指定 Skill：
+它是一张路由卡：只在普通 bash 搜索无法干净回答的语义索引查询
+（`symbols`、`defs`、`refs`、`calls`、`callers`）时才用 `codetrail`，其余
+文本/路径/读文件/Git 一律用 `rg`/`fd`/`git`/宿主读取工具。从仓库安装：
 
 ```bash
 npx skills add https://github.com/mars167/CodeTrail --skill codetrail
@@ -171,19 +173,12 @@ npx skills add https://github.com/mars167/CodeTrail --skill codetrail
 npx skills add . --skill codetrail
 ```
 
-多步仓库调查应安装 OpenCode subagent 模板：
+刻意不再提供 CodeTrail "evidence subagent" 模板：当命令面只剩几个单次语义
+查询后，subagent 只会增加一次往返和延迟，并不能压缩任何探索循环；宿主 agent
+应直接调用这些命令。不要把 `brief`、`context` 或 `analyze-*` 这类任务级命令
+加到 CLI。
 
-```text
-skills/codetrail/agents/opencode/codetrail-evidence.md
-```
-
-安装到 `.opencode/agents/` 或 `~/.config/opencode/agents/`。subagent 负责
-任务相关的查询顺序和证据压缩；CodeTrail 本身仍然只作为 index-backed
-搜索/导航工具层。subagent 可以使用普通源码读取工具做验证，不应被限制为所有
-文件读取都必须通过 CodeTrail。不要把 `brief`、`context` 或 `analyze-*`
-这类任务级命令加到 CLI。
-
-基于 Docker/OpenCode 评测的直接 CLI 与 subagent 使用建议见
+启发此边界的 Docker/OpenCode 历史评测见
 [`docs/04-agent-benchmark.md`](docs/04-agent-benchmark.md)。
 
 ## 文档

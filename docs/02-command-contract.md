@@ -28,7 +28,7 @@ flowchart TB
 
 旧的文本、路径、route、watch、serve、saved-query、remote pack/unpack、hook 等命令仍可能留在实现中用于兼容、测试或内部维护，但不属于新的公共策略面。Agent 和 MCP 不应把 CodeTrail 当作 `rg`、`fd`、`cat`、`git` 或编辑器读取工具的替代品。
 
-任务级调查不属于命令族。`brief`、`context`、`explore node`、`analyze architecture` 或 `analyze data-model` 这类行为应由 Agent/subagent 模板通过普通工具和上述语义原语组合完成，不进入 CodeTrail 的公共命令契约。
+任务级调查不属于命令族。`brief`、`context`、`explore node`、`analyze architecture` 或 `analyze data-model` 这类行为应由宿主 Agent 通过普通工具和上述语义原语组合完成，不进入 CodeTrail 的公共命令契约。
 
 ## 共享 Scope
 
@@ -92,6 +92,8 @@ codetrail defs <identifier> --include-code [--code-context <lines>] [--code-max-
 - `index doctor` 面向语义索引前端，突出 precise index 是否 fresh/usable、provider 状态、语言覆盖和下一步动作。
 
 Provider 缺失或超时时产生 `semantic_provider_missing` / `semantic_provider_partial` caveat。`defs`/`symbols` 可以退到 parser；`refs` 不退到文本引用。
+
+每语言的 provider 命令与 env 覆盖由 `index doctor` 输出给出，不进入默认 skill。例如 Kotlin 使用 `scip-java`，优先 `CODETRAIL_SCIP_KOTLIN`、回退 `CODETRAIL_SCIP_JAVA`；precise setup 缺失时 Kotlin 仅 `defs`/`symbols` 退到 `tree_sitter_parser`，`refs` 不退到文本。
 
 ## MCP 契约
 

@@ -68,8 +68,8 @@ test("builds choices with destination hints and searchable labels", () => {
   assert.equal(choices.some((choice) => choice.id === "codex"), true);
   assert.equal(choices.find((choice) => choice.id === "codex").hint.includes(".codex"), true);
   assert.deepEqual(
-    filterChoices(choices, "open").map((choice) => choice.id),
-    ["opencode", "openai"]
+    filterChoices(choices, "cursor").map((choice) => choice.id),
+    ["cursor"]
   );
 });
 
@@ -83,16 +83,16 @@ test("defaults to codex when no installed target files exist", () => {
 test("summaries and result output include all selected targets", () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), "codetrail-ui-project-"));
   const options = { scope: "project", project, dryRun: true, force: false };
-  const summary = buildInstallSummary(["codex", "openai"], options);
+  const summary = buildInstallSummary(["codex", "cursor"], options);
   const results = new Map([
     ["codex", { changed: false }],
-    ["openai", { changed: false }]
+    ["cursor", { changed: false }]
   ]);
-  const output = formatInstallResults(["codex", "openai"], options, results);
+  const output = formatInstallResults(["codex", "cursor"], options, results);
 
   assert.match(summary, /Installation Summary/);
   assert.match(summary, /Codex/);
-  assert.match(summary, /OpenAI Agents/);
+  assert.match(summary, /Cursor/);
   assert.match(output, /Planned CodeTrail skill install/);
-  assert.match(output, /\.openai/);
+  assert.match(output, /\.cursor/);
 });
