@@ -23,24 +23,24 @@ flowchart LR
 
 ## 产品定位
 
-CodeTrail 是本地优先、Git 优先的代码搜索与跳转工具，目标是让开发者和自动化工具像使用 IDE 一样获取窄而可靠的代码证据。
+CodeTrail 是本地优先的 SCIP/语义索引前端，目标是只在普通 bash 搜索难以可靠回答的场景里提供窄而可靠的代码导航证据：symbol、defs、precise refs 和调用链候选。
 
 它提供：
 
-- 可利用索引的内容搜索、路径搜索和代码跳转。
-- 定义、引用、符号、调用候选和变更状态。
-- 本地索引、Git hook、watcher、saved query、remote pack/unpack 和 MCP 入口。
-- 每个响应的 snapshot、producer、freshness 与 reliability 信息。
-- 给 Agent 使用的 Skill 和 subagent 模板，用于把多步调查封装在 Agent 层。
+- 定义、符号和 precise SCIP 引用。
+- 调用与被调用候选，用于缩小阅读范围。
+- `index build`、`index status` 和 `index doctor`，用于构建与诊断语义索引。
+- 每个响应的 snapshot、freshness 与 reliability 信息。
+- 给 Agent 使用的 Skill 和 subagent 模板，用于把 CodeTrail 限定在语义索引缺口。
 
 它不承诺：
 
+- 替代 `rg`、`fd`、`cat`、`git` 或宿主编辑器源码读取。
 - 默认 embedding 或语义相似度搜索。
 - 自主规划并完成具体开发任务。
-- 提供 `brief`、`context` 或 `analyze-*` 这类任务级分析命令。
+- 提供 `brief`、`context`、`explore node` 或 `analyze-*` 这类任务级分析命令。
+- 把文本匹配伪装成 precise semantic references。
 - 把启发式调用图伪装成精确事实。
-- 用 remote 结果覆盖本地 dirty/staged 状态。
-- 用 watcher 替代 Git hook 或 staged/commit snapshot。
 - 把源码、测试和脚本中已经明确表达的实现细节重复成第二份说明。
 
 ## 系统图
@@ -48,22 +48,16 @@ CodeTrail 是本地优先、Git 优先的代码搜索与跳转工具，目标是
 ```mermaid
 flowchart TB
   Actor["Developer / automation"] --> Entry["CLI / MCP"]
-  Entry --> Query["Query layer"]
-  Entry --> Saved["Saved query store"]
+  Entry --> Query["Semantic query layer"]
 
   Git["Git HEAD / staged / worktree"] --> Snapshot["Snapshot and freshness model"]
-  Snapshot --> Text["Text and path facts"]
   Snapshot --> Scip["SCIP occurrence facts"]
   Snapshot --> Parser["Tree-sitter parser facts"]
   Snapshot --> Graph["Call graph candidates"]
-  Snapshot --> Remote["Remote snapshot verification"]
 
-  Text --> Query
   Scip --> Query
   Parser --> Query
   Graph --> Query
-  Remote --> Query
-  Saved --> Query
 
   Query --> VerifyRange["source range targets for host verification"]
   Query --> Json["JSON response with reliability"]
@@ -72,9 +66,8 @@ flowchart TB
 索引是加速层，不是事实源。事实源始终是本地源码、Git 状态、文件 hash 和可读取的 range。
 
 任务意图、查询顺序和停止条件属于 Agent 层。CodeTrail 的 CLI/MCP 只执行
-可组合的 index-backed 搜索/跳转、索引和状态原语；目录浏览与源码读取交给
-宿主编辑器或 Agent 工具。subagent 可以结合这些原语和普通 Agent 源码读取工具
-完成多步调查，并把结果压缩为主 Agent 可消费的证据包。
+可组合的语义索引、调用候选、索引构建和状态诊断原语；文本/路径搜索、目录浏览、
+源码读取和 Git 工作流交给宿主编辑器或 Agent 工具。
 
 ## 可靠性
 

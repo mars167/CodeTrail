@@ -6,48 +6,52 @@ only when they need details beyond the routing card.
 
 ## Boundary
 
-CodeTrail is a search and navigation layer. It returns source, path, symbol,
-reference, route, call-candidate, freshness, and status facts. It does not
-replace host source reads before edits, and it should not become a planning or
-architecture-analysis command surface.
+CodeTrail is now a semantic index frontend. Use it only for symbol lookup,
+definition lookup, precise SCIP references, and call/caller candidates.
 
-Use host editor/agent reads to verify every important `path:line` or
-`path:start-end` before editing.
+Use normal agent tools for everything else:
 
-## Low-Token Workflow
+- text search: `rg`
+- file discovery: `fd`, shell globbing, or host glob tools
+- source verification: host read/editor tools
+- Git state: `git`
 
-For multi-step repository investigations:
+Do not start repository exploration with CodeTrail. CodeTrail evidence is
+navigation evidence; host reads still verify exact source before edits.
 
-```bash
-codetrail --output json index status --summary
-```
-
-Choose the cheapest matching primitive after preflight: `routes` for endpoints
-and handlers, `defs` or `symbols` for known identifiers, `refs`/`calls`/
-`callers` only for relevant names, and one bounded path/text discovery when
-names are unknown.
-
-Use compact node exploration only when one necessary symbol or path anchor
-remains ambiguous:
+## Allowed Commands
 
 ```bash
-codetrail --output json explore node <name> --compact --max-candidates 2 --snippet-lines 8 --relation-limit 4 --max-bytes 8000
+codetrail --output json symbols <query>
+codetrail --output json defs <identifier>
+codetrail --output json refs <identifier>
+codetrail --output json calls <identifier>
+codetrail --output json callers <identifier>
+codetrail --output json index status
+codetrail --output json index doctor
 ```
 
-Use one narrow supplement only when still needed:
+Run `index doctor` only when a semantic query reports a missing or stale SCIP
+index, or when deciding which SCIP provider setup is blocking precision.
 
-```bash
-codetrail --output json defs <name> --limit 10
-codetrail --output json symbols <name> --limit 10
-codetrail --output json refs <name> --limit 20
-codetrail --output json calls <name> --limit 20
-codetrail --output json callers <name> --limit 20
-codetrail --output json routes <term> --limit 20
-```
+`refs` is precise-reference only. If it returns
+`precise_scip_index_unavailable`, the answer is "no usable precise reference
+index"; use `rg` outside CodeTrail for textual occurrences.
 
-Use `files`, `find-path`, or `glob` for path discovery. Use `find` or `grep`
-only for literal-text tasks, missing/stale indexes, unsupported languages, or
-when navigation commands return no useful candidates.
+## Disallowed Agent Usage
+
+Do not call CodeTrail for:
+
+- broad exploration or planning;
+- text/path search wrappers: `find`, `grep`, `files`, `find-path`, `glob`;
+- route discovery;
+- source reads or directory browsing: `read`, `list`, `tree`;
+- Git/worktree workflows: `changed`, `status`, `watch`, `serve`;
+- saved-query replay;
+- `explore node`.
+
+These legacy/internal commands may still exist in the binary for tests or
+compatibility, but they are not part of the agent-facing strategy.
 
 ## Evidence Package
 
@@ -55,22 +59,21 @@ Subagents should return compact evidence:
 
 - `evidence` no more than 6 items.
 - `relationships` no more than 8 items.
-- `queries` no more than 10 items.
-- Prefer no more than 6 CodeTrail commands total for one evidence package.
+- `queries` no more than 8 items.
+- Prefer no more than 5 CodeTrail commands total.
 - Every evidence location must be `path:line` or `path:start-end`.
-- Record fallback reasons for text search, non-index tools, stale indexes, or
-  unsupported languages.
+- File-only paths are leads, not evidence.
 
 ## Reliability
 
 - `precise_fact`: SCIP occurrence fact; still verify source before editing.
-- `parser_fact`: tree-sitter syntax fact; not semantic reference proof.
+- `parser_fact`: tree-sitter syntax fallback for symbols/definitions; not
+  semantic reference proof.
 - `inferred_candidate`: heuristic or graph relationship; verify before relying.
-- `source_fact`: filesystem/text/path fact; use exact host reads for edits.
 
 ## Provider Notes
 
 Provider details belong in command output and docs, not in the default skill.
 For Kotlin, CodeTrail uses `scip-java index` with `CODETRAIL_SCIP_KOTLIN`
 first and `CODETRAIL_SCIP_JAVA` as fallback. If precise setup is missing,
-Kotlin falls back to `tree_sitter_parser`.
+Kotlin falls back to `tree_sitter_parser` for symbols/definitions only.

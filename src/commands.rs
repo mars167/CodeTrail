@@ -228,67 +228,48 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             } else {
                 None
             };
-            let mut query_output = search::find(
-                &workspace,
-                &scan_opts,
-                identifier,
-                SearchPatternMode::Literal,
-                cli.context,
-                true,
-            )?;
-            let definition_ranges =
-                syntax::definition_ranges(&workspace, &scan_opts, identifier).unwrap_or_default();
-            query_output.results = search::annotate_identifier_refs_with_definitions(
-                query_output.results,
-                identifier,
-                &definition_ranges,
-            );
-            let source_had_results = has_results(&query_output.results);
-            if let Some(config) = config_index::refs(&workspace, &scan_opts, identifier)? {
-                append_results(&mut query_output.results, config.results);
-                truncate_results_to_limit(&mut query_output.results, scan_opts.limit);
-                append_config_index(&mut query_output.index, config.index);
-            }
-            if !has_results(&query_output.results) {
-                if let Some(precise) = precise_empty {
-                    return emit_response(
-                        &cli.output,
-                        output::response_with_index(
-                            "refs",
-                            "refs",
-                            scoped_query(
-                                json!({ "identifier": identifier, "producer": "scip" }),
-                                &scan_opts,
-                            ),
-                            &workspace.snapshot_id,
-                            output::precise_fact(),
-                            output::IndexedResponseParts::new(
-                                precise.index,
-                                precise.results,
-                                scope_warnings.clone(),
-                            ),
+            if let Some(precise) = precise_empty {
+                return emit_response(
+                    &cli.output,
+                    output::response_with_index(
+                        "refs",
+                        "refs",
+                        scoped_query(
+                            json!({ "identifier": identifier, "producer": "scip" }),
+                            &scan_opts,
                         ),
-                        &workspace,
-                        cli.save_query.as_deref(),
-                    );
-                }
+                        &workspace.snapshot_id,
+                        output::precise_fact(),
+                        output::IndexedResponseParts::new(
+                            precise.index,
+                            precise.results,
+                            scope_warnings.clone(),
+                        ),
+                    ),
+                    &workspace,
+                    cli.save_query.as_deref(),
+                );
             }
-            exit_code = output::no_match_exit(&query_output.results);
-            page_response(output::response_with_index(
+            let results = json!([]);
+            exit_code = output::no_match_exit(&results);
+            output::response_with_index(
                 "refs",
                 "refs",
-                scoped_query(json!({ "identifier": identifier, "mode": "identifier_boundary_text_search" }), &scan_opts),
+                scoped_query(
+                    json!({ "identifier": identifier, "producer": "scip", "requires": "fresh_scip_occurrence_index" }),
+                    &scan_opts,
+                ),
                 &workspace.snapshot_id,
-                source_reliability(source_had_results, &query_output.results),
+                output::freshness(),
                 output::IndexedResponseParts::new(
-                    query_output.index.clone(),
-                    query_output.results.clone(),
+                    output::live_scan_index(),
+                    results,
                     merge_warnings(
-                        vec!["refs is identifier-boundary text search unless a precise occurrence index is available".to_string()],
+                        vec!["precise_scip_index_unavailable: refs requires a fresh SCIP occurrence index; use ripgrep for textual matches".to_string()],
                         scope_warnings.clone(),
                     ),
                 ),
-            ), query_output)
+            )
         }
         Command::Symbols {
             query,
@@ -946,6 +927,15 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 }]),
                 Vec::new(),
             ),
+            IndexCommand::Doctor => output::response(
+                "index doctor",
+                "index doctor",
+                json!({}),
+                &workspace.snapshot_id,
+                output::freshness(),
+                json!([index::doctor(&workspace)?]),
+                Vec::new(),
+            ),
             IndexCommand::Skipped { staged } => output::response(
                 "index skipped",
                 "index skipped",
@@ -1306,14 +1296,6 @@ fn result_reliability(parser_had_results: bool, results: &Value) -> output::Reli
     }
 }
 
-fn source_reliability(source_had_results: bool, results: &Value) -> output::Reliability {
-    if !source_had_results && has_results(results) {
-        output::config_fact()
-    } else {
-        output::source_fact()
-    }
-}
-
 fn path_mode_label(command: &str, mode: SearchPatternMode) -> &'static str {
     match (command, mode) {
         ("files" | "find-path", SearchPatternMode::Literal) => "path_substring",
@@ -1346,6 +1328,7 @@ fn command_name(command: &Command) -> &'static str {
             IndexCommand::Build { .. } => "index build",
             IndexCommand::Update => "index update",
             IndexCommand::Status { .. } => "index status",
+            IndexCommand::Doctor => "index doctor",
             IndexCommand::Skipped { .. } => "index skipped",
             IndexCommand::Verify => "index verify",
             IndexCommand::Clean => "index clean",

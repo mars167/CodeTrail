@@ -1,31 +1,16 @@
 use crate::cli::CompletionShell;
 
 const COMMANDS: &[&str] = &[
-    "find",
-    "grep",
-    "files",
-    "find-path",
-    "findpath",
-    "path",
-    "glob",
     "refs",
     "symbols",
     "defs",
     "calls",
     "callers",
-    "changed",
-    "status",
-    "watch",
-    "serve",
-    "query",
     "index",
-    "hooks",
     "completions",
 ];
 
-const INDEX_COMMANDS: &[&str] = &[
-    "build", "update", "status", "skipped", "verify", "clean", "pack", "unpack",
-];
+const INDEX_COMMANDS: &[&str] = &["build", "status", "doctor"];
 
 pub fn script(shell: &CompletionShell) -> String {
     match shell {
@@ -41,27 +26,17 @@ fn bash() -> String {
     format!(
         r#"_codetrail()
 {{
-  local cur prev commands query_cmds index_cmds hooks_cmds shells
+  local cur prev commands index_cmds shells
   COMPREPLY=()
   cur="${{COMP_WORDS[COMP_CWORD]}}"
   prev="${{COMP_WORDS[COMP_CWORD-1]}}"
   commands="{commands}"
-  query_cmds="replay show list delete"
   index_cmds="{index_commands}"
-  hooks_cmds="install uninstall status"
   shells="bash zsh fish"
 
   case "$prev" in
-    query)
-      COMPREPLY=( $(compgen -W "$query_cmds" -- "$cur") )
-      return 0
-      ;;
     index)
       COMPREPLY=( $(compgen -W "$index_cmds" -- "$cur") )
-      return 0
-      ;;
-    hooks)
-      COMPREPLY=( $(compgen -W "$hooks_cmds" -- "$cur") )
       return 0
       ;;
     completions)
@@ -88,11 +63,9 @@ fn zsh() -> String {
         r#"#compdef codetrail
 
 _codetrail() {{
-  local -a commands query_cmds index_cmds hooks_cmds shells global_opts
+  local -a commands index_cmds shells global_opts
   commands=({commands})
-  query_cmds=(replay show list delete)
   index_cmds=({index_commands})
-  hooks_cmds=(install uninstall status)
   shells=(bash zsh fish)
   global_opts=(--path --output --include --exclude --hidden --no-ignore --lang --dir --ext --file-pattern --file-mode --case-sensitive --ignore-case --input-mode --changed --cursor --allow-broad --limit --context --include-code --code-context --code-max-lines --save-query --help --version)
 
@@ -107,14 +80,8 @@ _codetrail() {{
   fi
 
   case $words[2] in
-    query)
-      _describe 'query command' query_cmds
-      ;;
     index)
       _describe 'index command' index_cmds
-      ;;
-    hooks)
-      _describe 'hook command' hooks_cmds
       ;;
     completions)
       _describe 'shell' shells
@@ -154,14 +121,9 @@ fn fish() -> String {
     for command in COMMANDS {
         lines.push(format!("complete -c codetrail -f -a {command}"));
     }
-    lines.push(
-        "complete -c codetrail -n '__fish_seen_subcommand_from query' -a 'replay show list delete'"
-            .to_string(),
-    );
     lines.push(format!(
         "complete -c codetrail -n '__fish_seen_subcommand_from index' -a '{index_commands}'"
     ));
-    lines.push("complete -c codetrail -n '__fish_seen_subcommand_from hooks' -a 'install uninstall status'".to_string());
     lines.push(
         "complete -c codetrail -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish'"
             .to_string(),

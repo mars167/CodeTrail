@@ -115,7 +115,6 @@ pub(super) fn caveat_metadata(code: &str) -> (&'static str, &'static str) {
     match code {
         "precise_scip_index_unavailable"
         | "parser_fact"
-        | "refs_identifier_boundary_text_search_unless_a_precise_occurrence_index_is_available"
         | "query_input_expanded"
         | "source_context_fallback"
         | "inferred_candidate" => ("info", "capability"),
@@ -245,12 +244,6 @@ pub(super) fn stable_code(message: &str) -> String {
     }
     if message.starts_with("query_input_expanded:") {
         return "query_input_expanded".to_string();
-    }
-    if message
-        .starts_with("refs is identifier-boundary text search unless a precise occurrence index")
-    {
-        return "refs_identifier_boundary_text_search_unless_a_precise_occurrence_index_is_available"
-            .to_string();
     }
     if let Some((prefix, _details)) = message.split_once(':') {
         return slug_code(prefix);

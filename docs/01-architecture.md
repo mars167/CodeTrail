@@ -10,26 +10,21 @@ flowchart TB
   WS --> Snap["Snapshot identity\ncommit / staged / worktree"]
   Snap --> Fresh["Freshness proof\npath + size + mtime + hash"]
 
-  Fresh --> Store["Primary local store\n.codetrail/index.lance"]
-  Store --> Text["Text/path candidates"]
   Build["index build semantic phase"] --> Providers["SCIP providers\nscip-go / rust-analyzer scip / scip-java / scip-typescript / scip-ruby"]
   Build --> Swift["Swift LSP bridge\nsourcekit-lsp"]
   Providers --> Occ["SCIP occurrences.db"]
   Swift --> Occ
-  Fresh --> Parser["Tree-sitter fallback"]
+  Fresh --> Parser["Tree-sitter fallback\nsymbols / defs only"]
   Fresh --> G["Petgraph call candidates"]
-  Snap --> Saved["Saved query metadata"]
 
-  Text --> Query["Query service"]
   Occ --> Query
   Parser --> Query
   G --> Query
-  Saved --> Query
   Query --> CLI["CLI JSON/text"]
   Query --> MCP["MCP stdio JSON-RPC"]
 ```
 
-设计重点是分层，而不是把所有能力塞进一个“代码图”。文本搜索、precise occurrence、parser fallback 和调用候选分别解决不同问题。
+设计重点是分层，而不是把所有能力塞进一个“代码图”。新的公共策略面只暴露 precise occurrence、parser symbol/def fallback 和调用候选。文本/路径搜索由 `rg`、`fd` 和宿主工具承担。
 
 ## Snapshot 模型
 
@@ -53,16 +48,14 @@ flowchart LR
 
 ```text
 .codetrail/
-  index.lance/              # primary local store
-  working/manifest.json     # pack/unpack compatibility
+  index.lance/              # legacy file catalog / compatibility storage
+  working/manifest.json     # snapshot and compatibility metadata
   staged/manifest.json
   scip/<snapshot-key>/      # occurrences.db + generation.json
   graph/<snapshot-key>/     # petgraph.bin + graph manifest
-  remote/<snapshot-key>/    # unpacked remote snapshots
-  queries/<name>.json       # saved query replay metadata
 ```
 
-当前本地索引以 LanceDB 为主，保存 snapshot 行、file catalog、file proof 和 gram postings。SCIP occurrence 与 petgraph 使用各自目录；LanceDB 中保留 parser、SCIP 和 call graph 表结构，便于后续统一存储。历史上的 `snapshots/` 和 `text/*.idx` 只作为兼容或 remote 包格式出现，不是新构建的主查询存储。
+当前语义索引以 SCIP occurrence DB 和 graph manifest 为主。LanceDB/file catalog 仍存在于实现中，主要用于兼容、内部测试和旧命令，不是新公共策略面的核心。
 
 ## 查询路径
 
@@ -70,31 +63,25 @@ flowchart LR
 flowchart TD
   Cmd["command"] --> Kind{"query family"}
 
-  Kind -->|find / grep / files / find-path / glob| Text["fresh text/path index"]
-  Text -->|fresh| Verify["candidate verification"]
-  Text -->|missing or stale| Scan["live scan"]
-  Text -->|partially stale| Overlay["per-file live overlay"]
-
   Kind -->|defs / refs / symbols| Scip["SCIP occurrence store"]
   Scip -->|available and fresh| Precise["precise_fact"]
-  Scip -->|missing| Fallback["parser or text fallback"]
+  Scip -->|missing for defs/symbols| Fallback["tree-sitter parser_fact"]
+  Scip -->|missing for refs| Reject["empty results + caveat"]
 
   Kind -->|calls / callers| Graph["petgraph backend"]
   Graph --> Candidate["inferred_candidate"]
 
-  Verify --> Json["JSON response"]
-  Scan --> Json
-  Overlay --> Json
   Precise --> Json
   Fallback --> Json
+  Reject --> Json
   Candidate --> Json
 ```
 
-`find`、`grep`、`files`、`find-path` 和 `glob` 是 index-backed discovery
-路径。CLI/MCP 不再暴露 `list`、`tree` 或 `read`；搜索和图结果帮助定位，真正
-进入编辑前应由宿主编辑器或 Agent read 工具读取精确范围。
+`refs` 是 precise-only：没有 fresh SCIP occurrence 时不做文本 fallback。`defs`
+和 `symbols` 可以使用 tree-sitter 作为语法事实。`calls` 和 `callers` 始终是候选关系。
+文本/路径 discovery 不属于新的公共查询路径。
 
-## Watcher 和 Hook
+## Legacy Watcher 和 Hook
 
 ```mermaid
 flowchart LR
@@ -105,6 +92,7 @@ flowchart LR
   Overlay --> Fresh
 ```
 
+- Hook 和 watcher 属于 legacy/compatibility 层，不是语义索引前端的公共策略面。
 - Hook 维护 Git 语义相关的 staged/commit 索引。
 - Watcher 只维护 worktree overlay 和实时性状态。
 - Watcher 不执行 `git add`，不修改 staged，不生成 commit snapshot。
@@ -112,10 +100,10 @@ flowchart LR
 
 ## 语义索引（Provider → SCIP）
 
-`index build` 在文本索引与调用图之后，默认 best-effort 启动语义 provider。Go、Rust、Java/Kotlin、TypeScript/JavaScript 和 Ruby 优先使用 native SCIP provider（`scip-go`、`rust-analyzer scip .`、`scip-java index`、`scip-typescript index`、`scip-ruby .`）；Swift 继续使用 `sourcekit-lsp` bridge 合成 SCIP occurrence。所有 provider 产物会先写入 `.codetrail/scip/<snapshot-key>/provider-output/`，合并后在同一 build 阶段导入 `.codetrail/scip/<snapshot-key>/occurrences.db`。
+`index build` 默认 best-effort 启动语义 provider。Go、Rust、Java/Kotlin、TypeScript/JavaScript 和 Ruby 优先使用 native SCIP provider（`scip-go`、`rust-analyzer scip .`、`scip-java index`、`scip-typescript index`、`scip-ruby .`）；Swift 继续使用 `sourcekit-lsp` bridge 合成 SCIP occurrence。所有 provider 产物会先写入 `.codetrail/scip/<snapshot-key>/provider-output/`，合并后在同一 build 阶段导入 `.codetrail/scip/<snapshot-key>/occurrences.db`。
 
 - `--no-semantic` 跳过该阶段；`index build --staged` 不运行语义阶段。
-- 任何 provider 失败只产生 partial/missing manifest 与 caveat，不阻塞 build；查询继续回退到 tree-sitter/parser/text fallback。
+- 任何 provider 失败只产生 partial/missing manifest 与 caveat，不阻塞 build；`defs`/`symbols` 可回退到 tree-sitter parser，`refs` 返回缺少 precise index 的 caveat。
 - 环境变量：`CODETRAIL_SCIP_<LANG>` 覆盖 native SCIP provider 命令；Swift 使用 `CODETRAIL_LSP_SWIFT` 覆盖 `sourcekit-lsp`；`CODETRAIL_SEMANTIC_BUDGET_MS` 控制总墙钟预算（默认 60s）。
 - Kotlin 使用 `CODETRAIL_SCIP_KOTLIN`，未设置时回退 `CODETRAIL_SCIP_JAVA`。同一 Gradle root 同时有 Java/Kotlin source 时，`scip-java index` 按 provider/root/command 分组只运行一次。
 - 若 `occurrences.db` 已与当前 snapshot 和 file hash 对齐，重复 build 会跳过语义阶段。
@@ -123,7 +111,7 @@ flowchart LR
   `buildServer.json` 或 `compile_commands.json` 状态并在 `index status`
   中报告，不会自动运行 `xcode-build-server config` 或写入配置文件。
 
-## Remote
+## Legacy Remote
 
 ```mermaid
 flowchart LR
@@ -136,13 +124,9 @@ flowchart LR
   Verify -->|mismatch| RU["remote_unverified"]
 ```
 
-Remote 适合 CI 产物、大仓预热和团队共享。remote archive 包含 text
-metadata、gram postings 和 text content segment，因此 MCP remote-only
-查询可以在本地源文件不可读时返回导航线索。只要本地文件无法与 remote
-snapshot 对齐，结果就必须降级，且不能覆盖本地 dirty/staged/worktree 事实；
-调用方需要用宿主源码读取工具重新验证可编辑源码。
+Remote pack/unpack 属于 legacy/compatibility 层，不是新的公共语义索引前端。远端或共享缓存不能覆盖本地 dirty/staged/worktree 事实；调用方需要用宿主源码读取工具重新验证可编辑源码。
 
-## Saved Query
+## Legacy Saved Query
 
 ```mermaid
 flowchart LR
@@ -155,4 +139,4 @@ flowchart LR
   Current -->|no, --snapshot saved| Error["reject replay"]
 ```
 
-Saved query 只保存可重放命令、query 参数、scope、snapshot 和 cursor 元数据，不保存结果正文。它是查询工作流加速层，不是事实源；重放结果仍受当前 snapshot、freshness 和 reliability 契约约束。
+Saved query 属于 legacy/compatibility 层，不是新的公共语义索引前端。历史数据仍只保存可重放命令、query 参数、scope、snapshot 和 cursor 元数据，不保存结果正文。

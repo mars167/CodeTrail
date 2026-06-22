@@ -467,62 +467,19 @@ impl QueryService {
         Ok(self.finalize(response))
     }
 
-    /// Find references to `identifier` — prefers SCIP; falls back to text search.
+    /// Find references to `identifier` from a precise SCIP occurrence index.
     pub fn refs(&self, identifier: &str, opts: &QueryOptions) -> Result<Value> {
         let scan = opts.to_scan_options();
 
-        // 1. Try SCIP precise index first.
-        let precise_empty =
-            if let Some(precise) = scip_index::refs(&self.workspace, &scan, identifier)? {
-                if has_results(&precise.results) {
-                    let mut results = precise.results;
-                    let mut index = precise.index;
-                    if let Some(config) = config_index::refs(&self.workspace, &scan, identifier)? {
-                        append_results(&mut results, config.results);
-                        truncate_results_to_limit(&mut results, scan.limit);
-                        append_config_index(&mut index, config.index);
-                    }
-                    return Ok(self.finalize(output::response_with_index(
-                        "refs",
-                        "refs",
-                        scoped_query(
-                            json!({ "identifier": identifier, "producer": "scip" }),
-                            &scan,
-                        ),
-                        &self.workspace.snapshot_id,
-                        output::precise_fact(),
-                        output::IndexedResponseParts::new(index, results, Vec::new()),
-                    )));
+        if let Some(precise) = scip_index::refs(&self.workspace, &scan, identifier)? {
+            if has_results(&precise.results) {
+                let mut results = precise.results;
+                let mut index = precise.index;
+                if let Some(config) = config_index::refs(&self.workspace, &scan, identifier)? {
+                    append_results(&mut results, config.results);
+                    truncate_results_to_limit(&mut results, scan.limit);
+                    append_config_index(&mut index, config.index);
                 }
-                Some(precise)
-            } else {
-                None
-            };
-
-        // 2. Fall back to identifier-boundary text search.
-        let mut qo = search::find(
-            &self.workspace,
-            &scan,
-            identifier,
-            SearchPatternMode::Literal,
-            opts.context,
-            true,
-        )?;
-        let definition_ranges =
-            syntax::definition_ranges(&self.workspace, &scan, identifier).unwrap_or_default();
-        qo.results = search::annotate_identifier_refs_with_definitions(
-            qo.results,
-            identifier,
-            &definition_ranges,
-        );
-        let source_had_results = has_results(&qo.results);
-        if let Some(config) = config_index::refs(&self.workspace, &scan, identifier)? {
-            append_results(&mut qo.results, config.results);
-            truncate_results_to_limit(&mut qo.results, scan.limit);
-            append_config_index(&mut qo.index, config.index);
-        }
-        if !has_results(&qo.results) {
-            if let Some(precise) = precise_empty {
                 return Ok(self.finalize(output::response_with_index(
                     "refs",
                     "refs",
@@ -532,27 +489,41 @@ impl QueryService {
                     ),
                     &self.workspace.snapshot_id,
                     output::precise_fact(),
-                    output::IndexedResponseParts::new(precise.index, precise.results, Vec::new()),
+                    output::IndexedResponseParts::new(index, results, Vec::new()),
                 )));
             }
+
+            return Ok(self.finalize(output::response_with_index(
+                "refs",
+                "refs",
+                scoped_query(
+                    json!({ "identifier": identifier, "producer": "scip" }),
+                    &scan,
+                ),
+                &self.workspace.snapshot_id,
+                output::precise_fact(),
+                output::IndexedResponseParts::new(precise.index, precise.results, Vec::new()),
+            )));
         }
-        let response = output::response_with_index(
+
+        Ok(self.finalize(output::response_with_index(
             "refs",
             "refs",
             scoped_query(
-                json!({ "identifier": identifier, "mode": "identifier_boundary_text_search" }),
+                json!({ "identifier": identifier, "producer": "scip", "requires": "fresh_scip_occurrence_index" }),
                 &scan,
             ),
             &self.workspace.snapshot_id,
-            source_reliability(source_had_results, &qo.results),
+            output::freshness(),
             output::IndexedResponseParts::new(
-                qo.index.clone(),
-                qo.results.clone(),
-                vec!["refs is identifier-boundary text search unless a precise occurrence index is available"
-                    .to_string()],
+                output::live_scan_index(),
+                json!([]),
+                vec![
+                    "precise_scip_index_unavailable: refs requires a fresh SCIP occurrence index; use ripgrep for textual matches"
+                        .to_string(),
+                ],
             ),
-        );
-        Ok(self.finalize(page_response(response, qo)))
+        )))
     }
 
     /// Find symbols matching `query` — prefers SCIP; falls back to tree-sitter.
@@ -1093,14 +1064,6 @@ fn parser_reliability(parser_had_results: bool, results: &Value) -> output::Reli
     }
 }
 
-fn source_reliability(source_had_results: bool, results: &Value) -> output::Reliability {
-    if !source_had_results && has_results(results) {
-        output::config_fact()
-    } else {
-        output::source_fact()
-    }
-}
-
 fn path_mode_label(command: &str, mode: SearchPatternMode) -> &'static str {
     match (command, mode) {
         ("files" | "find-path", SearchPatternMode::Literal) => "path_substring",
@@ -1608,21 +1571,22 @@ mod tests {
         assert!(results.iter().any(|r| r["name"] == "alpha"));
     }
 
-    // -- refs (text-search fallback) ------------------------------------
+    // -- refs (precise SCIP only) ---------------------------------------
 
     #[test]
-    fn refs_falls_back_to_text_search_when_no_scip_index() {
+    fn refs_requires_precise_scip_index() {
         let (_dir, svc) = setup_with_file(
             "src/main.rs",
             "fn main() {\n    helper();\n}\nfn helper() {}\n",
         );
         let result = svc.refs("helper", &QueryOptions::default()).unwrap();
         assert_eq!(result["ok"], true);
-        assert_eq!(result["reliability"]["level"], "source_fact");
-        assert!(result["results"].as_array().unwrap().len() >= 2);
-        // Warnings should mention that it's text search, not SCIP
+        assert_eq!(result["reliability"]["level"], "freshness");
+        assert!(result["results"].as_array().unwrap().is_empty());
         let warnings = result["warnings"].as_array().unwrap();
-        assert!(!warnings.is_empty());
+        assert!(warnings
+            .iter()
+            .any(|warning| warning["code"] == "precise_scip_index_unavailable"));
     }
 
     // -- symbols (parser fallback) --------------------------------------

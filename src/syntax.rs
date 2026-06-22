@@ -14,7 +14,7 @@ use crate::{
     index,
     project_graph::discover_project_graph,
     query_input::{attach_matched_input, InputMode, InputPlan, SymbolMatchMode},
-    search::{line_range_for_node, symbol_range, SymbolRange},
+    search::line_range_for_node,
     workspace::{language_for_path, FileRecord, ScanOptions, Workspace},
 };
 
@@ -181,7 +181,6 @@ struct Symbol {
     kind: String,
     candidate_kind: String,
     range: Value,
-    name_range: Value,
     body_range: Value,
     enclosing_symbol: Option<String>,
     body_hash: String,
@@ -219,7 +218,6 @@ pub(crate) struct TreeSitterCandidate {
     pub kind: String,
     pub symbol_kind: Option<String>,
     pub range: Value,
-    pub name_range: Option<Value>,
     pub body_range: Option<Value>,
     pub call_range: Option<Value>,
     pub enclosing_symbol: Option<String>,
@@ -351,23 +349,6 @@ pub fn defs(
     }
     push_input_plan_warning(&mut warnings, &plan);
     Ok((Value::Array(results), warnings))
-}
-
-pub(crate) fn definition_ranges(
-    workspace: &Workspace,
-    opts: &ScanOptions,
-    identifier: &str,
-) -> Result<Vec<SymbolRange>> {
-    let mut scan_opts = opts.clone();
-    scan_opts.limit = 0;
-    let mut warnings = Vec::new();
-    let ranges =
-        collect_symbols_prefiltered(workspace, &scan_opts, &mut warnings, Some(identifier))?
-            .into_iter()
-            .filter(|symbol| symbol.name == identifier)
-            .filter_map(|symbol| symbol_range(&symbol.path, &symbol.name_range))
-            .collect();
-    Ok(ranges)
 }
 
 pub fn calls(
@@ -725,7 +706,6 @@ fn symbol_candidate(node: Node, context: &CandidateWalkContext) -> Option<TreeSi
         kind: candidate_kind.to_string(),
         symbol_kind: Some(symbol_kind.to_string()),
         range: point_range(node),
-        name_range: Some(point_range(name_node)),
         body_range: Some(point_range(body_node)),
         call_range: None,
         enclosing_symbol: enclosing_symbol_name(node, context.source),
@@ -756,7 +736,6 @@ fn import_candidate(node: Node, context: &CandidateWalkContext) -> Option<TreeSi
         kind: "import".to_string(),
         symbol_kind: Some("import".to_string()),
         range: point_range(node),
-        name_range: None,
         body_range: None,
         call_range: None,
         enclosing_symbol: enclosing_symbol_name(node, context.source),
@@ -798,7 +777,6 @@ fn call_candidate(node: Node, context: &CandidateWalkContext) -> Option<TreeSitt
         kind: "call".to_string(),
         symbol_kind: None,
         range: point_range(node),
-        name_range: None,
         body_range: None,
         call_range: Some(point_range(node)),
         enclosing_symbol: enclosing.as_ref().map(|details| details.name.clone()),
@@ -850,7 +828,6 @@ fn symbol_from_candidate(candidate: TreeSitterCandidate) -> Option<Symbol> {
         kind: candidate.symbol_kind?,
         candidate_kind: candidate.kind,
         range: candidate.range,
-        name_range: candidate.name_range?,
         body_range: candidate.body_range?,
         enclosing_symbol: candidate.enclosing_symbol,
         body_hash: candidate.body_hash?,

@@ -432,6 +432,57 @@ pub fn status_summary(workspace: &Workspace) -> Result<Value> {
     Ok(summary_status(&full))
 }
 
+pub fn doctor(workspace: &Workspace) -> Result<Value> {
+    let status = status(workspace)?;
+    let semantic_status = status
+        .get("semanticStatus")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let scip_index = semantic_status
+        .get("scipIndex")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let precise_usable = scip_index
+        .get("usable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let precise_fresh = scip_index
+        .get("fresh")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let provider_states = semantic_status
+        .get("semanticProviders")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let language_coverage = semantic_status
+        .get("languageCoverage")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let recommended_action = if precise_usable && precise_fresh {
+        "precise_index_ready"
+    } else {
+        "install_or_configure_scip_provider_then_run_index_build"
+    };
+
+    Ok(json!({
+        "mode": "scip_index_frontend",
+        "preciseIndex": {
+            "usable": precise_usable,
+            "fresh": precise_fresh,
+            "state": scip_index.get("state").cloned().unwrap_or(Value::Null),
+            "languages": scip_index.get("languages").cloned().unwrap_or_else(|| json!([])),
+            "symbolCount": scip_index.get("symbolCount").cloned().unwrap_or(Value::Null)
+        },
+        "providerStates": provider_states,
+        "languageCoverage": language_coverage,
+        "recommendedAction": recommended_action,
+        "nativeFallback": {
+            "tool": "ripgrep",
+            "reason": "CodeTrail no longer wraps text, path, read, or git workflows."
+        }
+    }))
+}
+
 pub fn skipped(workspace: &Workspace, staged: bool) -> Result<Value> {
     let path = skipped_log_path(workspace, staged);
     if !path.exists() {

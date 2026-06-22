@@ -24,7 +24,6 @@ pub enum CaveatCode {
     // ── Capability (info / capability) ──────────────────────────────────────
     PreciseScipIndexUnavailable,
     ParserFact,
-    RefsIdentifierBoundaryTextSearch,
     InferredCandidate,
 
     // ── Semantic provider (info / capability) ───────────────────────────────
@@ -89,16 +88,11 @@ impl CaveatCode {
         match self {
             Self::PreciseScipIndexUnavailable => "precise_scip_index_unavailable",
             Self::ParserFact => "parser_fact",
-            Self::RefsIdentifierBoundaryTextSearch => {
-                "refs_identifier_boundary_text_search_unless_a_precise_occurrence_index_is_available"
-            }
             Self::InferredCandidate => "inferred_candidate",
             Self::SemanticProviderMissing => "semantic_provider_missing",
             Self::SemanticProviderNotStarted => "semantic_provider_not_started",
             Self::SemanticProviderPartial => "semantic_provider_partial",
-            Self::SemanticProviderUnsupportedLanguage => {
-                "semantic_provider_unsupported_language"
-            }
+            Self::SemanticProviderUnsupportedLanguage => "semantic_provider_unsupported_language",
             Self::SemanticGenerationStale => "semantic_generation_stale",
             Self::SemanticRefreshInProgress => "semantic_refresh_in_progress",
             Self::SemanticIndexStale => "semantic_index_stale",
@@ -140,7 +134,6 @@ impl CaveatCode {
         match self {
             Self::PreciseScipIndexUnavailable
             | Self::ParserFact
-            | Self::RefsIdentifierBoundaryTextSearch
             | Self::InferredCandidate
             | Self::SemanticProviderMissing
             | Self::SemanticProviderNotStarted
@@ -163,7 +156,6 @@ impl CaveatCode {
         match self {
             Self::PreciseScipIndexUnavailable
             | Self::ParserFact
-            | Self::RefsIdentifierBoundaryTextSearch
             | Self::InferredCandidate
             | Self::SemanticProviderMissing
             | Self::SemanticProviderNotStarted
@@ -207,11 +199,9 @@ impl CaveatCode {
             Self::PathEscapesWorkspaceRoot => "reject_request_and_report",
             Self::GeneratedSourceUnverified => "treat_as_source_fact_not_precise",
             Self::SourceFactFallback => "accept_fallback_reliability",
-            Self::ParserFact | Self::InferredCandidate | Self::RefsIdentifierBoundaryTextSearch => {
-                "verify_with_read_before_editing"
-            }
+            Self::ParserFact | Self::InferredCandidate => "verify_with_read_before_editing",
             Self::PreciseScipIndexUnavailable | Self::FailedToParseNativeScipIndex => {
-                "generate_scip_index_or_accept_parser_fallback"
+                "install_or_configure_scip_provider_then_run_index_build"
             }
             Self::CandidateBudgetExceeded => "narrow_scope_or_language",
             Self::PartialParseSyntaxErrors => "inspect_files_for_syntax_errors",
@@ -320,7 +310,6 @@ pub fn all_caveat_codes() -> Vec<CaveatCode> {
     vec![
         PreciseScipIndexUnavailable,
         ParserFact,
-        RefsIdentifierBoundaryTextSearch,
         InferredCandidate,
         SemanticProviderMissing,
         SemanticProviderNotStarted,

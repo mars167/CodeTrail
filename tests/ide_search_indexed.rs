@@ -159,7 +159,7 @@ fn precise_scip_respects_default_ignore_case_and_strict_mode() {
 }
 
 #[test]
-fn mcp_tools_list_advertises_ide_like_search_options() {
+fn mcp_tools_list_advertises_semantic_scope_options_only() {
     let dir = tempdir().unwrap();
     let request = json!({
         "jsonrpc": "2.0",
@@ -179,20 +179,7 @@ fn mcp_tools_list_advertises_ide_like_search_options() {
     let stdout = String::from_utf8(output).unwrap();
     let response: Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
     let tools = response["result"]["tools"].as_array().unwrap();
-    let find = tool_schema(tools, "codetrail_find");
-    for field in [
-        "mode",
-        "dir",
-        "ext",
-        "filePattern",
-        "fileMode",
-        "caseSensitive",
-    ] {
-        assert!(
-            find["properties"].get(field).is_some(),
-            "codetrail_find missing {field}"
-        );
-    }
+    assert!(!tools.iter().any(|tool| tool["name"] == "codetrail_find"));
     let defs = tool_schema(tools, "codetrail_defs");
     for field in [
         "dir",
