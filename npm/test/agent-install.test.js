@@ -8,7 +8,7 @@ const { assertAgentAssetsSynced } = require("../../scripts/npm/check-agent-asset
 
 test("lists common code agent targets", () => {
   const targets = listTargets().map((target) => target.id);
-  assert.deepEqual(targets, ["codex", "opencode", "claude", "cursor", "continue", "cline", "roo", "openai"]);
+  assert.deepEqual(targets, ["codex", "claude", "cursor", "continue", "cline", "roo"]);
 });
 
 test("dry-run returns a plan without writing files", () => {
@@ -21,10 +21,10 @@ test("dry-run returns a plan without writing files", () => {
 
 test("project scope writes into the project directory", () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), "codetrail-project-"));
-  const result = installTarget("opencode", { project, scope: "project", force: true });
-  const agentPath = path.join(project, ".opencode", "agents", "codetrail-evidence.md");
+  const result = installTarget("cursor", { project, scope: "project", force: true });
+  const rulePath = path.join(project, ".cursor", "rules", "codetrail.mdc");
   assert.equal(result.changed, true);
-  assert.equal(fs.existsSync(agentPath), true);
+  assert.equal(fs.existsSync(rulePath), true);
 });
 
 test("doctor reports missing and installed states", () => {
@@ -44,7 +44,7 @@ test("codetrail skill stays compact and routes agents to semantic-index commands
   );
   assert.equal(skill.includes("index doctor"), true);
   assert.equal(skill.includes("explore flow"), false);
-  assert.equal(skill.includes("explore node"), true);
+  assert.equal(skill.includes("explore node"), false);
   assert.equal(skill.includes("--compact"), false);
   assert.equal(skill.includes("precise_fact"), true);
   assert.equal(skill.includes("parser_fact"), true);
@@ -58,41 +58,12 @@ test("codetrail skill stays compact and routes agents to semantic-index commands
   assert.equal(skill.split(/\r?\n/).length <= 90, true);
 });
 
-test("codetrail subagent templates avoid duplicate skill loading", () => {
-  const codex = fs.readFileSync(
-    path.resolve(
-      __dirname,
-      "..",
-      "assets",
-      "codetrail",
-      "agents",
-      "codex",
-      "codetrail-evidence.toml"
-    ),
+test("codetrail skill no longer ships subagent templates", () => {
+  const agentsDir = path.resolve(__dirname, "..", "assets", "codetrail", "agents");
+  assert.equal(fs.existsSync(agentsDir), false);
+  const skill = fs.readFileSync(
+    path.resolve(__dirname, "..", "assets", "codetrail", "SKILL.md"),
     "utf8"
   );
-  const opencode = fs.readFileSync(
-    path.resolve(
-      __dirname,
-      "..",
-      "assets",
-      "codetrail",
-      "agents",
-      "opencode",
-      "codetrail-evidence.md"
-    ),
-    "utf8"
-  );
-  for (const template of [codex, opencode]) {
-    assert.equal(template.includes("skill: deny"), true);
-    assert.equal(template.includes("Use `$codetrail`"), false);
-    assert.equal(template.includes("index doctor"), true);
-    assert.equal(template.includes("explore flow"), false);
-    assert.equal(template.includes("explore node <query> --compact"), false);
-    assert.equal(template.includes("find-path"), true);
-    assert.equal(template.includes("evidence` <= 6"), true);
-    assert.equal(template.includes("relationships` <= 8"), true);
-    assert.equal(template.includes("queries` <= 8"), true);
-    assert.equal(template.includes("prefer <= 5 CodeTrail commands total"), true);
-  }
+  assert.equal(skill.toLowerCase().includes("subagent"), false);
 });

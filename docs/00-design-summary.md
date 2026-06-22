@@ -31,7 +31,7 @@ CodeTrail 是本地优先的 SCIP/语义索引前端，目标是只在普通 bas
 - 调用与被调用候选，用于缩小阅读范围。
 - `index build`、`index status` 和 `index doctor`，用于构建与诊断语义索引。
 - 每个响应的 snapshot、freshness 与 reliability 信息。
-- 给 Agent 使用的 Skill 和 subagent 模板，用于把 CodeTrail 限定在语义索引缺口。
+- 一个刻意做小的 Agent Skill 路由卡，用于把 CodeTrail 限定在语义索引缺口。
 
 它不承诺：
 

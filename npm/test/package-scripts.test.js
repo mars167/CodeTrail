@@ -24,6 +24,6 @@ test("detects mismatched npm platform package versions", () => {
 
 test("npm agent assets stay synced with source skills", () => {
   const root = path.resolve(__dirname, "..", "..");
-  assert.equal(assetMappings(root).length, 4);
+  assert.equal(assetMappings(root).length, 1);
   assert.doesNotThrow(() => assertAgentAssetsSynced(root));
 });

@@ -3,16 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const ASSETS = [
-  ["skills/codetrail/SKILL.md", "npm/assets/codetrail/SKILL.md"],
-  [
-    "skills/codetrail/agents/codex/codetrail-evidence.toml",
-    "npm/assets/codetrail/agents/codex/codetrail-evidence.toml"
-  ],
-  [
-    "skills/codetrail/agents/opencode/codetrail-evidence.md",
-    "npm/assets/codetrail/agents/opencode/codetrail-evidence.md"
-  ],
-  ["skills/codetrail/agents/openai.yaml", "npm/assets/codetrail/agents/openai.yaml"]
+  ["skills/codetrail/SKILL.md", "npm/assets/codetrail/SKILL.md"]
 ];
 
 function assetMappings(root = path.resolve(__dirname, "..", "..")) {
