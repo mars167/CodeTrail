@@ -1,1 +1,1 @@
-{"name":"@mars167/core-darwin-arm64","version":"0.1.7-beta.5","license":"MIT","repository":{"type":"git","url":"https://github.com/mars167/CodeTrail"},"os":["darwin"],"cpu":["arm64"],"files":["bin/","package.json"],"publishConfig":{"access":"public","provenance":true}}
+{"name":"@mars167/core-darwin-arm64","version":"0.1.7-beta.6","license":"MIT","repository":{"type":"git","url":"https://github.com/mars167/CodeTrail"},"os":["darwin"],"cpu":["arm64"],"files":["bin/","package.json"],"publishConfig":{"access":"public","provenance":true}}
