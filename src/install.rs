@@ -370,34 +370,17 @@ struct SkillAsset {
 }
 
 const SKILL: &str = include_str!("../skills/codetrail/SKILL.md");
-const CODEX_AGENT: &str = include_str!("../skills/codetrail/agents/codex/codetrail-evidence.toml");
-const OPENCODE_AGENT: &str =
-    include_str!("../skills/codetrail/agents/opencode/codetrail-evidence.md");
-const OPENAI_AGENT: &str = include_str!("../skills/codetrail/agents/openai.yaml");
 
-const CODEX_FILES: &[SkillAsset] = &[
-    SkillAsset {
-        content: SKILL,
-        user_path: &[".codex", "skills", "codetrail", "SKILL.md"],
-        project_path: &[".codex", "skills", "codetrail", "SKILL.md"],
-    },
-    SkillAsset {
-        content: CODEX_AGENT,
-        user_path: &[".codex", "agents", "codetrail-evidence.toml"],
-        project_path: &[".codex", "agents", "codetrail-evidence.toml"],
-    },
-];
-
-const OPENCODE_FILES: &[SkillAsset] = &[SkillAsset {
-    content: OPENCODE_AGENT,
-    user_path: &[".config", "opencode", "agents", "codetrail-evidence.md"],
-    project_path: &[".opencode", "agents", "codetrail-evidence.md"],
+const CODEX_FILES: &[SkillAsset] = &[SkillAsset {
+    content: SKILL,
+    user_path: &[".codex", "skills", "codetrail", "SKILL.md"],
+    project_path: &[".codex", "skills", "codetrail", "SKILL.md"],
 }];
 
 const CLAUDE_FILES: &[SkillAsset] = &[SkillAsset {
-    content: OPENCODE_AGENT,
-    user_path: &[".claude", "agents", "codetrail-evidence.md"],
-    project_path: &[".claude", "agents", "codetrail-evidence.md"],
+    content: SKILL,
+    user_path: &[".claude", "skills", "codetrail", "SKILL.md"],
+    project_path: &[".claude", "skills", "codetrail", "SKILL.md"],
 }];
 
 const CURSOR_FILES: &[SkillAsset] = &[SkillAsset {
@@ -424,22 +407,11 @@ const ROO_FILES: &[SkillAsset] = &[SkillAsset {
     project_path: &[".roo", "rules", "codetrail.md"],
 }];
 
-const OPENAI_FILES: &[SkillAsset] = &[SkillAsset {
-    content: OPENAI_AGENT,
-    user_path: &[".openai", "agents", "codetrail.yaml"],
-    project_path: &[".openai", "agents", "codetrail.yaml"],
-}];
-
 const SKILL_TARGETS: &[SkillTarget] = &[
     SkillTarget {
         id: "codex",
         label: "Codex",
         files: CODEX_FILES,
-    },
-    SkillTarget {
-        id: "opencode",
-        label: "OpenCode",
-        files: OPENCODE_FILES,
     },
     SkillTarget {
         id: "claude",
@@ -465,11 +437,6 @@ const SKILL_TARGETS: &[SkillTarget] = &[
         id: "roo",
         label: "Roo",
         files: ROO_FILES,
-    },
-    SkillTarget {
-        id: "openai",
-        label: "OpenAI Agents",
-        files: OPENAI_FILES,
     },
 ];
 
