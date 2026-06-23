@@ -11,14 +11,14 @@
 | MCP tool registration | `mod.rs` | Tool names, schemas, dispatch, responses. |
 | JSON-RPC protocol structs | `protocol.rs` | Request/response/error envelope types. |
 | Shared query behavior | `../query/mod.rs`, `../commands.rs` | CLI and MCP should not fork facts. |
-| Output projection | `../output.rs` | Public result shape and caveat structure. |
+| Output projection | `../output.rs` | Public result and error shape. |
 | Contract tests | `../../tests/cli.rs` | Includes MCP stdio parity coverage. |
 
 ## CONVENTIONS
 
-- MCP tool results should use the same public projection as `--output json`: `results`, `page`, `caveats`.
+- MCP tool results should use the same public projection as `--output json`: `results` and `page`, plus `error` only for failures.
 - Keep tool schemas stable and explicit. Schema-only changes can break clients even when Rust tests compile.
-- Normalize command errors into structured caveats where possible; avoid raw internal error strings as machine contract.
+- Normalize command errors into `error.code` and `error.message`; avoid raw internal error strings as machine contract.
 - If a tool wraps search/index/graph behavior, preserve reliability labels from the underlying implementation.
 - MCP stdout is protocol traffic. Diagnostics belong on stderr or structured responses, not loose prints.
 

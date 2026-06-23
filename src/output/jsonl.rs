@@ -15,11 +15,25 @@ struct ResultEvent<'a> {
 struct PageEvent {
     event: &'static str,
     page: PublicPage,
-    caveats: Vec<Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct ErrorEvent<'a> {
+    event: &'static str,
+    error: &'a Value,
 }
 
 pub(super) fn render_jsonl(value: &Value, out: &mut dyn Write) -> io::Result<()> {
     let public = public_response(value);
+    if let Some(error) = public.error.as_ref() {
+        let event = ErrorEvent {
+            event: "error",
+            error,
+        };
+        serde_json::to_writer(&mut *out, &event)?;
+        writeln!(out)?;
+        return Ok(());
+    }
     if let Some(results) = public.results.as_array() {
         for result in results {
             let event = ResultEvent {
@@ -33,7 +47,6 @@ pub(super) fn render_jsonl(value: &Value, out: &mut dyn Write) -> io::Result<()>
     let event = PageEvent {
         event: "page",
         page: public.page,
-        caveats: public.caveats,
     };
     serde_json::to_writer(&mut *out, &event)?;
     writeln!(out)?;

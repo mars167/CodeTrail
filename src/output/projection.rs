@@ -1,13 +1,14 @@
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::caveats::{public_caveats, public_page_truncated};
+use super::caveats::public_page_truncated;
 
 #[derive(Debug, Serialize)]
 pub(super) struct PublicResponse {
     pub(super) results: Value,
     pub(super) page: PublicPage,
-    pub(super) caveats: Vec<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) error: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -24,7 +25,7 @@ pub(super) fn public_response(value: &Value) -> PublicResponse {
             truncated: public_page_truncated(value),
             next_cursor: value.get("nextCursor").cloned().unwrap_or(Value::Null),
         },
-        caveats: public_caveats(value),
+        error: public_error(value),
     }
 }
 
@@ -36,14 +37,19 @@ pub fn public_response_value(value: &Value) -> Value {
                 "truncated": false,
                 "nextCursor": null
             },
-            "caveats": [
-                {
-                    "code": "serialization_error",
-                    "message": "failed to serialize public response"
-                }
-            ]
+            "error": {
+                "code": "serialization_error",
+                "message": "failed to serialize public response"
+            }
         })
     })
+}
+
+fn public_error(value: &Value) -> Option<Value> {
+    if value.get("ok").and_then(Value::as_bool) != Some(false) {
+        return None;
+    }
+    value.get("error").cloned()
 }
 
 fn public_results(value: &Value) -> Value {
@@ -124,5 +130,22 @@ fn keep_public_field(
     if key == "warning" {
         return value.as_str().is_some_and(|warning| !warning.is_empty());
     }
+    if matches!(key, "level" | "layer") && value.as_str().is_some_and(is_internal_reliability_label)
+    {
+        return false;
+    }
     true
+}
+
+fn is_internal_reliability_label(value: &str) -> bool {
+    matches!(
+        value,
+        "source_fact"
+            | "precise_fact"
+            | "parser_fact"
+            | "inferred_candidate"
+            | "freshness"
+            | "remote_verified"
+            | "remote_unverified"
+    )
 }

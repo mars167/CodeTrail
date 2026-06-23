@@ -4,8 +4,6 @@ use std::io::{self, Write};
 
 use serde_json::Value;
 
-use super::caveats::public_caveats;
-
 use status::{is_status_like, render_text_status_like};
 
 pub(super) fn render_text(value: &Value, out: &mut dyn Write) -> io::Result<()> {
@@ -69,7 +67,6 @@ pub(super) fn render_text(value: &Value, out: &mut dyn Write) -> io::Result<()> 
 
     render_text_results(value, out)?;
     render_text_page_hint(value, out)?;
-    render_text_caveats(value, out)?;
     Ok(())
 }
 
@@ -144,8 +141,7 @@ fn render_text_result(result: &Value, out: &mut dyn Write) -> io::Result<()> {
                 .get("kind")
                 .and_then(Value::as_str)
                 .unwrap_or("symbol");
-            writeln!(out, "{kind:<12} {name}")?;
-            writeln!(out, "  {location}")?;
+            writeln!(out, "{kind:<12} {name}  {location}")?;
             render_text_source_context(result, out)?;
             render_text_relation_summary(result, out)?;
             return Ok(());
@@ -228,38 +224,8 @@ fn render_text_graph(value: &Value, results: &[Value], out: &mut dyn Write) -> i
         if location.is_empty() {
             writeln!(out, "{caller} -> {callee}")?;
         } else {
-            writeln!(out, "{caller} -> {callee}")?;
-            writeln!(out, "  {location}")?;
+            writeln!(out, "{caller} -> {callee}  {location}")?;
         }
-    }
-    Ok(())
-}
-
-fn render_text_caveats(value: &Value, out: &mut dyn Write) -> io::Result<()> {
-    let caveats = public_caveats(value);
-    let filtered = caveats
-        .iter()
-        .filter(|caveat| {
-            !matches!(
-                caveat.get("code").and_then(Value::as_str),
-                Some("no_match" | "broad_query_guard_triggered")
-            )
-        })
-        .collect::<Vec<_>>();
-    if filtered.is_empty() {
-        return Ok(());
-    }
-    writeln!(out)?;
-    for caveat in filtered {
-        let code = caveat
-            .get("code")
-            .and_then(Value::as_str)
-            .unwrap_or("caveat");
-        let message = caveat
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or(code);
-        writeln!(out, "caveat: {code}: {message}")?;
     }
     Ok(())
 }

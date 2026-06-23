@@ -21,11 +21,11 @@
 
 ## CONVENTIONS
 
-- Keep data provenance visible. Result producers, reliability, and caveats should reflect whether data came from local files, fresh index, parser fallback, graph, remote, or live overlay.
+- Keep data provenance visible internally. Result producers, reliability, and warnings should reflect whether data came from local files, fresh index, parser fallback, graph, remote, or live overlay.
 - Search-like commands should help locate evidence, not imply the file content was verified; exact source verification happens through the host editor or agent read tool.
 - Cursor scopes include query args, scan options, and snapshot state; changing any should reject stale cursors rather than silently reusing them.
 - `source_fact` and `precise_fact` can be exact. Parser and graph results stay candidate or fallback-level.
-- Error JSON must still use the public shape with error caveats; do not revive legacy envelopes.
+- Error JSON must still use the public shape with structured `error.code` and `error.message`; do not revive legacy envelopes.
 - Keep stderr diagnostics separate from stdout renderers.
 
 ## ANTI-PATTERNS

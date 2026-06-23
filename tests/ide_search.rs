@@ -268,7 +268,7 @@ fn strict_input_mode_disables_symbol_input_expansion() {
 }
 
 #[test]
-fn public_json_preserves_input_expansion_caveat_without_internal_stats() {
+fn public_json_omits_input_expansion_caveat_and_internal_stats() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src/main/java/example")).unwrap();
     fs::write(
@@ -295,11 +295,5 @@ fn public_json_preserves_input_expansion_caveat_without_internal_stats() {
         .clone();
     let json = parse_json(output);
     assert!(json.get("scanStats").is_none());
-    assert!(json["caveats"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|caveat| caveat["code"] == "query_input_expanded"
-            && caveat["severity"] == "info"
-            && caveat["category"] == "capability"));
+    assert!(json.get("caveats").is_none());
 }

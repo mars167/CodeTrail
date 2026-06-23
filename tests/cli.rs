@@ -210,13 +210,29 @@ fn init_git_repo(path: &std::path::Path) {
         .unwrap();
 }
 
-fn caveat_with_code<'a>(json: &'a Value, code: &str) -> &'a Value {
-    json["caveats"]
-        .as_array()
-        .expect("caveats is an array")
-        .iter()
-        .find(|caveat| caveat["code"] == code)
-        .unwrap_or_else(|| panic!("missing caveat {code}: {}", json["caveats"]))
+fn assert_no_public_caveats(json: &Value) {
+    assert!(
+        json.get("caveats").is_none(),
+        "public output must not include caveats: {json}"
+    );
+}
+
+fn assert_no_public_reliability_labels(json: &Value) {
+    let text = serde_json::to_string(json).unwrap();
+    for label in [
+        "source_fact",
+        "precise_fact",
+        "parser_fact",
+        "inferred_candidate",
+        "freshness",
+        "remote_verified",
+        "remote_unverified",
+    ] {
+        assert!(
+            !text.contains(label),
+            "public output must not include reliability label {label}: {text}"
+        );
+    }
 }
 
 #[test]
@@ -727,7 +743,7 @@ fn warnings_are_structured_with_stable_codes() {
 }
 
 #[test]
-fn public_json_classifies_advanced_command_caveats_by_severity_and_category() {
+fn public_json_omits_caveats_for_advanced_commands() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(
@@ -768,14 +784,8 @@ fn public_json_classifies_advanced_command_caveats_by_severity_and_category() {
         };
         let output = assert.get_output().stdout.clone();
         let json: Value = serde_json::from_slice(&output).unwrap();
-        let expected_code = match args[0] {
-            "refs" => "precise_scip_index_unavailable",
-            "calls" | "callers" => "inferred_candidate",
-            _ => "precise_scip_index_unavailable",
-        };
-        let caveat = caveat_with_code(&json, expected_code);
-        assert_eq!(caveat["severity"], "info", "{args:?}: {json}");
-        assert_eq!(caveat["category"], "capability", "{args:?}: {json}");
+        assert_no_public_caveats(&json);
+        assert_no_public_reliability_labels(&json);
     }
 
     let output = raw_codetrail()
@@ -788,16 +798,11 @@ fn public_json_classifies_advanced_command_caveats_by_severity_and_category() {
         .stdout
         .clone();
     let json: Value = serde_json::from_slice(&output).unwrap();
-    let fallback = caveat_with_code(&json, "precise_scip_index_unavailable");
-    assert_eq!(fallback["severity"], "info");
-    assert_eq!(fallback["category"], "capability");
-    let ambiguous = caveat_with_code(&json, "ambiguous_results");
-    assert_eq!(ambiguous["severity"], "warning");
-    assert_eq!(ambiguous["category"], "risk");
+    assert_no_public_caveats(&json);
 }
 
 #[test]
-fn public_json_keeps_only_results_page_and_caveats() {
+fn public_json_keeps_only_results_and_page() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "before\nneedle\nafter\n").unwrap();
 
@@ -817,10 +822,10 @@ fn public_json_keeps_only_results_page_and_caveats() {
         .keys()
         .cloned()
         .collect::<Vec<_>>();
-    assert_eq!(keys, vec!["caveats", "page", "results"]);
+    assert_eq!(keys, vec!["page", "results"]);
     assert!(json["page"]["nextCursor"].is_null());
     assert_eq!(json["page"]["truncated"], false);
-    assert!(json["caveats"].as_array().unwrap().is_empty());
+    assert_no_public_caveats(&json);
 
     let result = &json["results"][0];
     assert_eq!(result["path"], "sample.txt");
@@ -872,9 +877,7 @@ fn public_json_symbols_include_code_returns_source_and_relations() {
         .any(|caller| caller["enclosingSymbol"] == "caller"));
     assert_eq!(result["relations"]["truncated"], false);
     assert!(calls.iter().all(|call| call.get("fileHash").is_none()));
-    let ambiguous = caveat_with_code(&json, "ambiguous_relations");
-    assert_eq!(ambiguous["severity"], "warning");
-    assert_eq!(ambiguous["category"], "risk");
+    assert_no_public_caveats(&json);
 }
 
 #[test]
@@ -910,8 +913,8 @@ fn public_json_defs_include_code_truncates_large_symbol() {
     assert_eq!(source["truncated"], true);
     assert_eq!(source["truncatedReason"], "code_max_lines");
     assert_eq!(source["content"].as_str().unwrap().lines().count(), 2);
-    let caveat = caveat_with_code(&json, "source_truncated");
-    assert_eq!(caveat["category"], "risk");
+    assert_eq!(json["page"]["truncated"], true);
+    assert_no_public_caveats(&json);
 }
 
 #[test]
@@ -936,8 +939,8 @@ fn code_context_options_require_include_code() {
         .stdout
         .clone();
     let json: Value = serde_json::from_slice(&output).unwrap();
-    let caveat = caveat_with_code(&json, "cli_usage_error");
-    assert_eq!(caveat["severity"], "error");
+    assert_eq!(json["error"]["code"], "cli_usage_error");
+    assert_no_public_caveats(&json);
 }
 
 #[test]
@@ -962,7 +965,7 @@ fn public_json_uses_cursor_without_truncated_caveat_for_limited_pages() {
 
     assert_eq!(first["results"].as_array().unwrap().len(), 1);
     assert_eq!(first["page"]["truncated"], false);
-    assert!(first["caveats"].as_array().unwrap().is_empty());
+    assert_no_public_caveats(&first);
 
     let second_output = raw_codetrail()
         .arg("--path")
@@ -980,7 +983,7 @@ fn public_json_uses_cursor_without_truncated_caveat_for_limited_pages() {
     assert_eq!(second["results"].as_array().unwrap().len(), 1);
     assert_eq!(second["page"]["truncated"], false);
     assert!(second["page"]["nextCursor"].as_str().is_some());
-    assert!(second["caveats"].as_array().unwrap().is_empty());
+    assert_no_public_caveats(&second);
     assert_ne!(first["results"][0]["path"], second["results"][0]["path"]);
 }
 
@@ -3126,7 +3129,7 @@ fn broad_files_star_returns_summary_samples() {
 }
 
 #[test]
-fn public_broad_guard_reports_one_explanatory_caveat() {
+fn public_broad_guard_uses_page_truncation_without_caveat() {
     let dir = tempdir().unwrap();
     for idx in 0..8 {
         fs::write(
@@ -3146,18 +3149,7 @@ fn public_broad_guard_reports_one_explanatory_caveat() {
         .stdout
         .clone();
     let json: Value = serde_json::from_slice(&output).unwrap();
-    let caveats = json["caveats"].as_array().unwrap();
-
-    assert_eq!(caveats.len(), 1);
-    assert_eq!(caveats[0]["code"], "broad_query_guard");
-    assert!(caveats[0]["message"]
-        .as_str()
-        .unwrap()
-        .contains("broad_literal_pattern"));
-    assert!(caveats[0]["message"]
-        .as_str()
-        .unwrap()
-        .contains("--allow-broad"));
+    assert_no_public_caveats(&json);
     assert_eq!(json["page"]["truncated"], true);
     assert!(json["page"]["nextCursor"].is_null());
 }
@@ -3218,7 +3210,7 @@ fn public_allow_broad_limited_page_uses_cursor_without_truncated_caveat() {
     assert_eq!(json["results"].as_array().unwrap().len(), 2);
     assert_eq!(json["page"]["truncated"], false);
     assert!(json["page"]["nextCursor"].as_str().is_some());
-    assert!(json["caveats"].as_array().unwrap().is_empty());
+    assert_no_public_caveats(&json);
 }
 
 #[test]
@@ -3324,6 +3316,55 @@ fn text_output_regular_search_stays_path_line_focused() {
 }
 
 #[test]
+fn text_output_symbols_keep_location_on_result_line() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/lib.rs"), "fn beta() {}\n").unwrap();
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["symbols", "beta"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+    let mut lines = text.lines();
+
+    assert_eq!(lines.next(), Some("function     beta  src/lib.rs:1"));
+    assert_ne!(lines.next(), Some("  src/lib.rs:1"));
+}
+
+#[test]
+fn text_output_call_graph_keeps_location_on_result_line() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/lib.rs"),
+        "fn alpha() {\n    beta();\n}\n\nfn beta() {}\n",
+    )
+    .unwrap();
+
+    for args in [["calls", "alpha"], ["callers", "beta"]] {
+        let output = raw_codetrail()
+            .arg("--path")
+            .arg(dir.path())
+            .args(args)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let text = String::from_utf8(output).unwrap();
+
+        assert!(text.contains("alpha -> beta  src/lib.rs:2"));
+        assert!(!text.contains("\n  src/lib.rs:2\n"));
+    }
+}
+
+#[test]
 fn text_output_no_match_shows_hint_and_exit_code_two() {
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("sample.txt"), "needle\n").unwrap();
@@ -3377,7 +3418,7 @@ fn text_output_broad_query_shows_summary_facets_and_next_action() {
 }
 
 #[test]
-fn text_output_fallback_warning_is_visible() {
+fn text_output_omits_parser_fallback_caveat() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src/lib.rs"), "fn helper() {}\n").unwrap();
@@ -3395,7 +3436,8 @@ fn text_output_fallback_warning_is_visible() {
         .clone();
     let text = String::from_utf8(output).unwrap();
 
-    assert!(text.contains("caveat: precise_scip_index_unavailable"));
+    assert!(!text.contains("caveat:"));
+    assert!(!text.contains("precise_scip_index_unavailable"));
     assert!(text.contains("src/lib.rs:1"));
 }
 
@@ -3810,6 +3852,54 @@ fn index_status_reports_ruby_scip_provider_missing() {
 }
 
 #[test]
+fn index_provider_install_uses_global_lang_filter_when_language_argument_is_absent() {
+    let dir = tempdir().unwrap();
+    let path_dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"mixed\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(dir.path().join("src/lib.rs"), "pub fn alpha() {}\n").unwrap();
+    fs::write(
+        dir.path().join("go.mod"),
+        "module example.com/mixed\n\ngo 1.22\n",
+    )
+    .unwrap();
+    fs::write(dir.path().join("main.go"), "package main\nfunc main() {}\n").unwrap();
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--output")
+        .arg("json")
+        .env("PATH", path_dir.path())
+        .env_remove("CODETRAIL_SCIP_GO")
+        .env_remove("CODETRAIL_SCIP_RUST")
+        .args(["index-provider", "install", "--lang", "rust", "--dry-run"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let results = json["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["language"], "rust");
+    assert_eq!(results[0]["provider"], "rust-analyzer-scip");
+    assert_eq!(results[0]["status"], "planned");
+    assert!(results[0]["installCommands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|line| line
+            .as_str()
+            .unwrap()
+            .contains("rustup component add rust-analyzer")));
+}
+
+#[test]
 fn index_provider_install_dry_run_reports_user_level_commands() {
     let dir = tempdir().unwrap();
     let path_dir = tempdir().unwrap();
@@ -3915,6 +4005,38 @@ fn index_provider_install_json_keeps_child_output_on_stderr() {
     assert!(stderr.contains("child-stderr"));
 }
 
+#[cfg(unix)]
+#[test]
+fn index_provider_install_text_output_suppresses_progress_when_stderr_is_not_tty() {
+    let dir = tempdir().unwrap();
+    let path_dir = tempdir().unwrap();
+    let bundle = path_dir.path().join("bundle");
+    fs::write(
+        &bundle,
+        "#!/bin/sh\necho child-stdout\necho child-stderr >&2\nexit 0\n",
+    )
+    .unwrap();
+    make_executable(&bundle);
+
+    let path_value = format!("{}:/bin:/usr/bin", path_dir.path().display());
+    let assert = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .env("PATH", path_value)
+        .env_remove("CODETRAIL_SCIP_RUBY")
+        .args(["index-provider", "install", "ruby", "--force"])
+        .assert()
+        .failure();
+    let output = assert.get_output();
+    let stdout = String::from_utf8(output.stdout.clone()).unwrap();
+    assert!(stdout.contains("ruby: scip-ruby (installed_not_on_path)"));
+
+    let stderr = String::from_utf8(output.stderr.clone()).unwrap();
+    assert!(stderr.contains("child-stdout"));
+    assert!(stderr.contains("child-stderr"));
+    assert!(!stderr.contains("Installing ruby provider"));
+}
+
 #[test]
 fn skill_install_supports_project_scope_and_dry_run() {
     let dir = tempdir().unwrap();
@@ -3996,10 +4118,14 @@ fn skill_install_requires_target_without_interactive_terminal() {
         .stdout
         .clone();
     let json: Value = serde_json::from_slice(&output).unwrap();
-    let caveat = &json["caveats"][0];
-    let message = caveat["message"].as_str().unwrap();
+    let error = &json["error"];
+    let message = error["message"].as_str().unwrap();
     assert_eq!(json["results"].as_array().unwrap().len(), 0);
-    assert_eq!(caveat["severity"], "error");
+    assert_eq!(
+        error["code"],
+        "skill_target_is_required_in_non_interactive_mode_pass_one_of"
+    );
+    assert_no_public_caveats(&json);
     assert!(message.contains("skill target is required in non-interactive mode"));
     assert!(message.contains("codex"));
     assert!(message.contains("roo"));
@@ -4044,10 +4170,10 @@ fn jsonl_parse_errors_are_error_events() {
         .collect();
 
     assert_eq!(lines.len(), 1);
-    assert_eq!(lines[0]["event"], "page");
-    assert_eq!(lines[0]["caveats"][0]["code"], "cli_usage_error");
-    assert_eq!(lines[0]["page"]["truncated"], false);
-    assert!(lines[0]["page"]["nextCursor"].is_null());
+    assert_eq!(lines[0]["event"], "error");
+    assert_eq!(lines[0]["error"]["code"], "cli_usage_error");
+    assert!(lines[0].get("caveats").is_none());
+    assert!(lines[0].get("page").is_none());
 }
 
 #[test]
@@ -4109,6 +4235,7 @@ fn jsonl_output_streams_result_events_and_summary() {
     assert_eq!(lines[0]["result"]["path"], "sample.txt");
     assert_eq!(lines[2]["event"], "page");
     assert_eq!(lines[2]["page"]["truncated"], false);
+    assert!(lines[2].get("caveats").is_none());
     assert!(lines[2].get("schemaVersion").is_none());
 }
 
@@ -4289,11 +4416,8 @@ fn jsonl_summary_includes_large_content_summary_counts() {
         .collect();
     let summary = lines.last().unwrap();
     assert_eq!(summary["event"], "page");
-    assert!(summary["caveats"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|caveat| caveat["code"] == "truncated_output"));
+    assert_eq!(summary["page"]["truncated"], true);
+    assert!(summary.get("caveats").is_none());
 }
 
 #[test]
@@ -4410,11 +4534,9 @@ fn parser_candidate_budget_is_public_page_truncation() {
     let json: Value = serde_json::from_slice(&output).unwrap();
 
     assert_eq!(json["results"].as_array().unwrap().len(), 1000);
-    let caveat = caveat_with_code(&json, "tree_sitter_candidate_budget_exceeded");
-    assert_eq!(caveat["severity"], "warning");
-    assert_eq!(caveat["category"], "risk");
     assert_eq!(json["page"]["truncated"], true);
     assert!(json["page"]["nextCursor"].is_null());
+    assert_no_public_caveats(&json);
 }
 
 #[test]
@@ -5334,13 +5456,7 @@ fn prebuilt_json_scip_index_drives_precise_defs_refs_and_symbols() {
         .contains("fn needle()"));
     assert!(public_defs_json["results"][0].get("producer").is_none());
     assert!(public_defs_json["results"][0].get("sourceTarget").is_none());
-    let ambiguous = caveat_with_code(&public_defs_json, "ambiguous_relations");
-    assert_eq!(ambiguous["severity"], "warning");
-    assert!(public_defs_json["caveats"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|caveat| caveat["code"] != "source_context_fallback"));
+    assert_no_public_caveats(&public_defs_json);
 }
 
 #[test]
@@ -5974,8 +6090,9 @@ fn manual_scip_commands_are_not_registered() {
         let json: Value = serde_json::from_slice(&output).unwrap();
 
         assert_eq!(json["results"], json!([]));
-        assert_eq!(json["caveats"][0]["code"], "cli_usage_error");
-        assert!(json["caveats"][0]["message"]
+        assert_eq!(json["error"]["code"], "cli_usage_error");
+        assert_no_public_caveats(&json);
+        assert!(json["error"]["message"]
             .as_str()
             .unwrap()
             .contains(subcommand));
@@ -6795,7 +6912,7 @@ fn public_serve_no_watch_returns_note_without_caveat() {
         .clone();
     let json: Value = serde_json::from_slice(&output).unwrap();
 
-    assert!(json["caveats"].as_array().unwrap().is_empty());
+    assert_no_public_caveats(&json);
     assert!(json["results"][0]["service"]["note"]
         .as_str()
         .unwrap()
@@ -6855,6 +6972,31 @@ fn mcp_subcommand_is_hidden_from_help() {
 }
 
 #[test]
+fn call_graph_help_uses_user_facing_boundary_language() {
+    for command in ["calls", "callers"] {
+        let output = raw_codetrail()
+            .args([command, "--help"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let help = String::from_utf8(output).unwrap();
+
+        assert!(
+            !help.contains("inferred_candidate"),
+            "{command} help: {help}"
+        );
+        assert!(
+            help.contains("navigation evidence"),
+            "{command} help: {help}"
+        );
+        assert!(help.contains("may be incomplete"), "{command} help: {help}");
+        assert!(help.contains("verify call sites"), "{command} help: {help}");
+    }
+}
+
+#[test]
 fn mcp_stdio_legacy_find_returns_tool_error() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
@@ -6892,11 +7034,8 @@ fn mcp_stdio_legacy_find_returns_tool_error() {
     assert_eq!(lines[0]["result"]["isError"], true);
     let mcp_find: Value =
         serde_json::from_str(lines[0]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
-    assert!(mcp_find["caveats"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|caveat| caveat["code"] == "unknown_tool"));
+    assert_eq!(mcp_find["error"]["code"], "unknown_tool");
+    assert_no_public_caveats(&mcp_find);
 }
 
 #[test]
@@ -6957,14 +7096,11 @@ fn mcp_stdio_explore_node_is_not_registered_and_returns_tool_error() {
         serde_json::from_str(lines[1]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert!(explore.get("results").is_some());
     assert!(explore.get("page").is_some());
-    assert!(explore.get("caveats").is_some());
+    assert!(explore.get("error").is_some());
     assert_eq!(explore.as_object().unwrap().len(), 3);
     assert!(explore["results"].as_array().unwrap().is_empty());
-    assert!(explore["caveats"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|caveat| caveat["code"] == "unknown_tool"));
+    assert_eq!(explore["error"]["code"], "unknown_tool");
+    assert_no_public_caveats(&explore);
 }
 
 // ---------------------------------------------------------------------------
