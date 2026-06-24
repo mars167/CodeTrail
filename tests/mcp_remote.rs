@@ -55,9 +55,6 @@ fn mcp_find_remote_only_is_legacy_and_rejected() {
     );
 
     assert!(result["results"].as_array().unwrap().is_empty());
-    assert!(result["caveats"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|caveat| caveat["code"] == "unknown_tool"));
+    assert_eq!(result["error"]["code"], "unknown_tool");
+    assert!(result.get("caveats").is_none());
 }

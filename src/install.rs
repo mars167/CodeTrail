@@ -26,6 +26,21 @@ pub struct IndexProviderInstallOptions {
     pub force: bool,
 }
 
+pub struct IndexProviderInstallStep<'a> {
+    pub language: &'a ProjectLanguage,
+    pub provider: &'a str,
+    pub command: &'a str,
+}
+
+pub trait IndexProviderInstallReporter {
+    fn command_started(&mut self, _step: IndexProviderInstallStep<'_>) {}
+    fn command_finished(&mut self) {}
+}
+
+struct NoopIndexProviderInstallReporter;
+
+impl IndexProviderInstallReporter for NoopIndexProviderInstallReporter {}
+
 pub struct SkillInstallOptions {
     pub target: String,
     pub scope: SkillScope,
@@ -53,6 +68,15 @@ pub fn skill_target_options() -> Vec<SkillTargetOption> {
 pub fn install_index_providers(
     workspace: &Workspace,
     options: &IndexProviderInstallOptions,
+) -> Result<(Value, i32)> {
+    let mut reporter = NoopIndexProviderInstallReporter;
+    install_index_providers_with_reporter(workspace, options, &mut reporter)
+}
+
+pub fn install_index_providers_with_reporter(
+    workspace: &Workspace,
+    options: &IndexProviderInstallOptions,
+    reporter: &mut dyn IndexProviderInstallReporter,
 ) -> Result<(Value, i32)> {
     let requirements = provider_requirements(workspace, &options.languages)?;
     let mut results = Vec::new();
@@ -84,7 +108,15 @@ pub fn install_index_providers(
                     .collect();
             } else {
                 for command in commands {
+                    reporter.command_started(IndexProviderInstallStep {
+                        language: &requirement.language,
+                        provider: requirement.provider,
+                        command,
+                    });
                     let command_result = run_shell_command(command, &workspace.root);
+                    reporter.command_finished();
+                    forward_command_output(&command_result.stdout);
+                    forward_command_output(&command_result.stderr);
                     if !command_result.success {
                         status = "failed";
                         exit_code = 1;
@@ -268,6 +300,8 @@ fn first_shell_word(input: &str) -> Option<String> {
 struct CommandResult {
     success: bool,
     exit_code: Option<i32>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
 }
 
 impl CommandResult {
@@ -283,17 +317,17 @@ impl CommandResult {
 fn run_shell_command(command: &str, cwd: &Path) -> CommandResult {
     let output = shell_command(command).current_dir(cwd).output();
     match output {
-        Ok(output) => {
-            forward_command_output(&output.stdout);
-            forward_command_output(&output.stderr);
-            CommandResult {
-                success: output.status.success(),
-                exit_code: output.status.code(),
-            }
-        }
+        Ok(output) => CommandResult {
+            success: output.status.success(),
+            exit_code: output.status.code(),
+            stdout: output.stdout,
+            stderr: output.stderr,
+        },
         Err(_) => CommandResult {
             success: false,
             exit_code: None,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
         },
     }
 }

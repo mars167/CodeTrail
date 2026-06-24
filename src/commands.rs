@@ -9,7 +9,10 @@ use crate::{
     },
     code_context::{self, CodeContextOptions},
     completions, config_index, graph, index,
-    install::{IndexProviderInstallOptions, SkillInstallOptions},
+    install::{
+        IndexProviderInstallOptions, IndexProviderInstallReporter, IndexProviderInstallStep,
+        SkillInstallOptions,
+    },
     output,
     query::{ExploreNodeOptions, QueryOptions, QueryService},
     query_input::InputPlan,
@@ -1006,19 +1009,32 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 dry_run,
                 force,
             } => {
-                let (results, code) = crate::install::install_index_providers(
+                let effective_languages = if languages.is_empty() {
+                    cli.lang.clone()
+                } else {
+                    languages.clone()
+                };
+                let mut install_progress = TtyIndexProviderInstallProgress::new(&cli.output);
+                let install_result = crate::install::install_index_providers_with_reporter(
                     &workspace,
                     &IndexProviderInstallOptions {
-                        languages: languages.clone(),
+                        languages: effective_languages.clone(),
                         dry_run: *dry_run,
                         force: *force,
                     },
-                )?;
+                    &mut install_progress,
+                );
+                if let Ok((_, code)) = &install_result {
+                    install_progress.finish(*code == 0);
+                } else {
+                    install_progress.finish(false);
+                }
+                let (results, code) = install_result?;
                 exit_code = code;
                 output::response(
                     "index-provider install",
                     "index-provider install",
-                    json!({ "languages": languages, "dryRun": dry_run, "force": force }),
+                    json!({ "languages": effective_languages, "dryRun": dry_run, "force": force }),
                     &workspace.snapshot_id,
                     output::freshness(),
                     results,
@@ -1165,6 +1181,66 @@ fn skill_target_id_list() -> String {
         .map(|option| option.id)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+struct TtyIndexProviderInstallProgress<'a> {
+    format: &'a OutputFormat,
+    active: Option<output::ProgressIndicator>,
+    enabled: bool,
+    saw_work: bool,
+}
+
+impl<'a> TtyIndexProviderInstallProgress<'a> {
+    fn new(format: &'a OutputFormat) -> Self {
+        Self {
+            format,
+            active: None,
+            enabled: *format == OutputFormat::Text && io::stderr().is_terminal(),
+            saw_work: false,
+        }
+    }
+
+    fn finish(&mut self, success: bool) {
+        self.finish_active_command();
+        if self.enabled && self.saw_work && success {
+            let _ = writeln!(io::stderr(), "Index provider install complete");
+        }
+    }
+
+    fn finish_active_command(&mut self) {
+        if let Some(progress) = self.active.take() {
+            progress.finish("");
+        }
+    }
+}
+
+impl IndexProviderInstallReporter for TtyIndexProviderInstallProgress<'_> {
+    fn command_started(&mut self, step: IndexProviderInstallStep<'_>) {
+        self.finish_active_command();
+        self.saw_work = true;
+        let message = format!(
+            "Installing {} provider ({}) with {}",
+            step.language,
+            step.provider,
+            short_progress_command(step.command)
+        );
+        self.active = Some(output::ProgressIndicator::start(self.format, message));
+    }
+
+    fn command_finished(&mut self) {
+        self.finish_active_command();
+    }
+}
+
+fn short_progress_command(command: &str) -> String {
+    const MAX_CHARS: usize = 72;
+    let mut chars = command.chars();
+    let shortened = chars.by_ref().take(MAX_CHARS).collect::<String>();
+    if chars.next().is_some() {
+        format!("{shortened}...")
+    } else {
+        shortened
+    }
 }
 
 fn with_progress<T, F>(

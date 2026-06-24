@@ -172,9 +172,15 @@ pub enum Command {
         #[arg(long)]
         method: Vec<String>,
     },
+    #[command(
+        about = "Find outgoing call relationships using available indexes. Results are navigation evidence and may be incomplete; verify call sites before editing."
+    )]
     Calls {
         identifier: String,
     },
+    #[command(
+        about = "Find incoming call relationships using available indexes. Results are navigation evidence and may be incomplete; verify call sites before editing."
+    )]
     Callers {
         identifier: String,
     },

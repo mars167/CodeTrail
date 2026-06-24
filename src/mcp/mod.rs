@@ -19,7 +19,7 @@
 //! ```
 //!
 //! Tool results use the same public JSON projection as CLI `--output json`:
-//! `results`, `page`, and `caveats`.
+//! `results` and `page`, with `error` present only for failures.
 
 use std::io::{self, BufRead, Write};
 
@@ -1029,12 +1029,8 @@ mod tests {
         serde_json::from_str(&result.content[0].text).unwrap()
     }
 
-    fn has_caveat(value: &Value, code: &str) -> bool {
-        value["caveats"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|caveat| caveat["code"] == code)
+    fn has_error_code(value: &Value, code: &str) -> bool {
+        value.get("caveats").is_none() && value.pointer("/error/code") == Some(&json!(code))
     }
 
     // ------------------------------------------------------------------
@@ -1155,7 +1151,7 @@ mod tests {
                 assert!(result.is_error);
                 let text = &result.content[0].text;
                 let parsed: Value = serde_json::from_str(text).unwrap();
-                assert!(has_caveat(&parsed, "unknown_tool"));
+                assert!(has_error_code(&parsed, "unknown_tool"));
             }
             _ => panic!("expected success response"),
         }
@@ -1243,7 +1239,7 @@ mod tests {
         );
         assert!(result.is_error);
         let parsed: Value = serde_json::from_str(&result.content[0].text).unwrap();
-        assert!(has_caveat(&parsed, "invalid_mcp_argument"));
+        assert!(has_error_code(&parsed, "invalid_mcp_argument"));
     }
 
     #[test]
@@ -1269,7 +1265,7 @@ mod tests {
                 assert!(result.is_error);
                 let parsed: Value = serde_json::from_str(&result.content[0].text).unwrap();
                 assert!(parsed["results"].as_array().unwrap().is_empty());
-                assert!(has_caveat(&parsed, "unknown_tool"));
+                assert!(has_error_code(&parsed, "unknown_tool"));
             }
             _ => panic!("expected success for unknown tool"),
         }
@@ -1320,7 +1316,7 @@ mod tests {
                 assert!(result.is_error);
                 let text = &result.content[0].text;
                 let parsed: Value = serde_json::from_str(text).unwrap();
-                assert!(has_caveat(&parsed, "unknown_tool"));
+                assert!(has_error_code(&parsed, "unknown_tool"));
             }
             _ => panic!("expected success response"),
         }
@@ -1375,7 +1371,7 @@ mod tests {
         );
         assert!(result.is_error);
         let parsed: Value = serde_json::from_str(&result.content[0].text).unwrap();
-        assert!(has_caveat(&parsed, "unknown_tool"));
+        assert!(has_error_code(&parsed, "unknown_tool"));
     }
 
     #[test]
@@ -1387,7 +1383,7 @@ mod tests {
         let result = call_tool(&server, "codetrail_grep", json!({ "pattern": "[" }));
         assert!(result.is_error);
         let parsed: Value = serde_json::from_str(&result.content[0].text).unwrap();
-        assert!(has_caveat(&parsed, "unknown_tool"));
+        assert!(has_error_code(&parsed, "unknown_tool"));
     }
 
     #[test]
@@ -1404,7 +1400,7 @@ mod tests {
             );
             assert!(result.is_error);
             let parsed: Value = serde_json::from_str(&result.content[0].text).unwrap();
-            assert!(has_caveat(&parsed, "invalid_mcp_argument"));
+            assert!(has_error_code(&parsed, "invalid_mcp_argument"));
         }
     }
 
@@ -1426,7 +1422,7 @@ mod tests {
         );
         assert!(result.is_error);
         let parsed: Value = serde_json::from_str(&result.content[0].text).unwrap();
-        assert!(has_caveat(&parsed, "unknown_tool"));
+        assert!(has_error_code(&parsed, "unknown_tool"));
     }
 
     #[test]
@@ -1444,7 +1440,7 @@ mod tests {
         let result = call_tool(&server, "codetrail_find", json!({ "text": "public" }));
         assert!(result.is_error);
         let parsed: Value = serde_json::from_str(&result.content[0].text).unwrap();
-        assert!(has_caveat(&parsed, "unknown_tool"));
+        assert!(has_error_code(&parsed, "unknown_tool"));
     }
 
     // ------------------------------------------------------------------

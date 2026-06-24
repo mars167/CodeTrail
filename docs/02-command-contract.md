@@ -22,8 +22,8 @@ flowchart TB
 | 族 | 命令 | 契约 |
 | --- | --- | --- |
 | 符号与定义 | `symbols`, `defs` | 优先 fresh SCIP；缺失时可使用 tree-sitter parser fallback，可靠性为 `parser_fact` |
-| 精确引用 | `refs` | 只返回 fresh SCIP occurrence 引用；没有可用 SCIP 时返回空结果和 caveat，不做文本 fallback |
-| 调用关系 | `calls`, `callers` | 返回调用候选，可靠性始终是 `inferred_candidate` |
+| 精确引用 | `refs` | 只返回 fresh SCIP occurrence 引用；没有可用 SCIP 时返回空结果，不做文本 fallback |
+| 调用关系 | `calls`, `callers` | 返回调用候选；结果是导航证据，可能不完整，编辑前必须复核调用点 |
 | 索引 | `index build`, `index status`, `index doctor` | 构建、查看和诊断语义索引/SCIP provider 状态 |
 
 旧的文本、路径、route、watch、serve、saved-query、remote pack/unpack、hook 等命令仍可能留在实现中用于兼容、测试或内部维护，但不属于新的公共策略面。Agent 和 MCP 不应把 CodeTrail 当作 `rg`、`fd`、`cat`、`git` 或编辑器读取工具的替代品。
@@ -67,12 +67,12 @@ codetrail callers <callee-name>
 
 如果字符串包含空格、括号或 shell 特殊字符，调用方必须按普通 shell 规则加引号；以 `-` 开头的值应放在 `--` 之后。
 
-- `refs <identifier>` 查 fresh SCIP occurrence。它匹配 exact display name、SCIP symbol、symbol key，以及不带签名的 bare method name。没有可用 SCIP 时返回 `precise_scip_index_unavailable` caveat；调用方如果只需要文本出现位置，应使用 `rg`。
+- `refs <identifier>` 查 fresh SCIP occurrence。它匹配 exact display name、SCIP symbol、symbol key，以及不带签名的 bare method name。没有可用 SCIP 时返回空结果；调用方如果只需要文本出现位置，应使用 `rg`。
 - `defs <identifier>` 和 `symbols <query>` 优先 SCIP；缺失时可返回 parser fallback 的定义/符号事实。
 - `calls <caller-name>` 查询某个函数或方法体内发出的调用。
 - `callers <callee-name>` 查询调用某个目标的调用点。
 - `calls`/`callers` 无论来自 graph 还是 parser，都只是候选关系。
-- 兼容输入命中时结果会带 `matchedInputVariant`；使用兼容候选或非默认 scope 时 public JSON 会返回 `query_input_expanded` caveat。
+- 兼容输入命中时结果会带 `matchedInputVariant`；内部诊断可记录输入扩展，但 public JSON 不暴露诊断字段。
 
 `symbols` 和 `defs` 支持显式源码上下文：
 
@@ -91,7 +91,7 @@ codetrail defs <identifier> --include-code [--code-context <lines>] [--code-max-
 - `index status --summary` 返回紧凑状态，适合脚本预检。
 - `index doctor` 面向语义索引前端，突出 precise index 是否 fresh/usable、provider 状态、语言覆盖和下一步动作。
 
-Provider 缺失或超时时产生 `semantic_provider_missing` / `semantic_provider_partial` caveat。`defs`/`symbols` 可以退到 parser；`refs` 不退到文本引用。
+Provider 缺失或超时时会记录内部诊断。`defs`/`symbols` 可以退到 parser；`refs` 不退到文本引用。
 
 每语言的 provider 命令与 env 覆盖由 `index doctor` 输出给出，不进入默认 skill。例如 Kotlin 使用 `scip-java`，优先 `CODETRAIL_SCIP_KOTLIN`、回退 `CODETRAIL_SCIP_JAVA`；precise setup 缺失时 Kotlin 仅 `defs`/`symbols` 退到 `tree_sitter_parser`，`refs` 不退到文本。
 
@@ -112,7 +112,7 @@ MCP `tools/list` 只暴露语义索引相关工具：
 
 默认输出是短文本，面向真实终端阅读。需要机器读取时显式传 `--output json` 或 `--output jsonl`。
 
-公开 JSON 只保留三类信息：
+公开成功 JSON 只保留两类信息：
 
 ```json
 {
@@ -120,8 +120,7 @@ MCP `tools/list` 只暴露语义索引相关工具：
   "page": {
     "truncated": false,
     "nextCursor": null
-  },
-  "caveats": []
+  }
 }
 ```
 
@@ -131,10 +130,8 @@ MCP `tools/list` 只暴露语义索引相关工具：
 - `symbols/defs --include-code` 的每条结果可包含 `source` 和 `relations`；relation 条目只保留公开定位和候选关系字段。
 - `page.truncated` 表示本次输出被裁切或分页，调用方应缩小查询或使用 `page.nextCursor` 翻页。
 - `page.nextCursor` 是下一页游标；没有下一页时为 `null`。
-- `caveats` 是机器可匹配的边界说明，结构为 `{code,message,severity,category}`。
-- `severity=info, category=capability` 表示能力级别说明，例如没有 SCIP 时的 parser fallback、`refs` 缺失 precise index、`calls/callers` 的 `inferred_candidate`。
-- `severity=warning, category=risk` 表示需要调用方调整或复核的风险边界，例如 `ambiguous_results`、无匹配不可证明和输出裁切。
-- `reliability.llm_instruction` 是英文运行时契约文本。面向中文读者的说明只能放在文档正文，不能放入 Rust runtime strings。
+- 失败 JSON 仍保留结构化 `error.code` / `error.message`，同时带空 `results` 和 `page`。
+- 内部 `warnings`、`reliability` 和诊断字段可继续用于测试和调试，但不进入 public JSON。
 
 `--output compact-json` 是兼容别名，输出同一公开 JSON 形态；它不是 status 摘要模式。
 
@@ -142,10 +139,10 @@ MCP `tools/list` 只暴露语义索引相关工具：
 
 ```json
 {"event":"result","result":{}}
-{"event":"page","page":{"truncated":false,"nextCursor":null},"caveats":[]}
+{"event":"page","page":{"truncated":false,"nextCursor":null}}
 ```
 
-错误不会恢复旧 envelope；JSON 输出为 `results: []` 加错误 caveat，JSONL 输出一个 `page` event 加错误 caveat。
+错误不会恢复旧 envelope；JSON 输出为 `results: []`、`page` 和结构化 `error`，JSONL 输出单条 `error` event。
 
 ## 可靠性流转
 
@@ -169,10 +166,11 @@ flowchart LR
 
 默认 text 输出保持短、可审计、不过度设计：
 
-- `calls`/`callers` 按 caller -> callee 关系渲染，并附带位置。
+- `calls`/`callers` 按 caller -> callee 关系渲染，关系和位置保持同一行。
+- `symbols/defs` 默认结果行包含 kind、name 和位置，保持一行可跳转。
 - `symbols/defs --include-code` 会在 symbol/def 行下渲染带行号的 source block，并附简短 calls/callers 摘要；JSON/JSONL 仍是该能力的主契约。
-- `index build` 在 TTY 上显示加载进度；非 TTY 保持无 spinner，避免污染脚本输出。
-- caveats 以短行展示，避免把内部审计、agent next action 或完整 schema 打到终端。
+- `index build` 和 `index-provider install` 在 TTY 上显示加载进度；非 TTY 保持无 spinner，避免污染脚本输出。
+- 不渲染诊断提示块；能力边界放在 help 和文档中，内部审计、agent next action 或完整 schema 不打到终端。
 
 ## 退出码
 

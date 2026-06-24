@@ -306,7 +306,17 @@ fn render_index_provider_install_result(result: &Value, out: &mut dyn Write) -> 
         .get("status")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
-    writeln!(out, "{language}: {provider} ({status})")?;
+    writeln!(
+        out,
+        "{language}: {provider} ({})",
+        display_index_provider_install_status(status)
+    )?;
+    if status == "skipped_available" {
+        writeln!(
+            out,
+            "  Already available; use --force to run install commands anyway."
+        )?;
+    }
     if let Some(commands) = result.get("installCommands").and_then(Value::as_array) {
         if !commands.is_empty() {
             writeln!(out, "  Install commands:")?;
@@ -329,6 +339,13 @@ fn render_index_provider_install_result(result: &Value, out: &mut dyn Write) -> 
         }
     }
     Ok(())
+}
+
+fn display_index_provider_install_status(status: &str) -> &str {
+    match status {
+        "skipped_available" => "already available; skipped",
+        other => other,
+    }
 }
 
 fn render_skill_install_result(result: &Value, out: &mut dyn Write) -> io::Result<()> {
