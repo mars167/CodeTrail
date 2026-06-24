@@ -189,9 +189,9 @@ run_ruoyi_smoke() {
     defs RuoYiApplication --include-code
 
   assert_codetrail \
-    "refs ShiroUtils returns source references" \
+    "find ShiroUtils returns source matches" \
     '(.results | length >= 5)' \
-    refs ShiroUtils
+    find ShiroUtils
 
   assert_codetrail \
     "status returns workspace snapshot" \

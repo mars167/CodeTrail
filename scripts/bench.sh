@@ -25,7 +25,7 @@ declare -a TESTS=(
   "l0-source|glob|glob '**/*Controller.java'|2|5|"
   "l0-source|grep|grep 'selectUserBy\w+'|2|5|"
   "l0-source|find|find RuoYiApplication|2|5|"
-  "l0-source|refs|refs ShiroUtils|2|5|"
+  "l0-source|find-shiroutils|find ShiroUtils|2|5|"
   "l1-parser|defs|defs SysUserController|2|5|--ignore-failure"
   "l1-parser|symbols|symbols selectUserList|2|5|--ignore-failure"
   "l2-relation|calls|calls selectUserList|2|5|--ignore-failure"
