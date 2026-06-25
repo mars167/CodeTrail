@@ -311,7 +311,7 @@ fn render_text_hierarchy_edges(
         let other_name = item_label(item).unwrap_or_else(|| "<unknown>".to_string());
         let other_path = item_path(item).unwrap_or("");
         let callsite_path = if incoming { other_path } else { parent_path };
-        let location = hierarchy_call_location(call, callsite_path, item);
+        let location = hierarchy_call_location(call, callsite_path, parent_path, item);
         if location.is_empty() {
             writeln!(out, "{prefix}{branch}{other_name}")?;
         } else {
@@ -366,7 +366,7 @@ fn item_location(item: &Value) -> String {
     )
 }
 
-fn hierarchy_call_location(call: &Value, path: &str, item: &Value) -> String {
+fn hierarchy_call_location(call: &Value, path: &str, parent_path: &str, item: &Value) -> String {
     if path.is_empty() {
         return String::new();
     }
@@ -376,7 +376,29 @@ fn hierarchy_call_location(call: &Value, path: &str, item: &Value) -> String {
         .and_then(|ranges| ranges.first())
         .or_else(|| item.get("selectionRange"))
         .or_else(|| item.get("range"));
+    if path == parent_path {
+        return format_relative_location(range);
+    }
     format_location(path, range)
+}
+
+fn format_relative_location(range: Option<&Value>) -> String {
+    let Some(range) = range else {
+        return String::new();
+    };
+    let start = range
+        .pointer("/start/line")
+        .and_then(Value::as_u64)
+        .unwrap_or(1);
+    let end = range
+        .pointer("/end/line")
+        .and_then(Value::as_u64)
+        .unwrap_or(start);
+    if start == end {
+        format!(":{start}")
+    } else {
+        format!(":{start}-{end}")
+    }
 }
 
 fn call_hierarchy_empty_hint(value: &Value) -> Option<&str> {

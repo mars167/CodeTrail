@@ -5806,12 +5806,16 @@ public class SampleService {
     let text = String::from_utf8(text).unwrap();
     assert!(text.contains("Call hierarchy for \"start\""));
     assert!(text.contains("outgoing:"));
-    assert!(text.contains("  |- SampleService.run()  src/main/java/example/SampleService.java:17"));
-    assert!(text.contains(
-        "  |- SampleService.Payload.getName()  src/main/java/example/SampleService.java:18"
-    ));
-    assert!(text
-        .contains("SampleService.Payload.builder()  src/main/java/example/SampleService.java:19"));
+    assert!(text.contains("src/main/java/example/SampleService.java:"));
+    assert_eq!(
+        text.matches("src/main/java/example/SampleService.java:")
+            .count(),
+        1,
+        "call-hierarchy text should not repeat the same file path on every child edge: {text}"
+    );
+    assert!(text.contains("  |- SampleService.run()  :17"));
+    assert!(text.contains("  |- SampleService.Payload.getName()  :18"));
+    assert!(text.contains("SampleService.Payload.builder()  :19"));
     assert!(
         !text.contains("missingAudit"),
         "call-hierarchy text must not expose unresolved calls without a function signature: {text}"
