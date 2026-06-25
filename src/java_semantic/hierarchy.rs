@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use clap::ValueEnum;
 use serde_json::{json, Value};
@@ -53,6 +53,7 @@ pub fn hierarchy_for_roots(
     options: CallHierarchyOptions,
     limit: usize,
 ) -> Vec<Value> {
+    let index = HierarchyIndex::new(data);
     let mut results = Vec::new();
     for root in roots {
         let mut result = json!({
@@ -62,16 +63,17 @@ pub fn hierarchy_for_roots(
         });
         if options.direction.include_incoming() {
             result["incomingCalls"] = Value::Array(expand_incoming(
-                data,
+                &index,
                 &root.symbol_id,
                 options.depth.max(1),
                 limit,
+                options.include_overrides,
                 &mut BTreeSet::new(),
             ));
         }
         if options.direction.include_outgoing() {
             result["outgoingCalls"] = Value::Array(expand_outgoing(
-                data,
+                &index,
                 &root.symbol_id,
                 options.depth.max(1),
                 limit,
@@ -87,22 +89,85 @@ pub fn hierarchy_for_roots(
     results
 }
 
+struct HierarchyIndex<'a> {
+    symbols: BTreeMap<&'a str, &'a JavaSymbol>,
+    incoming_declared: BTreeMap<&'a str, Vec<&'a JavaCallEdge>>,
+    incoming_possible: BTreeMap<&'a str, Vec<&'a JavaCallEdge>>,
+    outgoing: BTreeMap<&'a str, Vec<&'a JavaCallEdge>>,
+}
+
+impl<'a> HierarchyIndex<'a> {
+    fn new(data: &'a JavaSemanticData) -> Self {
+        let symbols = data
+            .symbols
+            .iter()
+            .map(|symbol| (symbol.symbol_id.as_str(), symbol))
+            .collect::<BTreeMap<_, _>>();
+        let mut incoming_declared = BTreeMap::<&str, Vec<&JavaCallEdge>>::new();
+        let mut incoming_possible = BTreeMap::<&str, Vec<&JavaCallEdge>>::new();
+        let mut outgoing = BTreeMap::<&str, Vec<&JavaCallEdge>>::new();
+        for edge in &data.call_edges {
+            outgoing
+                .entry(edge.caller_symbol.as_str())
+                .or_default()
+                .push(edge);
+            if let Some(callee) = edge.callee_symbol.as_deref() {
+                push_unique_edge(incoming_declared.entry(callee).or_default(), edge);
+                push_unique_edge(incoming_possible.entry(callee).or_default(), edge);
+            }
+            for possible in &edge.possible_callees {
+                push_unique_edge(
+                    incoming_possible.entry(possible.as_str()).or_default(),
+                    edge,
+                );
+            }
+        }
+        Self {
+            symbols,
+            incoming_declared,
+            incoming_possible,
+            outgoing,
+        }
+    }
+
+    fn symbol(&self, symbol_id: &str) -> Option<&'a JavaSymbol> {
+        self.symbols.get(symbol_id).copied()
+    }
+
+    fn incoming(&self, symbol_id: &str, include_possible: bool) -> &[&'a JavaCallEdge] {
+        let source = if include_possible {
+            &self.incoming_possible
+        } else {
+            &self.incoming_declared
+        };
+        source.get(symbol_id).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    fn outgoing(&self, symbol_id: &str) -> &[&'a JavaCallEdge] {
+        self.outgoing
+            .get(symbol_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+}
+
 fn expand_incoming(
-    data: &JavaSemanticData,
+    index: &HierarchyIndex<'_>,
     symbol_id: &str,
     depth: usize,
     limit: usize,
+    include_overrides: bool,
     seen: &mut BTreeSet<String>,
 ) -> Vec<Value> {
     if depth == 0 || !seen.insert(format!("incoming:{symbol_id}")) {
         return Vec::new();
     }
-    let mut calls = data
-        .call_edges
+    let mut calls = index
+        .incoming(symbol_id, include_overrides)
         .iter()
-        .filter(|edge| edge_targets_symbol(edge, symbol_id, false))
+        .copied()
         .filter_map(|edge| {
-            let caller = symbol(data, &edge.caller_symbol)?;
+            let caller = index.symbol(&edge.caller_symbol)?;
             let mut value = json!({
                 "from": item(caller),
                 "fromRanges": [edge.range.to_lsp_json()],
@@ -110,10 +175,11 @@ fn expand_incoming(
             });
             if depth > 1 {
                 value["children"] = Value::Array(expand_incoming(
-                    data,
+                    index,
                     &caller.symbol_id,
                     depth - 1,
                     limit,
+                    include_overrides,
                     seen,
                 ));
             }
@@ -126,7 +192,7 @@ fn expand_incoming(
 }
 
 fn expand_outgoing(
-    data: &JavaSemanticData,
+    index: &HierarchyIndex<'_>,
     symbol_id: &str,
     depth: usize,
     limit: usize,
@@ -136,15 +202,15 @@ fn expand_outgoing(
     if depth == 0 || !seen.insert(format!("outgoing:{symbol_id}")) {
         return Vec::new();
     }
-    let mut calls = data
-        .call_edges
+    let mut calls = index
+        .outgoing(symbol_id)
         .iter()
-        .filter(|edge| edge.caller_symbol == symbol_id)
+        .copied()
         .filter_map(|edge| {
             let targets = edge_targets(edge, include_overrides);
             let mut items = Vec::new();
             for target in targets {
-                let Some(callee) = symbol(data, &target) else {
+                let Some(callee) = index.symbol(&target) else {
                     continue;
                 };
                 let mut value = json!({
@@ -154,7 +220,7 @@ fn expand_outgoing(
                 });
                 if depth > 1 {
                     value["children"] = Value::Array(expand_outgoing(
-                        data,
+                        index,
                         &callee.symbol_id,
                         depth - 1,
                         limit,
@@ -173,29 +239,36 @@ fn expand_outgoing(
     calls
 }
 
-fn edge_targets_symbol(edge: &JavaCallEdge, symbol_id: &str, include_possible: bool) -> bool {
-    edge.callee_symbol.as_deref() == Some(symbol_id)
-        || (include_possible
-            && edge
-                .possible_callees
-                .iter()
-                .any(|candidate| candidate == symbol_id))
-}
-
 fn edge_targets(edge: &JavaCallEdge, include_overrides: bool) -> Vec<String> {
-    if include_overrides && !edge.possible_callees.is_empty() {
-        return edge.possible_callees.clone();
-    }
-    edge.callee_symbol
+    let mut targets = edge
+        .callee_symbol
         .clone()
         .into_iter()
-        .collect::<Vec<String>>()
+        .collect::<Vec<String>>();
+    if include_overrides {
+        targets.extend(edge.possible_callees.iter().cloned());
+    }
+    targets.sort();
+    targets.dedup();
+    targets
 }
 
-fn symbol<'a>(data: &'a JavaSemanticData, symbol_id: &str) -> Option<&'a JavaSymbol> {
-    data.symbols
-        .iter()
-        .find(|symbol| symbol.symbol_id == symbol_id)
+fn push_unique_edge<'a>(edges: &mut Vec<&'a JavaCallEdge>, edge: &'a JavaCallEdge) {
+    let key = edge_key(edge);
+    if edges.iter().any(|existing| edge_key(existing) == key) {
+        return;
+    }
+    edges.push(edge);
+}
+
+fn edge_key(edge: &JavaCallEdge) -> (&str, &str, u32, u32, Option<&str>) {
+    (
+        edge.caller_symbol.as_str(),
+        edge.path.as_str(),
+        edge.range.start_line,
+        edge.range.start_column,
+        edge.callee_symbol.as_deref(),
+    )
 }
 
 pub fn item(symbol: &JavaSymbol) -> Value {

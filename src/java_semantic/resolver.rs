@@ -24,6 +24,7 @@ struct ResolverTables {
     type_by_simple: BTreeMap<String, Vec<String>>,
     methods_by_owner_name_arity: BTreeMap<(String, String, usize), Vec<String>>,
     methods_by_name_arity: BTreeMap<(String, usize), Vec<String>>,
+    subtypes_by_super_name: BTreeMap<String, Vec<String>>,
     type_edges: Vec<crate::java_semantic::model::JavaTypeEdge>,
 }
 
@@ -107,6 +108,7 @@ impl ResolverTables {
         let mut methods_by_owner_name_arity =
             BTreeMap::<(String, String, usize), Vec<String>>::new();
         let mut methods_by_name_arity = BTreeMap::<(String, usize), Vec<String>>::new();
+        let mut subtypes_by_super_name = BTreeMap::<String, Vec<String>>::new();
 
         for symbol in &symbols {
             by_id.insert(symbol.symbol_id.clone(), symbol.clone());
@@ -142,6 +144,19 @@ impl ResolverTables {
                     .push(symbol.symbol_id.clone());
             }
         }
+        for edge in &type_edges {
+            let simple = last_identifier(&edge.supertype);
+            for key in [edge.supertype.clone(), simple] {
+                subtypes_by_super_name
+                    .entry(key)
+                    .or_default()
+                    .push(edge.subtype.clone());
+            }
+        }
+        for subtypes in subtypes_by_super_name.values_mut() {
+            subtypes.sort();
+            subtypes.dedup();
+        }
 
         Self {
             symbols,
@@ -150,6 +165,7 @@ impl ResolverTables {
             type_by_simple,
             methods_by_owner_name_arity,
             methods_by_name_arity,
+            subtypes_by_super_name,
             type_edges,
         }
     }
@@ -227,21 +243,20 @@ impl ResolverTables {
             if !seen.insert(super_name.clone()) {
                 continue;
             }
-            for edge in &self.type_edges {
-                let matches_super = edge.supertype == super_name
-                    || last_identifier(&edge.supertype) == last_identifier(&super_name);
-                if !matches_super {
-                    continue;
-                }
-                let subtype = if self.symbol(&edge.subtype).is_some() {
-                    Some(edge.subtype.clone())
+            let Some(edges) = self.subtypes_by_super_name.get(&super_name) else {
+                continue;
+            };
+            for edge_subtype in edges {
+                let subtype = if self.symbol(edge_subtype).is_some() {
+                    Some(edge_subtype.clone())
                 } else {
-                    self.resolve_type(&edge.subtype, None)
+                    self.resolve_type(edge_subtype, None)
                 };
                 if let Some(subtype) = subtype {
                     if !resolved.contains(&subtype) {
                         if let Some(symbol) = self.symbol(&subtype) {
                             queue.push(symbol.qualified_name.clone());
+                            queue.push(symbol.name.clone());
                         }
                         resolved.push(subtype);
                     }
@@ -317,7 +332,12 @@ fn resolve_call(tables: &ResolverTables, raw: RawJavaCall) -> JavaCallEdge {
         .as_deref()
         .map(|symbol_id| {
             let mut possible = vec![symbol_id.to_string()];
-            possible.extend(tables.override_candidates(symbol_id));
+            if matches!(
+                raw.dispatch_kind,
+                DispatchKind::Virtual | DispatchKind::Interface | DispatchKind::Super
+            ) {
+                possible.extend(tables.override_candidates(symbol_id));
+            }
             possible.sort();
             possible.dedup();
             possible

@@ -5811,6 +5811,141 @@ public class SampleService {
 }
 
 #[test]
+fn java_call_hierarchy_incoming_include_overrides_uses_possible_callees() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/p")).unwrap();
+    fs::write(
+        dir.path().join("src/main/java/p/I.java"),
+        "package p;\npublic interface I { void m(); }\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("src/main/java/p/A.java"),
+        "package p;\npublic class A implements I { public void m() {} }\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("src/main/java/p/C.java"),
+        "package p;\npublic class C { public void call() { I i = new A(); i.m(); } }\n",
+    )
+    .unwrap();
+
+    codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args([
+            "call-hierarchy",
+            "p.A.m()",
+            "--direction",
+            "incoming",
+            "--include-overrides",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let results = json["results"].as_array().unwrap();
+    let a_root = results
+        .iter()
+        .find(|result| result["root"]["path"] == "src/main/java/p/A.java")
+        .expect("expected A.m root");
+    let a_incoming = a_root["incomingCalls"].as_array().unwrap();
+    assert_eq!(a_incoming.len(), 1, "{a_incoming:?}");
+    assert_eq!(a_incoming[0]["from"]["name"], "call");
+
+    let i_root = results
+        .iter()
+        .find(|result| result["root"]["path"] == "src/main/java/p/I.java")
+        .expect("expected I.m root");
+    assert_eq!(
+        i_root["incomingCalls"].as_array().unwrap().len(),
+        1,
+        "declared and possible callee entries should not duplicate the same call site"
+    );
+}
+
+#[test]
+fn java_semantic_index_includes_module_generated_sources() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("app/src/main/java/p")).unwrap();
+    fs::create_dir_all(
+        dir.path()
+            .join("app/target/generated-sources/annotations/p/gen"),
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("app/src/main/java/p/C.java"),
+        r#"package p;
+
+import p.gen.G;
+
+public class C {
+    public void call() {
+        new G().m();
+    }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.path()
+            .join("app/target/generated-sources/annotations/p/gen/G.java"),
+        r#"package p.gen;
+
+public class G {
+    public void m() {}
+}
+"#,
+    )
+    .unwrap();
+
+    codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["callers", "m"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["index"]["source"], "java_semantic");
+    assert_eq!(json["results"][0]["resolveStatus"], "Resolved");
+    assert_eq!(json["results"][0]["targetSignature"], "p.gen.G.m()");
+
+    let text = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["callers", "m"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(text).unwrap();
+    assert!(
+        text.contains("C.call() -> p.gen.G.m()  app/src/main/java/p/C.java:7"),
+        "{text}"
+    );
+}
+
+#[test]
 fn parser_fallback_supports_swift_symbols_defs_and_callers() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("Sources/App")).unwrap();

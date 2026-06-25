@@ -167,19 +167,21 @@ pub fn calls(
         return Ok(None);
     };
     let plan = InputPlan::new(identifier, opts.input_mode);
+    let path_filter = PathFilter::new(workspace, opts)?;
+    let symbols = symbol_lookup(&data);
     let mut results = Vec::new();
     for edge in &data.call_edges {
-        let Some(caller) = symbol(&data, &edge.caller_symbol) else {
+        let Some(caller) = symbols.get(edge.caller_symbol.as_str()).copied() else {
             continue;
         };
         let Some(variant) = matched_symbol_variant(caller, &plan, opts.case_sensitive) else {
             continue;
         };
-        if !path_allowed(workspace, opts, &edge.path)? {
+        if !path_filter.allows(&edge.path) {
             continue;
         }
         results.push(attach_matched_input(
-            call_candidate_json(&data, edge),
+            call_candidate_json(&symbols, edge),
             variant,
         ));
     }
@@ -199,12 +201,14 @@ pub fn callers(
         return Ok(None);
     };
     let plan = InputPlan::new(identifier, opts.input_mode);
+    let path_filter = PathFilter::new(workspace, opts)?;
+    let symbols = symbol_lookup(&data);
     let mut results = Vec::new();
     for edge in &data.call_edges {
         let variant = edge
             .callee_symbol
             .as_deref()
-            .and_then(|callee| symbol(&data, callee))
+            .and_then(|callee| symbols.get(callee).copied())
             .and_then(|callee| matched_symbol_variant(callee, &plan, opts.case_sensitive))
             .or_else(|| {
                 plan.matched_variant(
@@ -216,11 +220,11 @@ pub fn callers(
         let Some(variant) = variant else {
             continue;
         };
-        if !path_allowed(workspace, opts, &edge.path)? {
+        if !path_filter.allows(&edge.path) {
             continue;
         }
         results.push(attach_matched_input(
-            call_candidate_json(&data, edge),
+            call_candidate_json(&symbols, edge),
             variant,
         ));
     }
@@ -241,6 +245,7 @@ pub fn query_call_hierarchy(
         return Ok(None);
     };
     let plan = InputPlan::new(identifier, opts.input_mode);
+    let path_filter = PathFilter::new(workspace, opts)?;
     let mut roots = data
         .symbols
         .iter()
@@ -257,7 +262,7 @@ pub fn query_call_hierarchy(
             symbol
                 .path
                 .as_deref()
-                .map(|path| path_allowed(workspace, opts, path).unwrap_or(false))
+                .map(|path| path_filter.allows(path))
                 .unwrap_or(true)
         })
         .cloned()
@@ -290,58 +295,129 @@ fn java_records(workspace: &Workspace, records: &[FileRecord]) -> Result<Vec<Fil
         .filter(|record| record.language == "java" || record.path.ends_with(".java"))
         .cloned()
         .collect::<Vec<_>>();
-    result.extend(generated_source_records(workspace)?);
+    result.extend(generated_source_records(workspace, records)?);
     Ok(result)
 }
 
-fn generated_source_records(workspace: &Workspace) -> Result<Vec<FileRecord>> {
+fn generated_source_records(
+    workspace: &Workspace,
+    source_records: &[FileRecord],
+) -> Result<Vec<FileRecord>> {
     let mut records = Vec::new();
-    for rel in [
+    let module_roots = java_module_roots(workspace, source_records);
+    for base in module_roots {
+        for rel in generated_source_rel_paths() {
+            let dir = base.join(rel);
+            collect_generated_sources(workspace, &dir, &mut records)?;
+        }
+    }
+    records.sort_by(|a, b| a.path.cmp(&b.path));
+    records.dedup_by(|a, b| a.path == b.path);
+    Ok(records)
+}
+
+fn generated_source_rel_paths() -> &'static [&'static str] {
+    &[
         "target/generated-sources/annotations",
         "target/generated-test-sources/test-annotations",
         "build/generated/sources/annotationProcessor/java/main",
         "build/generated/sources/annotationProcessor/java/test",
         "build/generated/sources/delombok",
         "generated/sources/annotationProcessor/java/main",
-    ] {
-        let dir = workspace.root.join(rel);
-        if !dir.exists() {
-            continue;
+    ]
+}
+
+fn java_module_roots(workspace: &Workspace, records: &[FileRecord]) -> BTreeSet<PathBuf> {
+    let mut roots = BTreeSet::from([workspace.root.clone()]);
+    for record in records {
+        if record.language == "java" || record.path.ends_with(".java") {
+            if let Some(root) = module_root_from_java_source(&workspace.root, &record.path) {
+                roots.insert(root);
+            }
         }
-        for entry in WalkBuilder::new(&dir).hidden(false).build().flatten() {
-            let path = entry.path();
-            if !path.extension().is_some_and(|ext| ext == "java") {
+    }
+    if let Ok(graph) = discover_project_graph(&workspace.root) {
+        for owner in graph.source_owners {
+            if owner.language != ProjectLanguage::Java {
                 continue;
             }
-            let metadata = match fs::metadata(path) {
-                Ok(metadata) if metadata.len() <= MAX_FILE_BYTES => metadata,
-                _ => continue,
-            };
-            let content = match fs::read(path) {
-                Ok(content) => content,
-                Err(_) => continue,
-            };
-            let rel_path = path
-                .strip_prefix(&workspace.root)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .replace('\\', "/");
-            records.push(FileRecord {
-                path: rel_path,
-                language: "java".to_string(),
-                size: metadata.len(),
-                mtime_ms: metadata
-                    .modified()
-                    .ok()
-                    .and_then(|mtime| mtime.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|duration| duration.as_millis())
-                    .unwrap_or_default(),
-                mode: 0,
-                hash: format!("blake3:{}", blake3::hash(&content).to_hex()),
+            if let Some(root) = module_root_from_java_source(&workspace.root, &owner.path) {
+                roots.insert(root);
+            }
+        }
+    }
+    roots
+}
+
+fn module_root_from_java_source(workspace_root: &Path, rel_path: &str) -> Option<PathBuf> {
+    for marker in [
+        "/src/main/java/",
+        "/src/test/java/",
+        "/src/integrationTest/java/",
+        "/src/it/java/",
+    ] {
+        if let Some(prefix) = rel_path.split_once(marker).map(|(prefix, _)| prefix) {
+            return Some(if prefix.is_empty() {
+                workspace_root.to_path_buf()
+            } else {
+                workspace_root.join(prefix)
             });
         }
     }
-    Ok(records)
+    for marker in [
+        "src/main/java/",
+        "src/test/java/",
+        "src/integrationTest/java/",
+        "src/it/java/",
+    ] {
+        if rel_path.starts_with(marker) {
+            return Some(workspace_root.to_path_buf());
+        }
+    }
+    None
+}
+
+fn collect_generated_sources(
+    workspace: &Workspace,
+    dir: &Path,
+    records: &mut Vec<FileRecord>,
+) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in WalkBuilder::new(dir).hidden(false).build().flatten() {
+        let path = entry.path();
+        if !path.extension().is_some_and(|ext| ext == "java") {
+            continue;
+        }
+        let metadata = match fs::metadata(path) {
+            Ok(metadata) if metadata.len() <= MAX_FILE_BYTES => metadata,
+            _ => continue,
+        };
+        let content = match fs::read(path) {
+            Ok(content) => content,
+            Err(_) => continue,
+        };
+        let rel_path = path
+            .strip_prefix(&workspace.root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        records.push(FileRecord {
+            path: rel_path,
+            language: "java".to_string(),
+            size: metadata.len(),
+            mtime_ms: metadata
+                .modified()
+                .ok()
+                .and_then(|mtime| mtime.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_millis())
+                .unwrap_or_default(),
+            mode: 0,
+            hash: format!("blake3:{}", blake3::hash(&content).to_hex()),
+        });
+    }
+    Ok(())
 }
 
 fn root_ids_by_path(workspace: &Workspace) -> BTreeMap<String, String> {
@@ -410,17 +486,58 @@ pub fn semantic_dir_for_snapshot(workspace: &Workspace, snapshot_id: &str) -> Pa
 }
 
 fn write_data(dir: &Path, data: &JavaSemanticData) -> Result<()> {
-    fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
-    write_manifest(&dir.join("manifest.json"), &data.manifest)?;
-    write_jsonl(&dir.join("symbols.jsonl"), &data.symbols)?;
-    write_jsonl(&dir.join("occurrences.jsonl"), &data.occurrences)?;
-    write_jsonl(&dir.join("call_edges.jsonl"), &data.call_edges)?;
-    write_jsonl(&dir.join("type_edges.jsonl"), &data.type_edges)?;
+    let parent = dir
+        .parent()
+        .with_context(|| format!("semantic index path has no parent: {}", dir.display()))?;
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    let tmp = sidecar_dir(dir, "tmp");
+    let backup = sidecar_dir(dir, "old");
+    if tmp.exists() {
+        fs::remove_dir_all(&tmp)
+            .with_context(|| format!("failed to remove stale {}", tmp.display()))?;
+    }
+    if backup.exists() {
+        fs::remove_dir_all(&backup)
+            .with_context(|| format!("failed to remove stale {}", backup.display()))?;
+    }
+    fs::create_dir_all(&tmp).with_context(|| format!("failed to create {}", tmp.display()))?;
+    write_jsonl(&tmp.join("symbols.jsonl"), &data.symbols)?;
+    write_jsonl(&tmp.join("occurrences.jsonl"), &data.occurrences)?;
+    write_jsonl(&tmp.join("call_edges.jsonl"), &data.call_edges)?;
+    write_jsonl(&tmp.join("type_edges.jsonl"), &data.type_edges)?;
     write_jsonl(
-        &dir.join("file_contributions.jsonl"),
+        &tmp.join("file_contributions.jsonl"),
         &data.file_contributions,
     )?;
+    write_manifest(&tmp.join("manifest.json"), &data.manifest)?;
+    if dir.exists() {
+        fs::rename(dir, &backup)
+            .with_context(|| format!("failed to move {} to {}", dir.display(), backup.display()))?;
+    }
+    if let Err(error) = fs::rename(&tmp, dir) {
+        if backup.exists() && !dir.exists() {
+            let _ = fs::rename(&backup, dir);
+        }
+        return Err(error)
+            .with_context(|| format!("failed to activate semantic index {}", dir.display()));
+    }
+    if backup.exists() {
+        fs::remove_dir_all(&backup)
+            .with_context(|| format!("failed to remove {}", backup.display()))?;
+    }
     Ok(())
+}
+
+fn sidecar_dir(dir: &Path, suffix: &str) -> PathBuf {
+    let name = dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("semantic");
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    dir.with_file_name(format!("{name}.{suffix}-{}-{stamp}", std::process::id()))
 }
 
 fn read_data(dir: &Path, manifest: JavaSemanticManifest) -> Result<JavaSemanticData> {
@@ -476,22 +593,29 @@ fn matched_symbol_variant<'a>(
     plan: &'a InputPlan,
     case_sensitive: bool,
 ) -> Option<&'a crate::query_input::InputVariant> {
-    [
+    for candidate in [
         symbol.symbol_id.as_str(),
         symbol.name.as_str(),
         symbol.qualified_name.as_str(),
-        symbol.display_signature().as_str(),
     ]
     .into_iter()
-    .find_map(|candidate| plan.matched_variant(candidate, case_sensitive, SymbolMatchMode::Exact))
+    {
+        if let Some(variant) =
+            plan.matched_variant(candidate, case_sensitive, SymbolMatchMode::Exact)
+        {
+            return Some(variant);
+        }
+    }
+    let signature = symbol.display_signature();
+    plan.matched_variant(&signature, case_sensitive, SymbolMatchMode::Exact)
 }
 
-fn call_candidate_json(data: &JavaSemanticData, edge: &JavaCallEdge) -> Value {
-    let caller = symbol(data, &edge.caller_symbol);
+fn call_candidate_json(symbols: &BTreeMap<&str, &JavaSymbol>, edge: &JavaCallEdge) -> Value {
+    let caller = symbols.get(edge.caller_symbol.as_str()).copied();
     let callee = edge
         .callee_symbol
         .as_deref()
-        .and_then(|symbol_id| symbol(data, symbol_id));
+        .and_then(|symbol_id| symbols.get(symbol_id).copied());
     json!({
         "path": edge.path,
         "target": callee.map(|symbol| symbol.name.clone()).unwrap_or_else(|| edge.target_name.clone()),
@@ -538,18 +662,33 @@ fn finalize_results(results: &mut Vec<Value>, limit: usize) {
     }
 }
 
-fn path_allowed(workspace: &Workspace, opts: &ScanOptions, path: &str) -> Result<bool> {
-    if !scope_restricts_paths(opts) {
-        return Ok(true);
+struct PathFilter {
+    allowed: Option<BTreeSet<String>>,
+}
+
+impl PathFilter {
+    fn new(workspace: &Workspace, opts: &ScanOptions) -> Result<Self> {
+        if !scope_restricts_paths(opts) {
+            return Ok(Self { allowed: None });
+        }
+        let mut scope_opts = opts.clone();
+        scope_opts.limit = 0;
+        let allowed = workspace
+            .scan_catalog(&scope_opts)?
+            .into_iter()
+            .map(|record| record.path)
+            .collect::<BTreeSet<_>>();
+        Ok(Self {
+            allowed: Some(allowed),
+        })
     }
-    let mut scope_opts = opts.clone();
-    scope_opts.limit = 0;
-    let allowed = workspace
-        .scan_catalog(&scope_opts)?
-        .into_iter()
-        .map(|record| record.path)
-        .collect::<BTreeSet<_>>();
-    Ok(allowed.contains(path))
+
+    fn allows(&self, path: &str) -> bool {
+        self.allowed
+            .as_ref()
+            .map(|allowed| allowed.contains(path))
+            .unwrap_or(true)
+    }
 }
 
 fn scope_restricts_paths(opts: &ScanOptions) -> bool {
@@ -562,10 +701,11 @@ fn scope_restricts_paths(opts: &ScanOptions) -> bool {
         || !opts.lang.is_empty()
 }
 
-fn symbol<'a>(data: &'a JavaSemanticData, symbol_id: &str) -> Option<&'a JavaSymbol> {
+fn symbol_lookup(data: &JavaSemanticData) -> BTreeMap<&str, &JavaSymbol> {
     data.symbols
         .iter()
-        .find(|symbol| symbol.symbol_id == symbol_id)
+        .map(|symbol| (symbol.symbol_id.as_str(), symbol))
+        .collect()
 }
 
 fn is_generated_path(path: &str) -> bool {
