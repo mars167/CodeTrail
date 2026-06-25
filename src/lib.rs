@@ -13,6 +13,7 @@ pub mod index;
 mod index_status;
 pub mod install;
 pub mod java_provider;
+pub mod java_semantic;
 pub mod lancedb_store;
 pub mod lsp;
 pub mod output;

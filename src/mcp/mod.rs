@@ -30,6 +30,7 @@ use crate::{
     code_context::{
         CodeContextOptions, DEFAULT_CODE_CONTEXT_LINES, DEFAULT_CODE_MAX_LINES, MAX_CODE_MAX_LINES,
     },
+    java_semantic::{CallHierarchyDirection, CallHierarchyOptions},
     output,
     query::{ExploreNodeOptions, QueryOptions, QueryService},
     query_input::InputMode,
@@ -326,7 +327,7 @@ fn tool_definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "codetrail_calls".to_string(),
             description:
-                "Find outgoing calls from a given function/symbol. Results are inferred candidates due to limitations in static analysis."
+                "Find outgoing call relationships using available indexes. Results are navigation evidence and may be incomplete; verify call sites before editing."
                     .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -352,12 +353,41 @@ fn tool_definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "codetrail_callers".to_string(),
             description:
-                "Find incoming callers of a given function/symbol. Results are inferred candidates due to limitations in static analysis."
+                "Find incoming call relationships using available indexes. Results are navigation evidence and may be incomplete; verify call sites before editing."
                     .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "identifier": { "type": "string", "description": "Function/symbol name to query incoming callers for" },
+                    "dir": { "type": "array", "items": { "type": "string" }, "description": "Workspace-relative directories to search (OR filter)" },
+                    "ext": { "type": "array", "items": { "type": "string" }, "description": "File extensions to search, with or without a leading dot" },
+                    "filePattern": { "type": "array", "items": { "type": "string" }, "description": "Path patterns applied before call search" },
+                    "fileMode": { "type": "string", "enum": ["literal", "regex", "wildcard", "glob"], "default": "wildcard", "description": "Pattern mode for filePattern" },
+                    "caseSensitive": { "type": "boolean", "default": false, "description": "Use exact case for symbol input matching" },
+                    "inputMode": { "type": "string", "enum": ["compatible", "strict"], "default": "compatible", "description": "Symbol input handling mode" },
+                    "include": { "type": "array", "items": { "type": "string" }, "description": "Path substrings to include" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Path substrings to exclude" },
+                    "lang": { "type": "array", "items": { "type": "string" }, "description": "Languages to include" },
+                    "changed": { "type": "boolean", "default": false, "description": "Restrict search to git changed files" },
+                    "cursor": { "type": "string", "description": "Pagination cursor from a previous response" },
+                    "allowBroad": { "type": "boolean", "default": false, "description": "Allow broad queries to return full paginated results" },
+                    "limit": { "type": "integer", "minimum": 0, "default": 100, "description": "Max results" }
+                },
+                "required": ["identifier"]
+            }),
+        },
+        ToolDef {
+            name: "codetrail_call_hierarchy".to_string(),
+            description:
+                "Find Java incomingCalls/outgoingCalls call hierarchy using available indexes. Results are navigation evidence and may be incomplete; verify call sites before editing."
+                    .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "identifier": { "type": "string", "description": "Function/symbol name to query call hierarchy for" },
+                    "direction": { "type": "string", "enum": ["incoming", "outgoing", "both"], "default": "both" },
+                    "depth": { "type": "integer", "minimum": 1, "maximum": 8, "default": 1 },
+                    "includeOverrides": { "type": "boolean", "default": false },
                     "dir": { "type": "array", "items": { "type": "string" }, "description": "Workspace-relative directories to search (OR filter)" },
                     "ext": { "type": "array", "items": { "type": "string" }, "description": "File extensions to search, with or without a leading dot" },
                     "filePattern": { "type": "array", "items": { "type": "string" }, "description": "Path patterns applied before call search" },
@@ -439,6 +469,7 @@ fn is_public_mcp_tool(name: &str) -> bool {
             | "codetrail_symbols"
             | "codetrail_calls"
             | "codetrail_callers"
+            | "codetrail_call_hierarchy"
             | "codetrail_status"
     )
 }
@@ -680,6 +711,11 @@ impl Server {
                 let identifier = required_str(args, "identifier")?;
                 self.service.callers(identifier, &opts)
             }
+            "codetrail_call_hierarchy" => {
+                let identifier = required_str(args, "identifier")?;
+                self.service
+                    .call_hierarchy(identifier, &opts, parse_call_hierarchy_options(args)?)
+            }
             "codetrail_changed" => self.service.changed(),
             "codetrail_status" => self.service.status(),
             _ => Err(anyhow::anyhow!("unknown tool: {name}")),
@@ -858,6 +894,38 @@ fn parse_explore_node_options(args: Option<&Value>) -> Result<ExploreNodeOptions
         compact,
         max_bytes,
     ))
+}
+
+fn parse_call_hierarchy_options(args: Option<&Value>) -> Result<CallHierarchyOptions> {
+    let Some(obj) = args.and_then(Value::as_object) else {
+        return Ok(CallHierarchyOptions::default());
+    };
+    let direction = match obj
+        .get("direction")
+        .and_then(Value::as_str)
+        .unwrap_or("both")
+    {
+        "incoming" => CallHierarchyDirection::Incoming,
+        "outgoing" => CallHierarchyDirection::Outgoing,
+        "both" => CallHierarchyDirection::Both,
+        other => {
+            return Err(anyhow::anyhow!(
+                "invalid_mcp_argument: unsupported call hierarchy direction {other}"
+            ))
+        }
+    };
+    let depth = optional_usize_arg(obj, "depth", 1)?;
+    validate_explore_bound("depth", depth, 1, 8)?;
+    let include_overrides = obj
+        .get("includeOverrides")
+        .or_else(|| obj.get("include_overrides"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Ok(CallHierarchyOptions {
+        direction,
+        depth,
+        include_overrides,
+    })
 }
 
 fn validate_explore_bound(name: &str, value: usize, min: usize, max: usize) -> Result<()> {
@@ -1088,6 +1156,7 @@ mod tests {
                 assert!(names.contains(&"codetrail_symbols"));
                 assert!(names.contains(&"codetrail_calls"));
                 assert!(names.contains(&"codetrail_callers"));
+                assert!(names.contains(&"codetrail_call_hierarchy"));
                 assert!(!names.contains(&"codetrail_list"));
                 assert!(!names.contains(&"codetrail_tree"));
                 assert!(!names.contains(&"codetrail_read"));
@@ -1098,7 +1167,7 @@ mod tests {
                 assert!(!names.contains(&"codetrail_routes"));
                 assert!(!names.contains(&"codetrail_explore_node"));
                 assert!(names.contains(&"codetrail_status"));
-                assert_eq!(list.tools.len(), 6);
+                assert_eq!(list.tools.len(), 7);
             }
             _ => panic!("expected success response"),
         }

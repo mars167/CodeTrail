@@ -13,6 +13,7 @@ use crate::{
         IndexProviderInstallOptions, IndexProviderInstallReporter, IndexProviderInstallStep,
         SkillInstallOptions,
     },
+    java_semantic::{self, CallHierarchyOptions},
     output,
     query::{ExploreNodeOptions, QueryOptions, QueryService},
     query_input::InputPlan,
@@ -590,6 +591,26 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             )
         }
         Command::Calls { identifier } => {
+            if let Some((index_meta, results)) =
+                java_semantic::calls(&workspace, &scan_opts, identifier)?
+            {
+                return emit_response(
+                    &cli.output,
+                    output::response_with_index(
+                        "calls",
+                        "calls",
+                        scoped_query(
+                            json!({ "identifier": identifier, "producer": "java_semantic" }),
+                            &scan_opts,
+                        ),
+                        &workspace.snapshot_id,
+                        output::inferred_candidate(),
+                        output::IndexedResponseParts::new(index_meta, results, Vec::new()),
+                    ),
+                    &workspace,
+                    cli.save_query.as_deref(),
+                );
+            }
             // Try graph backend first (if built and fresh)
             let graph_store = graph::GraphStore::open(&workspace).ok();
             if let Some(ref store) = graph_store {
@@ -644,6 +665,26 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             )
         }
         Command::Callers { identifier } => {
+            if let Some((index_meta, results)) =
+                java_semantic::callers(&workspace, &scan_opts, identifier)?
+            {
+                return emit_response(
+                    &cli.output,
+                    output::response_with_index(
+                        "callers",
+                        "callers",
+                        scoped_query(
+                            json!({ "identifier": identifier, "producer": "java_semantic" }),
+                            &scan_opts,
+                        ),
+                        &workspace.snapshot_id,
+                        output::inferred_candidate(),
+                        output::IndexedResponseParts::new(index_meta, results, Vec::new()),
+                    ),
+                    &workspace,
+                    cli.save_query.as_deref(),
+                );
+            }
             // Try graph backend first (if built and fresh)
             let graph_store = graph::GraphStore::open(&workspace).ok();
             if let Some(ref store) = graph_store {
@@ -696,6 +737,66 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 results,
                 warnings,
             )
+        }
+        Command::CallHierarchy {
+            identifier,
+            direction,
+            depth,
+            include_overrides,
+        } => {
+            let options = CallHierarchyOptions {
+                direction: *direction,
+                depth: *depth,
+                include_overrides: *include_overrides,
+            };
+            if let Some((index_meta, results)) =
+                java_semantic::query_call_hierarchy(&workspace, &scan_opts, identifier, options)?
+            {
+                exit_code = output::no_match_exit(&results);
+                output::response_with_index(
+                    "call-hierarchy",
+                    "call-hierarchy",
+                    scoped_query(
+                        json!({
+                            "identifier": identifier,
+                            "producer": "java_semantic",
+                            "direction": direction.as_str(),
+                            "depth": depth,
+                            "includeOverrides": include_overrides,
+                        }),
+                        &scan_opts,
+                    ),
+                    &workspace.snapshot_id,
+                    output::inferred_candidate(),
+                    output::IndexedResponseParts::new(index_meta, results, Vec::new()),
+                )
+            } else {
+                exit_code = 1;
+                output::response_with_index(
+                    "call-hierarchy",
+                    "call-hierarchy",
+                    scoped_query(
+                        json!({
+                            "identifier": identifier,
+                            "producer": "java_semantic",
+                            "direction": direction.as_str(),
+                            "depth": depth,
+                            "includeOverrides": include_overrides,
+                            "requires": "fresh_java_semantic_index"
+                        }),
+                        &scan_opts,
+                    ),
+                    &workspace.snapshot_id,
+                    output::freshness(),
+                    output::IndexedResponseParts::new(
+                        output::live_scan_index(),
+                        json!([]),
+                        vec![
+                            "java_semantic_index_unavailable: run codetrail index build to create call hierarchy data".to_string(),
+                        ],
+                    ),
+                )
+            }
         }
         Command::Explore { command } => match command {
             ExploreCommand::Node {
@@ -1393,6 +1494,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Routes { .. } => "routes",
         Command::Calls { .. } => "calls",
         Command::Callers { .. } => "callers",
+        Command::CallHierarchy { .. } => "call-hierarchy",
         Command::Explore { .. } => "explore",
         Command::Changed => "changed",
         Command::Status => "status",

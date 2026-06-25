@@ -2,6 +2,7 @@ use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
 use crate::{
     code_context::MAX_CODE_MAX_LINES,
+    java_semantic::CallHierarchyDirection,
     query_input::InputMode,
     search_pattern::{ContentPatternMode, SearchPatternMode},
 };
@@ -184,6 +185,19 @@ pub enum Command {
     Callers {
         identifier: String,
     },
+    #[command(
+        name = "call-hierarchy",
+        about = "Find Java call hierarchy using available indexes. Results are navigation evidence and may be incomplete; verify call sites before editing."
+    )]
+    CallHierarchy {
+        identifier: String,
+        #[arg(long, value_enum, default_value_t = CallHierarchyDirection::Both)]
+        direction: CallHierarchyDirection,
+        #[arg(long, default_value_t = 1, value_parser = parse_call_hierarchy_depth)]
+        depth: usize,
+        #[arg(long)]
+        include_overrides: bool,
+    },
     #[command(hide = true)]
     Explore {
         #[command(subcommand)]
@@ -264,6 +278,10 @@ fn parse_snippet_lines(value: &str) -> Result<usize, String> {
 
 fn parse_relation_limit(value: &str) -> Result<usize, String> {
     parse_bounded_usize(value, 0, 20, "relation-limit")
+}
+
+fn parse_call_hierarchy_depth(value: &str) -> Result<usize, String> {
+    parse_bounded_usize(value, 1, 8, "depth")
 }
 
 fn parse_max_bytes(value: &str) -> Result<usize, String> {

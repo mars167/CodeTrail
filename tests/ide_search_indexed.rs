@@ -23,7 +23,7 @@ fn parse_json(output: Vec<u8>) -> Value {
 }
 
 #[test]
-fn graph_calls_respect_scope_after_index_build() {
+fn java_semantic_calls_respect_scope_after_index_build() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src/main/java/example")).unwrap();
     fs::create_dir_all(dir.path().join("src/test/java/example")).unwrap();
@@ -61,7 +61,7 @@ fn graph_calls_respect_scope_after_index_build() {
         .iter()
         .map(|result| result["path"].as_str().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(scoped_json["query"]["producer"], "graph");
+    assert_eq!(scoped_json["query"]["producer"], "java_semantic");
     assert_eq!(paths, vec!["src/main/java/example/UserService.java"]);
 
     let compatible_output = codetrail()
@@ -81,7 +81,7 @@ fn graph_calls_respect_scope_after_index_build() {
         .stdout
         .clone();
     let compatible_json = parse_json(compatible_output);
-    assert_eq!(compatible_json["query"]["producer"], "graph");
+    assert_eq!(compatible_json["query"]["producer"], "java_semantic");
     assert_eq!(
         compatible_json["results"][0]["matchedInputVariant"]["kind"],
         "signature_tail"
