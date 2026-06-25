@@ -53,6 +53,12 @@ struct SymbolRow {
     root_id: String,
 }
 
+impl SymbolRow {
+    fn is_function(&self) -> bool {
+        self.public_kind == "function"
+    }
+}
+
 #[derive(Clone, Debug)]
 struct CallEdgeRow {
     edge_id: i64,
@@ -426,7 +432,7 @@ impl JavaSemanticStore {
                 &workspace.snapshot_id,
                 &plan,
                 opts.case_sensitive,
-                &["method", "constructor", "synthetic_method"],
+                &["method", "synthetic_method"],
                 has_scope,
                 opts.limit,
             )?
@@ -865,6 +871,9 @@ impl JavaSemanticStore {
             let Some(caller) = edge.caller.as_ref() else {
                 continue;
             };
+            if !caller.is_function() {
+                continue;
+            }
             let mut value = json!({
                 "from": symbol_item_json(caller),
                 "fromRanges": [edge.range.to_lsp_json()],
@@ -917,11 +926,13 @@ impl JavaSemanticStore {
             }
             targets.sort();
             targets.dedup();
-            let mut emitted = false;
             for target in targets {
                 let Some(callee) = self.symbol_by_id(snapshot_id, &target)? else {
                     continue;
                 };
+                if !callee.is_function() {
+                    continue;
+                }
                 let mut value = json!({
                     "to": symbol_item_json(&callee),
                     "fromRanges": [edge.range.to_lsp_json()],
@@ -939,17 +950,9 @@ impl JavaSemanticStore {
                     )?);
                 }
                 calls.push(value);
-                emitted = true;
                 if limit > 0 && calls.len() >= limit {
                     break;
                 }
-            }
-            if !emitted && (limit == 0 || calls.len() < limit) {
-                calls.push(json!({
-                    "to": unresolved_call_item_json(&edge),
-                    "fromRanges": [edge.range.to_lsp_json()],
-                    "dispatchKind": edge.dispatch_kind.to_lowercase(),
-                }));
             }
             if limit > 0 && calls.len() >= limit {
                 break;
@@ -1360,15 +1363,6 @@ fn symbol_item_json(symbol: &SymbolRow) -> Value {
         "range": symbol.range.as_ref().map(|range| range.to_lsp_json()),
         "selectionRange": symbol.selection_range.as_ref().map(|range| range.to_lsp_json()),
         "detail": symbol.qualified_name,
-    })
-}
-
-fn unresolved_call_item_json(edge: &CallEdgeRow) -> Value {
-    json!({
-        "name": edge.target_name,
-        "signature": edge.target_name,
-        "kind": "function",
-        "detail": edge.target_name,
     })
 }
 

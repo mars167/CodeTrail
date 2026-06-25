@@ -5755,6 +5755,12 @@ public class SampleService {
     assert!(outgoing_calls
         .iter()
         .any(|call| call["to"]["name"] == "builder"));
+    assert!(outgoing_calls.iter().all(|call| {
+        call["to"]["kind"] == "function"
+            && call["to"]["signature"]
+                .as_str()
+                .is_some_and(|signature| signature.contains('('))
+    }));
 
     let incoming = codetrail()
         .arg("--path")
@@ -5804,7 +5810,12 @@ public class SampleService {
     assert!(text.contains(
         "  |- SampleService.Payload.getName()  src/main/java/example/SampleService.java:18"
     ));
-    assert!(text.contains("  `- missingAudit  src/main/java/example/SampleService.java:20"));
+    assert!(text
+        .contains("SampleService.Payload.builder()  src/main/java/example/SampleService.java:19"));
+    assert!(
+        !text.contains("missingAudit"),
+        "call-hierarchy text must not expose unresolved calls without a function signature: {text}"
+    );
     assert!(
         !text.contains("SampleService.start() ->"),
         "call-hierarchy text should not repeat the root on every edge: {text}"

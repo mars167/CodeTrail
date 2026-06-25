@@ -354,16 +354,53 @@ fn merge_scip_symbols(workspace: &Workspace, files: &mut [ExtractedJavaFile]) {
         })
         .collect::<BTreeMap<_, _>>();
     for file in files {
+        let mut remapped_symbols = BTreeMap::new();
         for symbol in &mut file.symbols {
             let Some(range) = &symbol.range else {
                 continue;
             };
             let key = (file.path.clone(), symbol.name.clone(), range.start_line);
             if let Some(scip_symbol) = by_site.get(&key) {
+                remapped_symbols.insert(symbol.symbol_id.clone(), scip_symbol.clone());
                 symbol.symbol_id = scip_symbol.clone();
                 symbol.origin = SymbolOrigin::Scip;
                 symbol.confidence = ResolveConfidence::Scip;
             }
+        }
+        remap_file_symbol_references(file, &remapped_symbols);
+    }
+}
+
+fn remap_file_symbol_references(
+    file: &mut ExtractedJavaFile,
+    remapped_symbols: &BTreeMap<String, String>,
+) {
+    if remapped_symbols.is_empty() {
+        return;
+    }
+    for symbol in &mut file.symbols {
+        if let Some(owner) = symbol.owner_symbol.as_mut() {
+            if let Some(remapped) = remapped_symbols.get(owner) {
+                *owner = remapped.clone();
+            }
+        }
+    }
+    for raw_call in &mut file.raw_calls {
+        if let Some(remapped) = remapped_symbols.get(&raw_call.caller_symbol) {
+            raw_call.caller_symbol = remapped.clone();
+        }
+    }
+    for type_edge in &mut file.type_edges {
+        if let Some(remapped) = remapped_symbols.get(&type_edge.subtype) {
+            type_edge.subtype = remapped.clone();
+        }
+        if let Some(remapped) = remapped_symbols.get(&type_edge.supertype) {
+            type_edge.supertype = remapped.clone();
+        }
+    }
+    for annotation in &mut file.annotations {
+        if let Some(remapped) = remapped_symbols.get(&annotation.owner_symbol) {
+            annotation.owner_symbol = remapped.clone();
         }
     }
 }

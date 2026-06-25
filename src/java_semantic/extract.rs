@@ -29,6 +29,7 @@ struct TypeContext {
 struct MethodContext<'tree> {
     symbol: JavaSymbol,
     body: Option<Node<'tree>>,
+    parameter_types: BTreeMap<String, String>,
 }
 
 pub fn extract_file(
@@ -79,13 +80,16 @@ pub fn extract_file(
 
     for method in methods {
         if let Some(body) = method.body {
-            let local_types = local_variable_types(body, source_bytes);
+            let mut local_types = method.parameter_types;
+            local_types.extend(local_variable_types(body, source_bytes));
             collect_calls_in_method(
                 body,
                 source_bytes,
                 &mut out.raw_calls,
                 &method.symbol,
                 &local_types,
+                &out.imports,
+                &out.package,
             );
         }
     }
@@ -187,6 +191,7 @@ fn walk_top_level<'tree>(
             methods.push(MethodContext {
                 symbol: symbol.clone(),
                 body,
+                parameter_types: parameter_type_bindings(node, source),
             });
             out.symbols.push(symbol);
         }
@@ -419,6 +424,28 @@ fn parameter_types(node: Node, source: &[u8]) -> Vec<String> {
         .collect()
 }
 
+fn parameter_type_bindings(node: Node, source: &[u8]) -> BTreeMap<String, String> {
+    let Some(parameters) = node.child_by_field_name("parameters") else {
+        return BTreeMap::new();
+    };
+    let mut types = BTreeMap::new();
+    for parameter in named_children(parameters).into_iter().filter(|child| {
+        matches!(
+            child.kind(),
+            "formal_parameter" | "spread_parameter" | "receiver_parameter"
+        )
+    }) {
+        let Some(name) = child_text(parameter, "name", source) else {
+            continue;
+        };
+        let Some(type_name) = child_text(parameter, "type", source) else {
+            continue;
+        };
+        types.insert(name, erase_type(&type_name));
+    }
+    types
+}
+
 fn modifiers(node: Node, source: &[u8]) -> Vec<String> {
     node.child_by_field_name("modifiers")
         .or_else(|| child_by_kind(node, "modifiers"))
@@ -508,6 +535,8 @@ fn collect_calls_in_method(
     calls: &mut Vec<RawJavaCall>,
     caller: &JavaSymbol,
     local_types: &BTreeMap<String, String>,
+    imports: &[JavaImport],
+    package: &str,
 ) {
     for node in descendants(body) {
         let Some((target_name, receiver_text, arg_count, dispatch_kind)) =
@@ -515,9 +544,9 @@ fn collect_calls_in_method(
         else {
             continue;
         };
-        let receiver_type = receiver_text
-            .as_deref()
-            .and_then(|receiver| infer_receiver_type(receiver, caller, local_types));
+        let receiver_type = receiver_text.as_deref().and_then(|receiver| {
+            infer_receiver_type(receiver, caller, local_types, imports, package)
+        });
         calls.push(RawJavaCall {
             path: caller.path.clone().unwrap_or_default(),
             file_hash: caller.file_hash.clone(),
@@ -606,6 +635,8 @@ fn infer_receiver_type(
     receiver: &str,
     caller: &JavaSymbol,
     local_types: &BTreeMap<String, String>,
+    imports: &[JavaImport],
+    package: &str,
 ) -> Option<String> {
     match receiver {
         "this" => caller
@@ -614,13 +645,33 @@ fn infer_receiver_type(
             .next()
             .map(ToString::to_string),
         "super" => None,
-        value => local_types.get(value).cloned().or_else(|| {
-            value
-                .chars()
-                .next()
-                .is_some_and(char::is_uppercase)
-                .then(|| value.to_string())
-        }),
+        value => local_types
+            .get(value)
+            .map(|type_name| qualify_type_name(type_name, imports, package))
+            .or_else(|| {
+                value
+                    .chars()
+                    .next()
+                    .is_some_and(char::is_uppercase)
+                    .then(|| qualify_type_name(value, imports, package))
+            }),
+    }
+}
+
+fn qualify_type_name(type_name: &str, imports: &[JavaImport], package: &str) -> String {
+    let erased = erase_type(type_name);
+    if erased.contains('.') {
+        return erased;
+    }
+    if let Some(import) = imports.iter().find(|import| {
+        !import.is_static && !import.is_wildcard && last_identifier(&import.path) == erased
+    }) {
+        return import.path.clone();
+    }
+    if package.is_empty() {
+        erased
+    } else {
+        format!("{package}.{erased}")
     }
 }
 

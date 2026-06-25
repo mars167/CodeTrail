@@ -56,6 +56,9 @@ pub fn hierarchy_for_roots(
     let index = HierarchyIndex::new(data);
     let mut results = Vec::new();
     for root in roots {
+        if !is_function_symbol(root) {
+            continue;
+        }
         let mut result = json!({
             "root": item(root),
             "incomingCalls": [],
@@ -168,6 +171,9 @@ fn expand_incoming(
         .copied()
         .filter_map(|edge| {
             let caller = index.symbol(&edge.caller_symbol)?;
+            if !is_function_symbol(caller) {
+                return None;
+            }
             let mut value = json!({
                 "from": item(caller),
                 "fromRanges": [edge.range.to_lsp_json()],
@@ -213,6 +219,9 @@ fn expand_outgoing(
                 let Some(callee) = index.symbol(&target) else {
                     continue;
                 };
+                if !is_function_symbol(callee) {
+                    continue;
+                }
                 let mut value = json!({
                     "to": item(callee),
                     "fromRanges": [edge.range.to_lsp_json()],
@@ -229,13 +238,6 @@ fn expand_outgoing(
                     ));
                 }
                 items.push(value);
-            }
-            if items.is_empty() {
-                items.push(json!({
-                    "to": unresolved_item(edge),
-                    "fromRanges": [edge.range.to_lsp_json()],
-                    "dispatchKind": format!("{:?}", edge.dispatch_kind).to_lowercase(),
-                }));
             }
             Some(items)
         })
@@ -291,13 +293,12 @@ pub fn item(symbol: &JavaSymbol) -> Value {
     })
 }
 
-fn unresolved_item(edge: &JavaCallEdge) -> Value {
-    json!({
-        "name": edge.target_name,
-        "signature": edge.target_name,
-        "kind": "function",
-        "detail": edge.target_name,
-    })
+fn is_function_symbol(symbol: &JavaSymbol) -> bool {
+    matches!(
+        symbol.kind,
+        crate::java_semantic::model::JavaSymbolKind::Method
+            | crate::java_semantic::model::JavaSymbolKind::SyntheticMethod
+    )
 }
 
 fn truncate(values: &mut Vec<Value>, limit: usize) {
