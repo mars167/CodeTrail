@@ -5694,6 +5694,7 @@ public class SampleService {
         run();
         payload.getName();
         Payload.builder();
+        missingAudit();
     }
 }
 "#,
@@ -5804,9 +5805,40 @@ public class SampleService {
     assert!(text.contains(
         "SampleService.start() -> SampleService.Payload.getName()  src/main/java/example/SampleService.java:18"
     ));
+    assert!(text.contains(
+        "SampleService.start() -> missingAudit  src/main/java/example/SampleService.java:20"
+    ));
     assert!(
         !text.trim_start().starts_with('{'),
         "call-hierarchy text output must not be raw JSON: {text}"
+    );
+}
+
+#[test]
+fn java_call_hierarchy_text_explains_missing_semantic_index() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/example")).unwrap();
+    fs::write(
+        dir.path().join("src/main/java/example/SampleService.java"),
+        "package example;\npublic class SampleService { public void start() { run(); } public void run() {} }\n",
+    )
+    .unwrap();
+
+    let text = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["call-hierarchy", "start", "--direction", "outgoing"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(text).unwrap();
+    assert!(text.contains("Call hierarchy for \"start\" (0)"));
+    assert!(text.contains("run `codetrail index build`"));
+    assert!(
+        !text.contains("fresh_java_semantic_index"),
+        "text output must not expose internal index labels: {text}"
     );
 }
 

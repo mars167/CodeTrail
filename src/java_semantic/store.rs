@@ -917,6 +917,7 @@ impl JavaSemanticStore {
             }
             targets.sort();
             targets.dedup();
+            let mut emitted = false;
             for target in targets {
                 let Some(callee) = self.symbol_by_id(snapshot_id, &target)? else {
                     continue;
@@ -938,9 +939,17 @@ impl JavaSemanticStore {
                     )?);
                 }
                 calls.push(value);
+                emitted = true;
                 if limit > 0 && calls.len() >= limit {
                     break;
                 }
+            }
+            if !emitted && (limit == 0 || calls.len() < limit) {
+                calls.push(json!({
+                    "to": unresolved_call_item_json(&edge),
+                    "fromRanges": [edge.range.to_lsp_json()],
+                    "dispatchKind": edge.dispatch_kind.to_lowercase(),
+                }));
             }
             if limit > 0 && calls.len() >= limit {
                 break;
@@ -1351,6 +1360,15 @@ fn symbol_item_json(symbol: &SymbolRow) -> Value {
         "range": symbol.range.as_ref().map(|range| range.to_lsp_json()),
         "selectionRange": symbol.selection_range.as_ref().map(|range| range.to_lsp_json()),
         "detail": symbol.qualified_name,
+    })
+}
+
+fn unresolved_call_item_json(edge: &CallEdgeRow) -> Value {
+    json!({
+        "name": edge.target_name,
+        "signature": edge.target_name,
+        "kind": "function",
+        "detail": edge.target_name,
     })
 }
 

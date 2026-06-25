@@ -254,6 +254,9 @@ fn render_text_call_hierarchy(
         results.len()
     )?;
     if results.is_empty() {
+        if let Some(message) = call_hierarchy_empty_hint(value) {
+            writeln!(out, "{message}")?;
+        }
         return Ok(());
     }
     writeln!(out)?;
@@ -385,6 +388,16 @@ fn hierarchy_call_location(call: &Value, path: &str, item: &Value) -> String {
         .or_else(|| item.get("selectionRange"))
         .or_else(|| item.get("range"));
     format_location(path, range)
+}
+
+fn call_hierarchy_empty_hint(value: &Value) -> Option<&str> {
+    value
+        .get("warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|warning| warning.get("message").and_then(Value::as_str))
+        .find(|message| message.contains("Java call hierarchy index unavailable"))
 }
 
 fn render_text_page_hint(value: &Value, out: &mut dyn Write) -> io::Result<()> {

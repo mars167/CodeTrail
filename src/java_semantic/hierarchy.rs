@@ -230,6 +230,13 @@ fn expand_outgoing(
                 }
                 items.push(value);
             }
+            if items.is_empty() {
+                items.push(json!({
+                    "to": unresolved_item(edge),
+                    "fromRanges": [edge.range.to_lsp_json()],
+                    "dispatchKind": format!("{:?}", edge.dispatch_kind).to_lowercase(),
+                }));
+            }
             Some(items)
         })
         .flatten()
@@ -281,6 +288,15 @@ pub fn item(symbol: &JavaSymbol) -> Value {
         "range": symbol.range.as_ref().map(|range| range.to_lsp_json()),
         "selectionRange": symbol.selection_range.as_ref().map(|range| range.to_lsp_json()),
         "detail": symbol.qualified_name,
+    })
+}
+
+fn unresolved_item(edge: &JavaCallEdge) -> Value {
+    json!({
+        "name": edge.target_name,
+        "signature": edge.target_name,
+        "kind": "function",
+        "detail": edge.target_name,
     })
 }
 

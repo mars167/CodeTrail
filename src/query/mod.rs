@@ -1051,7 +1051,7 @@ impl QueryService {
                 output::live_scan_index(),
                 json!([]),
                 vec![
-                    "java_semantic_index_unavailable: run codetrail index build to create call hierarchy data"
+                    "Java call hierarchy index unavailable; run `codetrail index build` to create call hierarchy data."
                         .to_string(),
                 ],
             ),
