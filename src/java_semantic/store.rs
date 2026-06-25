@@ -55,7 +55,7 @@ struct SymbolRow {
 
 impl SymbolRow {
     fn is_function(&self) -> bool {
-        self.public_kind == "function"
+        matches!(self.public_kind.as_str(), "function" | "constructor")
     }
 }
 
@@ -432,7 +432,7 @@ impl JavaSemanticStore {
                 &workspace.snapshot_id,
                 &plan,
                 opts.case_sensitive,
-                &["method", "synthetic_method"],
+                &["method", "constructor", "synthetic_method"],
                 has_scope,
                 opts.limit,
             )?

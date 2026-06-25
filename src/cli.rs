@@ -193,7 +193,7 @@ pub enum Command {
         identifier: String,
         #[arg(long, value_enum, default_value_t = CallHierarchyDirection::Both)]
         direction: CallHierarchyDirection,
-        #[arg(long, default_value_t = 1, value_parser = parse_call_hierarchy_depth)]
+        #[arg(long, default_value_t = 2, value_parser = parse_call_hierarchy_depth)]
         depth: usize,
         #[arg(long)]
         include_overrides: bool,

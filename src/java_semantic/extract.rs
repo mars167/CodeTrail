@@ -7,7 +7,8 @@ use crate::{
     java_semantic::{
         model::{
             DispatchKind, ExtractedJavaFile, JavaAnnotation, JavaImport, JavaSymbol,
-            JavaSymbolKind, JavaTypeEdge, RawJavaCall, ResolveConfidence, SymbolOrigin,
+            JavaSymbolKind, JavaTypeEdge, RawJavaArgumentCall, RawJavaCall, ResolveConfidence,
+            SymbolOrigin,
         },
         parse::{
             child_by_kind, child_text, erase_type, last_identifier, named_children, node_text,
@@ -78,9 +79,17 @@ pub fn extract_file(
         generated,
     );
 
+    let field_types = field_types_by_owner(&out.symbols);
     for method in methods {
         if let Some(body) = method.body {
-            let mut local_types = method.parameter_types;
+            let mut local_types = method
+                .symbol
+                .owner_symbol
+                .as_ref()
+                .and_then(|owner| field_types.get(owner))
+                .cloned()
+                .unwrap_or_default();
+            local_types.extend(method.parameter_types);
             local_types.extend(local_variable_types(body, source_bytes));
             collect_calls_in_method(
                 body,
@@ -304,12 +313,12 @@ fn method_symbol(
     let parameters = parameter_types(node, source);
     let return_type = (!constructor)
         .then(|| child_text(node, "type", source).unwrap_or_else(|| "void".to_string()))
-        .map(|value| erase_type(&value));
+        .map(|value| source_type(&value));
     let symbol_id = method_symbol_id(
         root_id,
         &owner.qualified_name,
         if constructor { "<init>" } else { &name },
-        parameters.len(),
+        &parameters,
     );
     let origin = if generated {
         SymbolOrigin::GeneratedSource
@@ -361,7 +370,7 @@ fn field_symbols(
     let Some(owner) = type_stack.last() else {
         return;
     };
-    let field_type = child_text(node, "type", source).map(|value| erase_type(&value));
+    let field_type = child_text(node, "type", source).map(|value| source_type(&value));
     for declarator in descendants(node).filter(|child| child.kind() == "variable_declarator") {
         let Some(name_node) = declarator.child_by_field_name("name") else {
             continue;
@@ -407,21 +416,56 @@ fn field_symbols(
     }
 }
 
+fn field_types_by_owner(symbols: &[JavaSymbol]) -> BTreeMap<String, BTreeMap<String, String>> {
+    let mut fields = BTreeMap::<String, BTreeMap<String, String>>::new();
+    for symbol in symbols {
+        if symbol.kind != JavaSymbolKind::Field {
+            continue;
+        }
+        let (Some(owner), Some(return_type)) = (&symbol.owner_symbol, &symbol.return_type) else {
+            continue;
+        };
+        fields
+            .entry(owner.clone())
+            .or_default()
+            .insert(symbol.name.clone(), return_type.clone());
+    }
+    fields
+}
+
 fn parameter_types(node: Node, source: &[u8]) -> Vec<String> {
     let Some(parameters) = node.child_by_field_name("parameters") else {
         return Vec::new();
     };
-    named_children(parameters)
+    let parsed = named_children(parameters)
         .into_iter()
         .filter(|child| {
             matches!(
                 child.kind(),
-                "formal_parameter" | "spread_parameter" | "receiver_parameter"
+                "formal_parameter"
+                    | "spread_parameter"
+                    | "receiver_parameter"
+                    | "variable_arity_parameter"
             )
         })
         .filter_map(|parameter| child_text(parameter, "type", source))
-        .map(|value| erase_type(&value))
-        .collect()
+        .map(|value| source_type(&value))
+        .collect::<Vec<_>>();
+    let fallback = node_text(parameters, source)
+        .map(|text| parameter_types_from_text(&text))
+        .unwrap_or_default();
+    if fallback.len() > parsed.len() {
+        fallback
+    } else if fallback.len() == parsed.len()
+        && fallback
+            .iter()
+            .zip(parsed.iter())
+            .any(|(fallback, parsed)| fallback.len() > parsed.len())
+    {
+        fallback
+    } else {
+        parsed
+    }
 }
 
 fn parameter_type_bindings(node: Node, source: &[u8]) -> BTreeMap<String, String> {
@@ -432,7 +476,10 @@ fn parameter_type_bindings(node: Node, source: &[u8]) -> BTreeMap<String, String
     for parameter in named_children(parameters).into_iter().filter(|child| {
         matches!(
             child.kind(),
-            "formal_parameter" | "spread_parameter" | "receiver_parameter"
+            "formal_parameter"
+                | "spread_parameter"
+                | "receiver_parameter"
+                | "variable_arity_parameter"
         )
     }) {
         let Some(name) = child_text(parameter, "name", source) else {
@@ -441,9 +488,86 @@ fn parameter_type_bindings(node: Node, source: &[u8]) -> BTreeMap<String, String
         let Some(type_name) = child_text(parameter, "type", source) else {
             continue;
         };
-        types.insert(name, erase_type(&type_name));
+        types.insert(name, source_type(&type_name));
+    }
+    if let Some(text) = node_text(parameters, source) {
+        types.extend(parameter_bindings_from_text(&text));
     }
     types
+}
+
+fn parameter_types_from_text(parameters: &str) -> Vec<String> {
+    split_parameters(parameters)
+        .into_iter()
+        .filter_map(|parameter| parse_parameter_text(&parameter).map(|(ty, _)| ty))
+        .collect()
+}
+
+fn parameter_bindings_from_text(parameters: &str) -> BTreeMap<String, String> {
+    split_parameters(parameters)
+        .into_iter()
+        .filter_map(|parameter| parse_parameter_text(&parameter).map(|(ty, name)| (name, ty)))
+        .collect()
+}
+
+fn split_parameters(parameters: &str) -> Vec<String> {
+    let body = parameters
+        .trim()
+        .trim_start_matches('(')
+        .trim_end_matches(')');
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (idx, ch) in body.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                let part = body[start..idx].trim();
+                if !part.is_empty() {
+                    parts.push(part.to_string());
+                }
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    let part = body[start..].trim();
+    if !part.is_empty() {
+        parts.push(part.to_string());
+    }
+    parts
+}
+
+fn parse_parameter_text(parameter: &str) -> Option<(String, String)> {
+    let mut tokens = parameter
+        .split_whitespace()
+        .filter(|token| {
+            !token.starts_with('@')
+                && !matches!(*token, "final" | "public" | "protected" | "private")
+        })
+        .collect::<Vec<_>>();
+    let name = tokens.pop()?.trim().trim_start_matches("...").to_string();
+    let ty = source_type(&tokens.join(" "));
+    (!ty.is_empty() && !name.is_empty()).then_some((ty, name))
+}
+
+fn source_type(value: &str) -> String {
+    let value = value.trim();
+    let array_depth = value.matches("[]").count();
+    let varargs = value.contains("...");
+    let mut base = erase_type(value).trim_end_matches("...").trim().to_string();
+    if base.is_empty() {
+        return base;
+    }
+    if varargs {
+        base.push_str("...");
+    } else {
+        for _ in 0..array_depth {
+            base.push_str("[]");
+        }
+    }
+    base
 }
 
 fn modifiers(node: Node, source: &[u8]) -> Vec<String> {
@@ -511,9 +635,14 @@ fn local_variable_types(body: Node, source: &[u8]) -> BTreeMap<String, String> {
             node.kind(),
             "local_variable_declaration" | "field_declaration" | "variable_declaration"
         ) {
+            if node.kind() == "catch_formal_parameter" {
+                if let (Some(type_text), Some(name)) = catch_parameter_binding(node, source) {
+                    types.insert(name, type_text);
+                }
+            }
             continue;
         }
-        let Some(type_text) = child_text(node, "type", source).map(|value| erase_type(&value))
+        let Some(type_text) = child_text(node, "type", source).map(|value| source_type(&value))
         else {
             continue;
         };
@@ -527,6 +656,20 @@ fn local_variable_types(body: Node, source: &[u8]) -> BTreeMap<String, String> {
         }
     }
     types
+}
+
+fn catch_parameter_binding(node: Node, source: &[u8]) -> (Option<String>, Option<String>) {
+    let type_text = child_text(node, "type", source)
+        .or_else(|| child_by_kind(node, "catch_type").and_then(|child| node_text(child, source)))
+        .map(|value| source_type(&value));
+    let name = child_text(node, "name", source).or_else(|| {
+        named_children(node)
+            .into_iter()
+            .rev()
+            .find(|child| child.kind() == "identifier")
+            .and_then(|child| node_text(child, source))
+    });
+    (type_text, name)
 }
 
 fn collect_calls_in_method(
@@ -547,6 +690,8 @@ fn collect_calls_in_method(
         let receiver_type = receiver_text.as_deref().and_then(|receiver| {
             infer_receiver_type(receiver, caller, local_types, imports, package)
         });
+        let arg_types = argument_types(node, source, local_types, imports, package);
+        let arg_calls = argument_calls(node, source, caller, local_types, imports, package);
         calls.push(RawJavaCall {
             path: caller.path.clone().unwrap_or_default(),
             file_hash: caller.file_hash.clone(),
@@ -555,6 +700,8 @@ fn collect_calls_in_method(
             receiver_text,
             receiver_type,
             arg_count,
+            arg_types,
+            arg_calls,
             range: point_range(node),
             dispatch_kind,
         });
@@ -622,13 +769,86 @@ fn call_target(node: Node, source: &[u8]) -> Option<(String, Option<String>, usi
 }
 
 fn argument_count(node: Node) -> usize {
+    argument_nodes(node).len()
+}
+
+fn argument_types(
+    node: Node,
+    source: &[u8],
+    local_types: &BTreeMap<String, String>,
+    imports: &[JavaImport],
+    package: &str,
+) -> Vec<Option<String>> {
+    argument_nodes(node)
+        .into_iter()
+        .map(|argument| infer_argument_type(argument, source, local_types, imports, package))
+        .collect()
+}
+
+fn argument_calls(
+    node: Node,
+    source: &[u8],
+    caller: &JavaSymbol,
+    local_types: &BTreeMap<String, String>,
+    imports: &[JavaImport],
+    package: &str,
+) -> Vec<Option<RawJavaArgumentCall>> {
+    argument_nodes(node)
+        .into_iter()
+        .map(|argument| {
+            let (target_name, receiver_text, arg_count, dispatch_kind) =
+                call_target(argument, source)?;
+            let receiver_type = receiver_text.as_deref().and_then(|receiver| {
+                infer_receiver_type(receiver, caller, local_types, imports, package)
+            });
+            Some(RawJavaArgumentCall {
+                target_name,
+                receiver_type,
+                arg_count,
+                dispatch_kind,
+            })
+        })
+        .collect()
+}
+
+fn argument_nodes(node: Node) -> Vec<Node> {
     let Some(arguments) = node.child_by_field_name("arguments") else {
-        return 0;
+        return Vec::new();
     };
     named_children(arguments)
         .into_iter()
         .filter(|child| child.kind() != "," && child.kind() != "(" && child.kind() != ")")
-        .count()
+        .collect()
+}
+
+fn infer_argument_type(
+    argument: Node,
+    source: &[u8],
+    local_types: &BTreeMap<String, String>,
+    imports: &[JavaImport],
+    package: &str,
+) -> Option<String> {
+    match argument.kind() {
+        "string_literal" => Some("String".to_string()),
+        "character_literal" => Some("char".to_string()),
+        "decimal_integer_literal"
+        | "hex_integer_literal"
+        | "octal_integer_literal"
+        | "binary_integer_literal" => Some("int".to_string()),
+        "decimal_floating_point_literal" | "hex_floating_point_literal" => {
+            Some("double".to_string())
+        }
+        "true" | "false" => Some("boolean".to_string()),
+        "identifier" => node_text(argument, source)
+            .and_then(|name| local_types.get(&name).cloned())
+            .map(|type_name| qualify_type_name(&type_name, imports, package)),
+        "object_creation_expression" => argument
+            .child_by_field_name("type")
+            .or_else(|| argument.child_by_field_name("name"))
+            .and_then(|node| node_text(node, source))
+            .map(|type_name| qualify_type_name(&erase_type(&type_name), imports, package)),
+        _ => None,
+    }
 }
 
 fn infer_receiver_type(
@@ -645,17 +865,31 @@ fn infer_receiver_type(
             .next()
             .map(ToString::to_string),
         "super" => None,
-        value => local_types
-            .get(value)
-            .map(|type_name| qualify_type_name(type_name, imports, package))
-            .or_else(|| {
-                value
-                    .chars()
-                    .next()
-                    .is_some_and(char::is_uppercase)
-                    .then(|| qualify_type_name(value, imports, package))
-            }),
+        value => object_creation_receiver_type(value, imports, package).or_else(|| {
+            local_types
+                .get(value)
+                .map(|type_name| qualify_type_name(type_name, imports, package))
+                .or_else(|| {
+                    value
+                        .chars()
+                        .next()
+                        .is_some_and(char::is_uppercase)
+                        .then(|| qualify_type_name(value, imports, package))
+                })
+        }),
     }
+}
+
+fn object_creation_receiver_type(
+    receiver: &str,
+    imports: &[JavaImport],
+    package: &str,
+) -> Option<String> {
+    let rest = receiver.trim().strip_prefix("new ")?;
+    let type_name = rest
+        .split(['(', '<', ' ', '\n', '\t'])
+        .find(|part| !part.is_empty())?;
+    Some(qualify_type_name(&erase_type(type_name), imports, package))
 }
 
 fn qualify_type_name(type_name: &str, imports: &[JavaImport], package: &str) -> String {
@@ -694,9 +928,12 @@ pub(crate) fn method_symbol_id(
     root_id: &str,
     owner_qualified_name: &str,
     name: &str,
-    arity: usize,
+    parameters: &[String],
 ) -> String {
-    format!("java:{root_id}:method:{owner_qualified_name}#{name}/{arity}")
+    format!(
+        "java:{root_id}:method:{owner_qualified_name}#{name}({})",
+        parameters.join(",")
+    )
 }
 
 pub(crate) fn field_symbol_id(root_id: &str, owner_qualified_name: &str, name: &str) -> String {

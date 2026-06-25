@@ -303,6 +303,16 @@ pub struct RawJavaCall {
     pub receiver_text: Option<String>,
     pub receiver_type: Option<String>,
     pub arg_count: usize,
+    pub arg_types: Vec<Option<String>>,
+    pub arg_calls: Vec<Option<RawJavaArgumentCall>>,
     pub range: SourceRange,
+    pub dispatch_kind: DispatchKind,
+}
+
+#[derive(Clone, Debug)]
+pub struct RawJavaArgumentCall {
+    pub target_name: String,
+    pub receiver_type: Option<String>,
+    pub arg_count: usize,
     pub dispatch_kind: DispatchKind,
 }

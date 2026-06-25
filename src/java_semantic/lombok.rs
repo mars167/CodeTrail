@@ -187,12 +187,7 @@ fn add_constructor(
     parameters: Vec<String>,
     seen: &mut BTreeSet<String>,
 ) {
-    let symbol_id = method_symbol_id(
-        &owner.root_id,
-        &owner.qualified_name,
-        "<init>",
-        parameters.len(),
-    );
+    let symbol_id = method_symbol_id(&owner.root_id, &owner.qualified_name, "<init>", &parameters);
     if !seen.insert(symbol_id.clone()) {
         return;
     }
@@ -225,12 +220,7 @@ fn add_method(
     return_type: Option<String>,
     seen: &mut BTreeSet<String>,
 ) {
-    let symbol_id = method_symbol_id(
-        &owner.root_id,
-        &owner.qualified_name,
-        name,
-        parameters.len(),
-    );
+    let symbol_id = method_symbol_id(&owner.root_id, &owner.qualified_name, name, &parameters);
     if !seen.insert(symbol_id.clone()) {
         return;
     }

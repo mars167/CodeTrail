@@ -41,7 +41,7 @@ impl Default for CallHierarchyOptions {
     fn default() -> Self {
         Self {
             direction: CallHierarchyDirection::Both,
-            depth: 1,
+            depth: 2,
             include_overrides: false,
         }
     }
@@ -297,6 +297,7 @@ fn is_function_symbol(symbol: &JavaSymbol) -> bool {
     matches!(
         symbol.kind,
         crate::java_semantic::model::JavaSymbolKind::Method
+            | crate::java_semantic::model::JavaSymbolKind::Constructor
             | crate::java_semantic::model::JavaSymbolKind::SyntheticMethod
     )
 }

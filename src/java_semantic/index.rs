@@ -15,7 +15,11 @@ use crate::{
         classfile, extract,
         hierarchy::CallHierarchyOptions,
         lombok,
-        model::{ExtractedJavaFile, JavaSemanticManifest, ResolveConfidence, SymbolOrigin},
+        model::{
+            DispatchKind, ExtractedJavaFile, JavaImport, JavaSemanticManifest, ResolveConfidence,
+            SymbolOrigin,
+        },
+        parse::{erase_type, last_identifier},
         resolver::{self, ResolverInput},
         store,
     },
@@ -98,7 +102,10 @@ pub fn build(
         .next()
         .cloned()
         .unwrap_or_else(|| "java:.".to_string());
-    let mut external_symbols = classfile::load_classpath_symbols(workspace, &root_id);
+    let type_hints = classpath_type_hints(&extracted);
+    let classpath = classfile::load_classpath(workspace, &root_id, &type_hints);
+    let mut external_symbols = classpath.symbols;
+    let external_type_edges = classpath.type_edges;
     let classpath_symbol_count = external_symbols.len();
     let mut extracted = extracted;
     merge_scip_symbols(workspace, &mut extracted);
@@ -121,6 +128,7 @@ pub fn build(
         manifest,
         files: extracted,
         external_symbols,
+        external_type_edges,
     });
     cleanup_legacy_json_artifacts(workspace)?;
     let mut store = store::JavaSemanticStore::open_or_create(&workspace.root)?;
@@ -136,6 +144,133 @@ pub fn build(
         call_edge_count: data.manifest.call_edge_count,
         classpath_symbol_count,
     })
+}
+
+fn classpath_type_hints(files: &[ExtractedJavaFile]) -> BTreeSet<String> {
+    let mut hints = BTreeSet::new();
+    for file in files {
+        let explicit_imports = explicit_imports(&file.imports);
+        for import in &file.imports {
+            if import.is_wildcard {
+                continue;
+            }
+            if import.is_static {
+                if let Some((owner, _)) = import.path.rsplit_once('.') {
+                    add_qualified_type_hint(&mut hints, owner);
+                }
+            } else {
+                add_qualified_type_hint(&mut hints, &import.path);
+            }
+        }
+        for edge in &file.type_edges {
+            add_type_hint(
+                &mut hints,
+                &edge.supertype,
+                &explicit_imports,
+                &file.package,
+            );
+        }
+        for symbol in &file.symbols {
+            if let Some(return_type) = &symbol.return_type {
+                add_type_hint(&mut hints, return_type, &explicit_imports, &file.package);
+            }
+            for parameter in &symbol.parameters {
+                add_type_hint(&mut hints, parameter, &explicit_imports, &file.package);
+            }
+        }
+        for call in &file.raw_calls {
+            if let Some(receiver_type) = &call.receiver_type {
+                add_type_hint(&mut hints, receiver_type, &explicit_imports, &file.package);
+            }
+            if call.dispatch_kind == DispatchKind::Constructor {
+                add_type_hint(
+                    &mut hints,
+                    &call.target_name,
+                    &explicit_imports,
+                    &file.package,
+                );
+            }
+            for arg_type in call.arg_types.iter().flatten() {
+                add_type_hint(&mut hints, arg_type, &explicit_imports, &file.package);
+            }
+            for arg_call in call.arg_calls.iter().flatten() {
+                if let Some(receiver_type) = &arg_call.receiver_type {
+                    add_type_hint(&mut hints, receiver_type, &explicit_imports, &file.package);
+                }
+            }
+        }
+    }
+    for common in [
+        "java.lang.Class",
+        "java.lang.Exception",
+        "java.lang.Object",
+        "java.lang.String",
+        "java.lang.StringBuilder",
+        "java.lang.Throwable",
+    ] {
+        hints.insert(common.to_string());
+    }
+    hints
+}
+
+fn explicit_imports(imports: &[JavaImport]) -> BTreeMap<String, String> {
+    imports
+        .iter()
+        .filter(|import| !import.is_static && !import.is_wildcard)
+        .filter_map(|import| {
+            Some((
+                import.path.rsplit('.').next()?.to_string(),
+                import.path.clone(),
+            ))
+        })
+        .collect()
+}
+
+fn add_type_hint(
+    hints: &mut BTreeSet<String>,
+    type_name: &str,
+    explicit_imports: &BTreeMap<String, String>,
+    package: &str,
+) {
+    let mut erased = erase_type(type_name)
+        .trim()
+        .trim_end_matches("...")
+        .trim_end_matches("[]")
+        .to_string();
+    if erased.is_empty() || is_primitive_type(&erased) {
+        return;
+    }
+    if erased.contains('.') {
+        add_qualified_type_hint(hints, &erased);
+        return;
+    }
+    erased = last_identifier(&erased);
+    if let Some(imported) = explicit_imports.get(&erased) {
+        add_qualified_type_hint(hints, imported);
+    }
+    if !package.is_empty() {
+        add_qualified_type_hint(hints, &format!("{package}.{erased}"));
+    }
+    add_qualified_type_hint(hints, &format!("java.lang.{erased}"));
+}
+
+fn add_qualified_type_hint(hints: &mut BTreeSet<String>, value: &str) {
+    let value = erase_type(value)
+        .trim()
+        .trim_end_matches("...")
+        .trim_end_matches("[]")
+        .to_string();
+    if value.is_empty() || is_primitive_type(&value) || !value.contains('.') {
+        return;
+    }
+    hints.insert(value);
+}
+
+fn is_primitive_type(value: &str) -> bool {
+    matches!(
+        value,
+        "boolean" | "byte" | "char" | "double" | "float" | "int" | "long" | "short" | "void"
+    )
 }
 
 pub fn is_fresh(workspace: &Workspace) -> bool {

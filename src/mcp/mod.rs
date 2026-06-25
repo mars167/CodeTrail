@@ -386,7 +386,7 @@ fn tool_definitions() -> Vec<ToolDef> {
                 "properties": {
                     "identifier": { "type": "string", "description": "Function/symbol name to query call hierarchy for" },
                     "direction": { "type": "string", "enum": ["incoming", "outgoing", "both"], "default": "both" },
-                    "depth": { "type": "integer", "minimum": 1, "maximum": 8, "default": 1 },
+                    "depth": { "type": "integer", "minimum": 1, "maximum": 8, "default": 2 },
                     "includeOverrides": { "type": "boolean", "default": false },
                     "dir": { "type": "array", "items": { "type": "string" }, "description": "Workspace-relative directories to search (OR filter)" },
                     "ext": { "type": "array", "items": { "type": "string" }, "description": "File extensions to search, with or without a leading dot" },
@@ -914,7 +914,7 @@ fn parse_call_hierarchy_options(args: Option<&Value>) -> Result<CallHierarchyOpt
             ))
         }
     };
-    let depth = optional_usize_arg(obj, "depth", 1)?;
+    let depth = optional_usize_arg(obj, "depth", 2)?;
     validate_explore_bound("depth", depth, 1, 8)?;
     let include_overrides = obj
         .get("includeOverrides")

@@ -339,7 +339,60 @@ fn display_graph_symbol(symbol: &str) -> String {
 }
 
 fn item_label(item: &Value) -> Option<String> {
-    first_string(item, &["signature", "detail", "name"]).map(display_symbol_label)
+    first_string(item, &["signature", "detail", "name"]).map(display_hierarchy_symbol_label)
+}
+
+fn display_hierarchy_symbol_label(symbol: &str) -> String {
+    let symbol = display_symbol_label(symbol);
+    let Some(paren_idx) = symbol.find('(') else {
+        return symbol;
+    };
+    let head = &symbol[..paren_idx];
+    let params = simplify_signature_params(&symbol[paren_idx..]);
+    let Some(method_dot) = head.rfind('.') else {
+        return symbol;
+    };
+    let owner = &head[..method_dot];
+    let method = &head[method_dot + 1..];
+    let Some(class_dot) = owner.rfind('.') else {
+        return symbol;
+    };
+    let package = &owner[..class_dot];
+    let class_name = &owner[class_dot + 1..];
+    format!("{class_name}.{method}{params}  ({package})")
+}
+
+fn simplify_signature_params(params: &str) -> String {
+    let Some(body) = params
+        .strip_prefix('(')
+        .and_then(|value| value.strip_suffix(')'))
+    else {
+        return params.to_string();
+    };
+    if body.trim().is_empty() {
+        return "()".to_string();
+    }
+    let simplified = body
+        .split(',')
+        .map(|part| simplify_type_name(part.trim()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("({simplified})")
+}
+
+fn simplify_type_name(value: &str) -> String {
+    let mut suffix = String::new();
+    let mut base = value.trim();
+    while let Some(stripped) = base.strip_suffix("[]") {
+        suffix.push_str("[]");
+        base = stripped;
+    }
+    if let Some(stripped) = base.strip_suffix("...") {
+        suffix.push_str("...");
+        base = stripped;
+    }
+    let simple = base.rsplit('.').next().unwrap_or(base);
+    format!("{simple}{suffix}")
 }
 
 fn first_string<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {

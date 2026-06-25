@@ -1,4 +1,4 @@
-use std::fs;
+use std::{collections::BTreeSet, fs};
 
 use assert_cmd::Command;
 use serde_json::json;
@@ -5756,10 +5756,12 @@ public class SampleService {
         .iter()
         .any(|call| call["to"]["name"] == "builder"));
     assert!(outgoing_calls.iter().all(|call| {
-        call["to"]["kind"] == "function"
-            && call["to"]["signature"]
-                .as_str()
-                .is_some_and(|signature| signature.contains('('))
+        matches!(
+            call["to"]["kind"].as_str(),
+            Some("function" | "constructor")
+        ) && call["to"]["signature"]
+            .as_str()
+            .is_some_and(|signature| signature.contains('('))
     }));
 
     let incoming = codetrail()
@@ -5814,8 +5816,8 @@ public class SampleService {
         "call-hierarchy text should not repeat the same file path on every child edge: {text}"
     );
     assert!(text.contains("  |- SampleService.run()  :17"));
-    assert!(text.contains("  |- SampleService.Payload.getName()  :18"));
-    assert!(text.contains("SampleService.Payload.builder()  :19"));
+    assert!(text.contains("  |- Payload.getName()  (SampleService)  :18"));
+    assert!(text.contains("Payload.builder()  (SampleService)  :19"));
     assert!(
         !text.contains("missingAudit"),
         "call-hierarchy text must not expose unresolved calls without a function signature: {text}"
@@ -5827,6 +5829,66 @@ public class SampleService {
     assert!(
         !text.trim_start().starts_with('{'),
         "call-hierarchy text output must not be raw JSON: {text}"
+    );
+}
+
+#[test]
+fn java_semantic_call_hierarchy_keeps_overload_signatures_unique() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/example")).unwrap();
+    fs::write(
+        dir.path().join("src/main/java/example/Overloads.java"),
+        r#"package example;
+
+public class Overloads {
+    public void start() {
+        Object[] values = new Object[0];
+        choose("x");
+        choose(values);
+    }
+
+    public void choose(String value) {}
+
+    public void choose(Object[] values) {}
+}
+"#,
+    )
+    .unwrap();
+
+    codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["call-hierarchy", "start", "--direction", "outgoing"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let outgoing = json["results"][0]["outgoingCalls"].as_array().unwrap();
+    let signatures = outgoing
+        .iter()
+        .filter_map(|call| call["to"]["signature"].as_str())
+        .collect::<BTreeSet<_>>();
+    assert!(signatures.contains("Overloads.choose(String)"));
+    assert!(signatures.contains("Overloads.choose(Object[])"));
+
+    let choose_symbol_ids = outgoing
+        .iter()
+        .filter(|call| call["to"]["name"] == "choose")
+        .filter_map(|call| call["to"]["symbol_id"].as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        choose_symbol_ids.len(),
+        2,
+        "overloads must not collapse to a single name/arity symbol id"
     );
 }
 
