@@ -13,6 +13,7 @@ pub mod lombok;
 pub mod model;
 pub mod parse;
 pub mod resolver;
+pub mod store;
 
 pub use hierarchy::{CallHierarchyDirection, CallHierarchyOptions};
 pub use index::{

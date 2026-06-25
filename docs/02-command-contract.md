@@ -87,7 +87,7 @@ codetrail defs <identifier> --include-code [--code-context <lines>] [--code-max-
 
 ## Index Build 与 Doctor
 
-- `index build` 默认 best-effort 运行 provider 语义阶段，生成并导入 `.codetrail/scip/<snapshot-key>/occurrences.db`，同时为 Java 源码构建 Rust-native `.codetrail/java-semantic/<snapshot-key>/` JSONL artifact。
+- `index build` 默认 best-effort 运行 provider 语义阶段，生成并导入 `.codetrail/scip/<snapshot-key>/occurrences.db`，同时为 Java 源码构建 Rust-native `.codetrail/java-semantic.sqlite` 结构化语义索引。Java semantic 查询直接走 SQLite 索引。
 - `--no-semantic` 关闭 provider/SCIP 生成；`index build --staged` 不运行语义阶段。
 - `index status` 返回索引 freshness、SCIP occurrence DB 状态、provider 状态和语言覆盖。
 - `index status --summary` 返回紧凑状态，适合脚本预检。

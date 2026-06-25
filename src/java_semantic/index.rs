@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, File},
-    io::{BufRead, BufReader, BufWriter, Write},
+    fs,
     path::{Path, PathBuf},
 };
 
@@ -9,29 +8,24 @@ use anyhow::{Context, Result};
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::{
     java_semantic::{
         classfile, extract,
-        hierarchy::{self, CallHierarchyOptions},
+        hierarchy::CallHierarchyOptions,
         lombok,
-        model::{
-            ExtractedJavaFile, JavaCallEdge, JavaSemanticData, JavaSemanticManifest, JavaSymbol,
-            JavaSymbolKind, ResolveConfidence, SourceRange, SymbolOrigin,
-        },
+        model::{ExtractedJavaFile, JavaSemanticManifest, ResolveConfidence, SymbolOrigin},
         resolver::{self, ResolverInput},
+        store,
     },
     output,
     project_graph::{discover_project_graph, ProjectLanguage},
-    query_input::{attach_matched_input, InputPlan, SymbolMatchMode},
     scip, scip_index,
     workspace::{FileRecord, ScanOptions, Workspace, MAX_FILE_BYTES},
 };
 
 const SCHEMA_VERSION: u32 = 1;
-const PRODUCER: &str = "java_semantic_resolver";
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JavaSemanticBuildReport {
@@ -128,13 +122,15 @@ pub fn build(
         files: extracted,
         external_symbols,
     });
-    let dir = semantic_dir_for_snapshot(workspace, snapshot_id);
-    write_data(&dir, &data)?;
+    cleanup_legacy_json_artifacts(workspace)?;
+    let mut store = store::JavaSemanticStore::open_or_create(&workspace.root)?;
+    store.write_snapshot(&data, classpath_symbol_count)?;
+    let db_path = store.path().to_path_buf();
     Ok(JavaSemanticBuildReport {
         attempted: true,
         skipped: false,
         skip_reason: None,
-        path: Some(dir.to_string_lossy().to_string()),
+        path: Some(db_path.to_string_lossy().to_string()),
         file_count: data.manifest.file_count,
         symbol_count: data.manifest.symbol_count,
         call_edge_count: data.manifest.call_edge_count,
@@ -143,19 +139,15 @@ pub fn build(
 }
 
 pub fn is_fresh(workspace: &Workspace) -> bool {
-    read_manifest(&semantic_dir(workspace).join("manifest.json"))
-        .is_ok_and(|manifest| manifest.snapshot_id == workspace.snapshot_id)
+    store::is_fresh(workspace)
 }
 
 pub fn index_meta(workspace: &Workspace, fresh: bool) -> Value {
-    json!({
-        "used": true,
-        "fresh": fresh,
-        "source": "java_semantic",
-        "fallback": false,
-        "path": semantic_dir(workspace),
-        "snapshot_id": workspace.snapshot_id,
-    })
+    let mut value = store::index_meta(workspace, fresh);
+    if !fresh {
+        value["fresh"] = Value::Bool(false);
+    }
+    value
 }
 
 pub fn calls(
@@ -163,33 +155,10 @@ pub fn calls(
     opts: &ScanOptions,
     identifier: &str,
 ) -> Result<Option<(Value, Value)>> {
-    let Some(data) = load_fresh(workspace)? else {
+    let Some(mut store) = store::JavaSemanticStore::open_existing(&workspace.root)? else {
         return Ok(None);
     };
-    let plan = InputPlan::new(identifier, opts.input_mode);
-    let path_filter = PathFilter::new(workspace, opts)?;
-    let symbols = symbol_lookup(&data);
-    let mut results = Vec::new();
-    for edge in &data.call_edges {
-        let Some(caller) = symbols.get(edge.caller_symbol.as_str()).copied() else {
-            continue;
-        };
-        let Some(variant) = matched_symbol_variant(caller, &plan, opts.case_sensitive) else {
-            continue;
-        };
-        if !path_filter.allows(&edge.path) {
-            continue;
-        }
-        results.push(attach_matched_input(
-            call_candidate_json(&symbols, edge),
-            variant,
-        ));
-    }
-    finalize_results(&mut results, opts.limit);
-    if results.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some((index_meta(workspace, true), Value::Array(results))))
+    store.calls(workspace, opts, identifier)
 }
 
 pub fn callers(
@@ -197,42 +166,10 @@ pub fn callers(
     opts: &ScanOptions,
     identifier: &str,
 ) -> Result<Option<(Value, Value)>> {
-    let Some(data) = load_fresh(workspace)? else {
+    let Some(mut store) = store::JavaSemanticStore::open_existing(&workspace.root)? else {
         return Ok(None);
     };
-    let plan = InputPlan::new(identifier, opts.input_mode);
-    let path_filter = PathFilter::new(workspace, opts)?;
-    let symbols = symbol_lookup(&data);
-    let mut results = Vec::new();
-    for edge in &data.call_edges {
-        let variant = edge
-            .callee_symbol
-            .as_deref()
-            .and_then(|callee| symbols.get(callee).copied())
-            .and_then(|callee| matched_symbol_variant(callee, &plan, opts.case_sensitive))
-            .or_else(|| {
-                plan.matched_variant(
-                    &edge.target_name,
-                    opts.case_sensitive,
-                    SymbolMatchMode::Exact,
-                )
-            });
-        let Some(variant) = variant else {
-            continue;
-        };
-        if !path_filter.allows(&edge.path) {
-            continue;
-        }
-        results.push(attach_matched_input(
-            call_candidate_json(&symbols, edge),
-            variant,
-        ));
-    }
-    finalize_results(&mut results, opts.limit);
-    if results.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some((index_meta(workspace, true), Value::Array(results))))
+    store.callers(workspace, opts, identifier)
 }
 
 pub fn query_call_hierarchy(
@@ -241,52 +178,10 @@ pub fn query_call_hierarchy(
     identifier: &str,
     hierarchy_opts: CallHierarchyOptions,
 ) -> Result<Option<(Value, Value)>> {
-    let Some(data) = load_fresh(workspace)? else {
+    let Some(mut store) = store::JavaSemanticStore::open_existing(&workspace.root)? else {
         return Ok(None);
     };
-    let plan = InputPlan::new(identifier, opts.input_mode);
-    let path_filter = PathFilter::new(workspace, opts)?;
-    let mut roots = data
-        .symbols
-        .iter()
-        .filter(|symbol| {
-            matches!(
-                symbol.kind,
-                JavaSymbolKind::Method
-                    | JavaSymbolKind::Constructor
-                    | JavaSymbolKind::SyntheticMethod
-            )
-        })
-        .filter(|symbol| matched_symbol_variant(symbol, &plan, opts.case_sensitive).is_some())
-        .filter(|symbol| {
-            symbol
-                .path
-                .as_deref()
-                .map(|path| path_filter.allows(path))
-                .unwrap_or(true)
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    roots.sort_by(|a, b| a.qualified_name.cmp(&b.qualified_name));
-    roots.dedup_by(|a, b| a.symbol_id == b.symbol_id);
-    if opts.limit > 0 && roots.len() > opts.limit {
-        roots.truncate(opts.limit);
-    }
-    if roots.is_empty() {
-        return Ok(None);
-    }
-    let results = hierarchy::hierarchy_for_roots(&data, &roots, hierarchy_opts, opts.limit);
-    Ok(Some((index_meta(workspace, true), Value::Array(results))))
-}
-
-fn load_fresh(workspace: &Workspace) -> Result<Option<JavaSemanticData>> {
-    let dir = semantic_dir(workspace);
-    let manifest_path = dir.join("manifest.json");
-    let manifest = match read_manifest(&manifest_path) {
-        Ok(manifest) if manifest.snapshot_id == workspace.snapshot_id => manifest,
-        _ => return Ok(None),
-    };
-    Ok(Some(read_data(&dir, manifest)?))
+    store.call_hierarchy(workspace, opts, identifier, hierarchy_opts)
 }
 
 fn java_records(workspace: &Workspace, records: &[FileRecord]) -> Result<Vec<FileRecord>> {
@@ -473,241 +368,6 @@ fn merge_scip_symbols(workspace: &Workspace, files: &mut [ExtractedJavaFile]) {
     }
 }
 
-fn semantic_dir(workspace: &Workspace) -> PathBuf {
-    semantic_dir_for_snapshot(workspace, &workspace.snapshot_id)
-}
-
-pub fn semantic_dir_for_snapshot(workspace: &Workspace, snapshot_id: &str) -> PathBuf {
-    workspace
-        .root
-        .join(".codetrail")
-        .join("java-semantic")
-        .join(crate::index::snapshot_key(snapshot_id))
-}
-
-fn write_data(dir: &Path, data: &JavaSemanticData) -> Result<()> {
-    let parent = dir
-        .parent()
-        .with_context(|| format!("semantic index path has no parent: {}", dir.display()))?;
-    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
-    let tmp = sidecar_dir(dir, "tmp");
-    let backup = sidecar_dir(dir, "old");
-    if tmp.exists() {
-        fs::remove_dir_all(&tmp)
-            .with_context(|| format!("failed to remove stale {}", tmp.display()))?;
-    }
-    if backup.exists() {
-        fs::remove_dir_all(&backup)
-            .with_context(|| format!("failed to remove stale {}", backup.display()))?;
-    }
-    fs::create_dir_all(&tmp).with_context(|| format!("failed to create {}", tmp.display()))?;
-    write_jsonl(&tmp.join("symbols.jsonl"), &data.symbols)?;
-    write_jsonl(&tmp.join("occurrences.jsonl"), &data.occurrences)?;
-    write_jsonl(&tmp.join("call_edges.jsonl"), &data.call_edges)?;
-    write_jsonl(&tmp.join("type_edges.jsonl"), &data.type_edges)?;
-    write_jsonl(
-        &tmp.join("file_contributions.jsonl"),
-        &data.file_contributions,
-    )?;
-    write_manifest(&tmp.join("manifest.json"), &data.manifest)?;
-    if dir.exists() {
-        fs::rename(dir, &backup)
-            .with_context(|| format!("failed to move {} to {}", dir.display(), backup.display()))?;
-    }
-    if let Err(error) = fs::rename(&tmp, dir) {
-        if backup.exists() && !dir.exists() {
-            let _ = fs::rename(&backup, dir);
-        }
-        return Err(error)
-            .with_context(|| format!("failed to activate semantic index {}", dir.display()));
-    }
-    if backup.exists() {
-        fs::remove_dir_all(&backup)
-            .with_context(|| format!("failed to remove {}", backup.display()))?;
-    }
-    Ok(())
-}
-
-fn sidecar_dir(dir: &Path, suffix: &str) -> PathBuf {
-    let name = dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("semantic");
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or_default();
-    dir.with_file_name(format!("{name}.{suffix}-{}-{stamp}", std::process::id()))
-}
-
-fn read_data(dir: &Path, manifest: JavaSemanticManifest) -> Result<JavaSemanticData> {
-    Ok(JavaSemanticData {
-        manifest,
-        symbols: read_jsonl(&dir.join("symbols.jsonl"))?,
-        occurrences: read_jsonl(&dir.join("occurrences.jsonl"))?,
-        call_edges: read_jsonl(&dir.join("call_edges.jsonl"))?,
-        type_edges: read_jsonl(&dir.join("type_edges.jsonl"))?,
-        file_contributions: read_jsonl(&dir.join("file_contributions.jsonl"))?,
-    })
-}
-
-fn write_manifest(path: &Path, manifest: &JavaSemanticManifest) -> Result<()> {
-    let mut file =
-        File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
-    serde_json::to_writer_pretty(&mut file, manifest)?;
-    writeln!(file)?;
-    Ok(())
-}
-
-fn read_manifest(path: &Path) -> Result<JavaSemanticManifest> {
-    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    serde_json::from_reader(file).with_context(|| format!("failed to read {}", path.display()))
-}
-
-fn write_jsonl<T: serde::Serialize>(path: &Path, values: &[T]) -> Result<()> {
-    let file =
-        File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
-    let mut writer = BufWriter::new(file);
-    for value in values {
-        serde_json::to_writer(&mut writer, value)?;
-        writeln!(writer)?;
-    }
-    Ok(())
-}
-
-fn read_jsonl<T: for<'de> serde::Deserialize<'de>>(path: &Path) -> Result<Vec<T>> {
-    let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let reader = BufReader::new(file);
-    reader
-        .lines()
-        .filter(|line| line.as_ref().is_ok_and(|line| !line.trim().is_empty()))
-        .map(|line| {
-            let line = line?;
-            serde_json::from_str(&line).map_err(anyhow::Error::from)
-        })
-        .collect()
-}
-
-fn matched_symbol_variant<'a>(
-    symbol: &JavaSymbol,
-    plan: &'a InputPlan,
-    case_sensitive: bool,
-) -> Option<&'a crate::query_input::InputVariant> {
-    for candidate in [
-        symbol.symbol_id.as_str(),
-        symbol.name.as_str(),
-        symbol.qualified_name.as_str(),
-    ]
-    .into_iter()
-    {
-        if let Some(variant) =
-            plan.matched_variant(candidate, case_sensitive, SymbolMatchMode::Exact)
-        {
-            return Some(variant);
-        }
-    }
-    let signature = symbol.display_signature();
-    plan.matched_variant(&signature, case_sensitive, SymbolMatchMode::Exact)
-}
-
-fn call_candidate_json(symbols: &BTreeMap<&str, &JavaSymbol>, edge: &JavaCallEdge) -> Value {
-    let caller = symbols.get(edge.caller_symbol.as_str()).copied();
-    let callee = edge
-        .callee_symbol
-        .as_deref()
-        .and_then(|symbol_id| symbols.get(symbol_id).copied());
-    json!({
-        "path": edge.path,
-        "target": callee.map(|symbol| symbol.name.clone()).unwrap_or_else(|| edge.target_name.clone()),
-        "targetDetail": callee.map(|symbol| symbol.qualified_name.clone()),
-        "targetSignature": callee.map(JavaSymbol::display_signature),
-        "targetSymbolId": edge.callee_symbol.clone(),
-        "kind": "call",
-        "enclosingSymbol": caller.map(|symbol| symbol.name.clone()),
-        "enclosingSymbolDetail": caller.map(|symbol| symbol.qualified_name.clone()),
-        "enclosingSymbolSignature": caller.map(JavaSymbol::display_signature),
-        "enclosingSymbolId": edge.caller_symbol.clone(),
-        "language": "java",
-        "rootId": caller.map(|symbol| symbol.root_id.clone()).unwrap_or_else(|| "java:.".to_string()),
-        "range": edge.range.to_codetrail_json(),
-        "fileHash": edge.file_hash,
-        "producer": PRODUCER,
-        "reliability": "inferred_candidate",
-        "layer": "inferred_candidate",
-        "exact": false,
-        "source": "java_semantic",
-        "level": "inferred_candidate",
-        "dispatchKind": format!("{:?}", edge.dispatch_kind).to_lowercase(),
-        "resolveStatus": format!("{:?}", edge.status),
-        "confidence": format!("{:?}", edge.confidence).to_lowercase(),
-    })
-}
-
-fn finalize_results(results: &mut Vec<Value>, limit: usize) {
-    results.sort_by(|a, b| {
-        let ap = a.get("path").and_then(Value::as_str).unwrap_or_default();
-        let bp = b.get("path").and_then(Value::as_str).unwrap_or_default();
-        let al = a["range"]["start"]["line"].as_u64().unwrap_or(0);
-        let bl = b["range"]["start"]["line"].as_u64().unwrap_or(0);
-        ap.cmp(bp).then(al.cmp(&bl))
-    });
-    results.dedup_by(|a, b| {
-        a.get("path") == b.get("path")
-            && a["range"]["start"] == b["range"]["start"]
-            && a.get("target") == b.get("target")
-            && a.get("enclosingSymbol") == b.get("enclosingSymbol")
-    });
-    if limit > 0 && results.len() > limit {
-        results.truncate(limit);
-    }
-}
-
-struct PathFilter {
-    allowed: Option<BTreeSet<String>>,
-}
-
-impl PathFilter {
-    fn new(workspace: &Workspace, opts: &ScanOptions) -> Result<Self> {
-        if !scope_restricts_paths(opts) {
-            return Ok(Self { allowed: None });
-        }
-        let mut scope_opts = opts.clone();
-        scope_opts.limit = 0;
-        let allowed = workspace
-            .scan_catalog(&scope_opts)?
-            .into_iter()
-            .map(|record| record.path)
-            .collect::<BTreeSet<_>>();
-        Ok(Self {
-            allowed: Some(allowed),
-        })
-    }
-
-    fn allows(&self, path: &str) -> bool {
-        self.allowed
-            .as_ref()
-            .map(|allowed| allowed.contains(path))
-            .unwrap_or(true)
-    }
-}
-
-fn scope_restricts_paths(opts: &ScanOptions) -> bool {
-    opts.changed
-        || !opts.dirs.is_empty()
-        || !opts.extensions.is_empty()
-        || !opts.file_patterns.is_empty()
-        || !opts.include.is_empty()
-        || !opts.exclude.is_empty()
-        || !opts.lang.is_empty()
-}
-
-fn symbol_lookup(data: &JavaSemanticData) -> BTreeMap<&str, &JavaSymbol> {
-    data.symbols
-        .iter()
-        .map(|symbol| (symbol.symbol_id.as_str(), symbol))
-        .collect()
-}
-
 fn is_generated_path(path: &str) -> bool {
     path.contains("/generated/")
         || path.contains("generated-sources")
@@ -716,12 +376,11 @@ fn is_generated_path(path: &str) -> bool {
         || path.contains("delombok")
 }
 
-#[allow(dead_code)]
-fn source_range_from_scip(
-    start_line: u32,
-    start_column: u32,
-    end_line: u32,
-    end_column: u32,
-) -> SourceRange {
-    SourceRange::new(start_line, start_column, end_line, end_column)
+fn cleanup_legacy_json_artifacts(workspace: &Workspace) -> Result<()> {
+    let legacy_dir = workspace.root.join(".codetrail").join("java-semantic");
+    if legacy_dir.exists() {
+        fs::remove_dir_all(&legacy_dir)
+            .with_context(|| format!("failed to remove {}", legacy_dir.display()))?;
+    }
+    Ok(())
 }

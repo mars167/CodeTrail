@@ -5946,6 +5946,58 @@ public class G {
 }
 
 #[test]
+fn java_semantic_index_uses_sqlite_not_json_artifacts() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/example")).unwrap();
+    fs::write(
+        dir.path().join("src/main/java/example/Sample.java"),
+        r#"package example;
+
+public class Sample {
+    public void target() {}
+    public void caller() {
+        target();
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let codetrail_dir = dir.path().join(".codetrail");
+    assert!(codetrail_dir.join("java-semantic.sqlite").exists());
+    assert!(
+        !codetrail_dir.join("java-semantic").exists(),
+        "Java semantic must not write legacy artifact directories"
+    );
+
+    let callers = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["callers", "target"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let callers_json: Value = serde_json::from_slice(&callers).unwrap();
+    assert!(callers_json["index"]["path"]
+        .as_str()
+        .unwrap()
+        .ends_with(".codetrail/java-semantic.sqlite"));
+    assert_eq!(
+        callers_json["results"][0]["targetSignature"],
+        "Sample.target()"
+    );
+}
+
+#[test]
 fn parser_fallback_supports_swift_symbols_defs_and_callers() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("Sources/App")).unwrap();
