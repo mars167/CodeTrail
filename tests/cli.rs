@@ -5799,15 +5799,16 @@ public class SampleService {
         .clone();
     let text = String::from_utf8(text).unwrap();
     assert!(text.contains("Call hierarchy for \"start\""));
+    assert!(text.contains("outgoing:"));
+    assert!(text.contains("  |- SampleService.run()  src/main/java/example/SampleService.java:17"));
     assert!(text.contains(
-        "SampleService.start() -> SampleService.run()  src/main/java/example/SampleService.java:17"
+        "  |- SampleService.Payload.getName()  src/main/java/example/SampleService.java:18"
     ));
-    assert!(text.contains(
-        "SampleService.start() -> SampleService.Payload.getName()  src/main/java/example/SampleService.java:18"
-    ));
-    assert!(text.contains(
-        "SampleService.start() -> missingAudit  src/main/java/example/SampleService.java:20"
-    ));
+    assert!(text.contains("  `- missingAudit  src/main/java/example/SampleService.java:20"));
+    assert!(
+        !text.contains("SampleService.start() ->"),
+        "call-hierarchy text should not repeat the root on every edge: {text}"
+    );
     assert!(
         !text.trim_start().starts_with('{'),
         "call-hierarchy text output must not be raw JSON: {text}"

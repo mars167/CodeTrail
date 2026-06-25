@@ -279,14 +279,14 @@ fn render_text_call_hierarchy(
             if !incoming.is_empty() {
                 rendered_section = true;
                 writeln!(out, "incoming:")?;
-                render_text_hierarchy_edges(incoming, &root_name, root_path, true, 0, out)?;
+                render_text_hierarchy_edges(incoming, root_path, true, "  ", out)?;
             }
         }
         if let Some(outgoing) = result.get("outgoingCalls").and_then(Value::as_array) {
             if !outgoing.is_empty() {
                 rendered_section = true;
                 writeln!(out, "outgoing:")?;
-                render_text_hierarchy_edges(outgoing, &root_name, root_path, false, 0, out)?;
+                render_text_hierarchy_edges(outgoing, root_path, false, "  ", out)?;
             }
         }
         if !rendered_section {
@@ -298,39 +298,28 @@ fn render_text_call_hierarchy(
 
 fn render_text_hierarchy_edges(
     calls: &[Value],
-    parent_name: &str,
     parent_path: &str,
     incoming: bool,
-    depth: usize,
+    prefix: &str,
     out: &mut dyn Write,
 ) -> io::Result<()> {
-    let indent = "  ".repeat(depth + 1);
-    for call in calls {
+    for (idx, call) in calls.iter().enumerate() {
+        let is_last = idx + 1 == calls.len();
+        let branch = if is_last { "`- " } else { "|- " };
         let item_key = if incoming { "from" } else { "to" };
         let item = call.get(item_key).unwrap_or(&Value::Null);
         let other_name = item_label(item).unwrap_or_else(|| "<unknown>".to_string());
         let other_path = item_path(item).unwrap_or("");
         let callsite_path = if incoming { other_path } else { parent_path };
         let location = hierarchy_call_location(call, callsite_path, item);
-        let relation = if incoming {
-            format!("{other_name} -> {parent_name}")
-        } else {
-            format!("{parent_name} -> {other_name}")
-        };
         if location.is_empty() {
-            writeln!(out, "{indent}{relation}")?;
+            writeln!(out, "{prefix}{branch}{other_name}")?;
         } else {
-            writeln!(out, "{indent}{relation}  {location}")?;
+            writeln!(out, "{prefix}{branch}{other_name}  {location}")?;
         }
         if let Some(children) = call.get("children").and_then(Value::as_array) {
-            render_text_hierarchy_edges(
-                children,
-                &other_name,
-                other_path,
-                incoming,
-                depth + 1,
-                out,
-            )?;
+            let child_prefix = format!("{prefix}{}", if is_last { "   " } else { "|  " });
+            render_text_hierarchy_edges(children, other_path, incoming, &child_prefix, out)?;
         }
     }
     Ok(())
