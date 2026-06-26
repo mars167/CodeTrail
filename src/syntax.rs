@@ -765,6 +765,7 @@ fn call_candidate(node: Node, context: &CandidateWalkContext) -> Option<TreeSitt
     }
     let target_node = node
         .child_by_field_name("function")
+        .or_else(|| node.child_by_field_name("constructor"))
         .or_else(|| node.child_by_field_name("name"))
         .or_else(|| node.child_by_field_name("method"))
         .or_else(|| node.child_by_field_name("constructed_type"))
@@ -786,8 +787,8 @@ fn call_candidate(node: Node, context: &CandidateWalkContext) -> Option<TreeSitt
         name: None,
         target: Some(target),
         kind: "call".to_string(),
-        symbol_kind: None,
-        container: None,
+        symbol_kind: (node.kind() == "new_expression").then_some("constructor".to_string()),
+        container: enclosing_container_name(node, context.source),
         signature: None,
         range: point_range(node),
         body_range: None,
@@ -1081,6 +1082,7 @@ fn is_call_node(kind: &str) -> bool {
     matches!(
         kind,
         "call_expression"
+            | "new_expression"
             | "constructor_expression"
             | "call"
             | "method_invocation"

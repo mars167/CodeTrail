@@ -478,7 +478,7 @@ fn call_hierarchy_empty_hint(value: &Value) -> Option<&str> {
         .into_iter()
         .flatten()
         .filter_map(|warning| warning.get("message").and_then(Value::as_str))
-        .find(|message| message.contains("Java call hierarchy index unavailable"))
+        .find(|message| message.contains("Call hierarchy index unavailable"))
 }
 
 fn render_text_page_hint(value: &Value, out: &mut dyn Write) -> io::Result<()> {

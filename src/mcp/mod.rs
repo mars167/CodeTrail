@@ -379,7 +379,7 @@ fn tool_definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "codetrail_call_hierarchy".to_string(),
             description:
-                "Find Java incomingCalls/outgoingCalls call hierarchy using available indexes. Results are navigation evidence and may be incomplete; verify call sites before editing."
+                "Find incomingCalls/outgoingCalls call hierarchy using available indexes. Results are navigation evidence and may be incomplete; verify call sites before editing."
                     .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -387,7 +387,7 @@ fn tool_definitions() -> Vec<ToolDef> {
                     "identifier": { "type": "string", "description": "Function/symbol name to query call hierarchy for" },
                     "direction": { "type": "string", "enum": ["incoming", "outgoing", "both"], "default": "both" },
                     "depth": { "type": "integer", "minimum": 1, "maximum": 8, "default": 2 },
-                    "includeOverrides": { "type": "boolean", "default": false },
+                    "includeOverrides": { "type": "boolean", "default": false, "description": "Expand overrides/implementations when the active semantic index supports it" },
                     "dir": { "type": "array", "items": { "type": "string" }, "description": "Workspace-relative directories to search (OR filter)" },
                     "ext": { "type": "array", "items": { "type": "string" }, "description": "File extensions to search, with or without a leading dot" },
                     "filePattern": { "type": "array", "items": { "type": "string" }, "description": "Path patterns applied before call search" },

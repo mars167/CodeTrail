@@ -770,6 +770,26 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                     output::inferred_candidate(),
                     output::IndexedResponseParts::new(index_meta, results, Vec::new()),
                 )
+            } else if let Some((index_meta, results)) =
+                graph_call_hierarchy(&workspace, &scan_opts, identifier, *direction, *depth)?
+            {
+                exit_code = output::no_match_exit(&results);
+                output::response_with_index(
+                    "call-hierarchy",
+                    "call-hierarchy",
+                    scoped_query(
+                        json!({
+                            "identifier": identifier,
+                            "producer": "graph",
+                            "direction": direction.as_str(),
+                            "depth": depth,
+                        }),
+                        &scan_opts,
+                    ),
+                    &workspace.snapshot_id,
+                    output::inferred_candidate(),
+                    output::IndexedResponseParts::new(index_meta, results, Vec::new()),
+                )
             } else {
                 exit_code = 1;
                 output::response_with_index(
@@ -778,11 +798,10 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                     scoped_query(
                         json!({
                             "identifier": identifier,
-                            "producer": "java_semantic",
+                            "producer": "graph",
                             "direction": direction.as_str(),
                             "depth": depth,
-                            "includeOverrides": include_overrides,
-                            "requires": "fresh_java_semantic_index"
+                            "requires": "fresh_call_hierarchy_index"
                         }),
                         &scan_opts,
                     ),
@@ -792,7 +811,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                         output::live_scan_index(),
                         json!([]),
                         vec![
-                            "Java call hierarchy index unavailable; run `codetrail index build` to create call hierarchy data.".to_string(),
+                            "Call hierarchy index unavailable; run `codetrail index build` to create call hierarchy data.".to_string(),
                         ],
                     ),
                 )
@@ -1208,6 +1227,31 @@ pub fn run(cli: Cli) -> AppResult<i32> {
     attach_saved_query(&mut value, &workspace, cli.save_query.as_deref())?;
     output::emit(&cli.output, &value)?;
     Ok(exit_code)
+}
+
+fn graph_call_hierarchy(
+    workspace: &Workspace,
+    scan_opts: &ScanOptions,
+    identifier: &str,
+    direction: java_semantic::CallHierarchyDirection,
+    depth: usize,
+) -> AppResult<Option<(Value, Value)>> {
+    let store = graph::GraphStore::open(workspace)?;
+    if !store.freshness_check().unwrap_or(false) {
+        return Ok(None);
+    }
+    let hierarchy_direction = match direction {
+        java_semantic::CallHierarchyDirection::Incoming => {
+            graph::schema::HierarchyDirection::Incoming
+        }
+        java_semantic::CallHierarchyDirection::Outgoing => {
+            graph::schema::HierarchyDirection::Outgoing
+        }
+        java_semantic::CallHierarchyDirection::Both => graph::schema::HierarchyDirection::Both,
+    };
+    let results =
+        store.query_call_hierarchy(workspace, scan_opts, identifier, hierarchy_direction, depth)?;
+    Ok(Some((store.index_meta(true), Value::Array(results))))
 }
 
 fn emit_response(

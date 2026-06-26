@@ -29,12 +29,12 @@ text search:
 | Language | Best first queries | Use `rg` when |
 | --- | --- | --- |
 | Java | `call-hierarchy`, `calls`, `callers`, then `defs`/`refs` for exact symbols. Use text output only when a human-readable call tree is requested. | The Java semantic index is missing/stale, annotation-generated behavior is not indexed, or the question is literal text/config. |
-| Go | `defs`/`refs`/`symbols` with fresh `scip-go`; use `calls`/`callers` only as navigation candidates. | `scip-go` is unavailable/stale or selector behavior is ambiguous. |
-| Rust | `defs`/`refs`/`symbols` with fresh rust-analyzer SCIP; verify macro-heavy code carefully. | Macro expansion, cfg/features, or provider readiness blocks precise facts. |
-| TypeScript/JavaScript | `defs`/`refs`/`symbols` with fresh `scip-typescript`; scope with `--lang typescript` or `--lang javascript`. | Package setup or generated code makes the SCIP index stale or incomplete. |
+| Go | `call-hierarchy`, then `defs`/`refs`/`symbols` with fresh `scip-go`; use `calls`/`callers` for flat navigation. | `scip-go` is unavailable/stale or selector/interface behavior is ambiguous. |
+| Rust | `call-hierarchy`, then `defs`/`refs`/`symbols` with fresh rust-analyzer SCIP; verify macro-heavy code carefully. | Macro expansion, cfg/features, or provider readiness blocks precise facts. |
+| TypeScript/JavaScript | `call-hierarchy`, then `defs`/`refs`/`symbols` with fresh `scip-typescript`; scope with `--lang typescript` or `--lang javascript`. | Package setup, generated code, or dynamic property calls make the index incomplete. |
 | Swift | `defs`/`refs`/`symbols` when SourceKit-backed SCIP is fresh. | SourceKit is missing, timed out, or the target needs build settings CodeTrail cannot infer. |
 | Ruby | `defs`/`refs`/`symbols` when `scip-ruby` is fresh; treat dynamic dispatch cautiously. | Metaprogramming or missing bundle context hides the target. |
-| Python | `symbols`/`defs`/`calls`/`callers` are parser leads, not semantic proof. | Any reference question needs exact textual confirmation. |
+| Python | `call-hierarchy` plus `symbols`/`defs`/`calls`/`callers` are static parser leads, not semantic proof. | Dynamic imports, monkey patching, decorators, or attribute calls hide the target. |
 | Kotlin | Prefer Java/JVM path and text/path search unless a fresh semantic index covers the file. | Cross-language Java/Kotlin calls, Gradle-generated sources, or compiler plugins are involved. |
 | Config/routes | Use `routes` for framework endpoints and config facts; combine with `refs` only when a precise symbol exists. | The task is key/value text, YAML/TOML/XML structure, or broad config discovery. |
 

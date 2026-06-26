@@ -70,8 +70,8 @@ flowchart TD
 
   Kind -->|calls / callers / call-hierarchy| JavaSem["Java semantic index"]
   JavaSem -->|available and fresh| Candidate["inferred_candidate"]
-  JavaSem -->|missing for calls/callers| Graph["petgraph backend"]
-  JavaSem -->|missing for call-hierarchy| RejectHierarchy["empty results + freshness"]
+  JavaSem -->|missing or non-Java| Graph["petgraph backend"]
+  Graph -->|missing for call-hierarchy| RejectHierarchy["empty results + freshness"]
   Graph --> Candidate
 
   Precise --> Json
@@ -83,8 +83,9 @@ flowchart TD
 
 `refs` 是 precise-only：没有 fresh SCIP occurrence 时不做文本 fallback。`defs`
 和 `symbols` 可以使用 tree-sitter 作为语法事实。Java `calls`、`callers`
-优先使用 Rust-native Java semantic index，缺失时退到 graph/parser；`call-hierarchy`
-需要 fresh Java semantic index。所有调用关系始终是候选关系。
+和 `call-hierarchy` 优先使用 Rust-native Java semantic index，缺失时退到
+graph/parser；Go、Rust、TypeScript/JavaScript 和 Python 的 `call-hierarchy`
+使用 fresh graph index，把 SCIP/tree-sitter 结果投影为结构化层级。所有调用关系始终是候选关系。
 文本/路径 discovery 不属于新的公共查询路径。
 
 ## Legacy Watcher 和 Hook

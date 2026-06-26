@@ -1031,18 +1031,38 @@ impl QueryService {
             )));
         }
 
+        if let Some((index_meta, results)) =
+            self.graph_call_hierarchy(identifier, &scan, hierarchy_opts)?
+        {
+            return Ok(self.finalize(output::response_with_index(
+                "call-hierarchy",
+                "call-hierarchy",
+                scoped_query(
+                    json!({
+                        "identifier": identifier,
+                        "producer": "graph",
+                        "direction": hierarchy_opts.direction.as_str(),
+                        "depth": hierarchy_opts.depth,
+                    }),
+                    &scan,
+                ),
+                &self.workspace.snapshot_id,
+                output::inferred_candidate(),
+                output::IndexedResponseParts::new(index_meta, results, Vec::new()),
+            )));
+        }
+
         Ok(self.finalize(output::response_with_index(
             "call-hierarchy",
             "call-hierarchy",
             scoped_query(
                 json!({
-                    "identifier": identifier,
-                    "producer": "java_semantic",
-                    "direction": hierarchy_opts.direction.as_str(),
-                    "depth": hierarchy_opts.depth,
-                    "includeOverrides": hierarchy_opts.include_overrides,
-                    "requires": "fresh_java_semantic_index"
-                }),
+                        "identifier": identifier,
+                        "producer": "graph",
+                        "direction": hierarchy_opts.direction.as_str(),
+                        "depth": hierarchy_opts.depth,
+                        "requires": "fresh_call_hierarchy_index"
+                    }),
                 &scan,
             ),
             &self.workspace.snapshot_id,
@@ -1051,11 +1071,40 @@ impl QueryService {
                 output::live_scan_index(),
                 json!([]),
                 vec![
-                    "Java call hierarchy index unavailable; run `codetrail index build` to create call hierarchy data."
+                    "Call hierarchy index unavailable; run `codetrail index build` to create call hierarchy data."
                         .to_string(),
                 ],
             ),
         )))
+    }
+
+    fn graph_call_hierarchy(
+        &self,
+        identifier: &str,
+        scan: &ScanOptions,
+        hierarchy_opts: java_semantic::CallHierarchyOptions,
+    ) -> Result<Option<(Value, Value)>> {
+        let store = graph::GraphStore::open(&self.workspace)?;
+        if !store.freshness_check().unwrap_or(false) {
+            return Ok(None);
+        }
+        let direction = match hierarchy_opts.direction {
+            java_semantic::CallHierarchyDirection::Incoming => {
+                graph::schema::HierarchyDirection::Incoming
+            }
+            java_semantic::CallHierarchyDirection::Outgoing => {
+                graph::schema::HierarchyDirection::Outgoing
+            }
+            java_semantic::CallHierarchyDirection::Both => graph::schema::HierarchyDirection::Both,
+        };
+        let results = store.query_call_hierarchy(
+            &self.workspace,
+            scan,
+            identifier,
+            direction,
+            hierarchy_opts.depth,
+        )?;
+        Ok(Some((store.index_meta(true), Value::Array(results))))
     }
 
     // ------------------------------------------------------------------
