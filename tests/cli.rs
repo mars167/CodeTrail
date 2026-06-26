@@ -5808,16 +5808,17 @@ public class SampleService {
     let text = String::from_utf8(text).unwrap();
     assert!(text.contains("Call hierarchy for \"start\""));
     assert!(text.contains("outgoing:"));
-    assert!(text.contains("src/main/java/example/SampleService.java:"));
+    assert!(text.contains("def@src/main/java/example/SampleService.java:"));
+    assert!(text.contains("\n  src/main/java/example/SampleService.java\n"));
     assert_eq!(
         text.matches("src/main/java/example/SampleService.java:")
             .count(),
         1,
-        "call-hierarchy text should not repeat the same file path on every child edge: {text}"
+        "call-hierarchy text should keep full file paths in context lines instead of repeating them on every child edge: {text}"
     );
-    assert!(text.contains("  |- SampleService.run()  :17"));
-    assert!(text.contains("  |- Payload.getName()  (SampleService)  :18"));
-    assert!(text.contains("Payload.builder()  (SampleService)  :19"));
+    assert!(text.contains("    |- SampleService.run()  call@17"));
+    assert!(text.contains("    |- Payload.getName()  (SampleService)  call@18"));
+    assert!(text.contains("Payload.builder()  (SampleService)  call@19"));
     assert!(
         !text.contains("missingAudit"),
         "call-hierarchy text must not expose unresolved calls without a function signature: {text}"

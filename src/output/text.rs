@@ -267,11 +267,10 @@ fn render_text_call_hierarchy(
         let root = result.get("root").unwrap_or(&Value::Null);
         let root_name = item_label(root).unwrap_or_else(|| identifier.to_string());
         let root_path = item_path(root).unwrap_or("");
-        let root_location = item_location(root);
-        if root_location.is_empty() {
-            writeln!(out, "{root_name}")?;
-        } else {
-            writeln!(out, "{root_name}  {root_location}")?;
+        writeln!(out, "{root_name}")?;
+        let root_location = item_def_location(root);
+        if !root_location.is_empty() {
+            writeln!(out, "  {root_location}")?;
         }
 
         let mut rendered_section = false;
@@ -303,6 +302,7 @@ fn render_text_hierarchy_edges(
     prefix: &str,
     out: &mut dyn Write,
 ) -> io::Result<()> {
+    let mut last_callsite_path = String::new();
     for (idx, call) in calls.iter().enumerate() {
         let is_last = idx + 1 == calls.len();
         let branch = if is_last { "`- " } else { "|- " };
@@ -310,15 +310,24 @@ fn render_text_hierarchy_edges(
         let item = call.get(item_key).unwrap_or(&Value::Null);
         let other_name = item_label(item).unwrap_or_else(|| "<unknown>".to_string());
         let other_path = item_path(item).unwrap_or("");
-        let callsite_path = if incoming { other_path } else { parent_path };
-        let location = hierarchy_call_location(call, callsite_path, parent_path, item);
-        if location.is_empty() {
-            writeln!(out, "{prefix}{branch}{other_name}")?;
+        let callsite_path = hierarchy_callsite_path(incoming, parent_path, item);
+        if !callsite_path.is_empty() && callsite_path != last_callsite_path {
+            writeln!(out, "{prefix}{callsite_path}")?;
+            last_callsite_path = callsite_path.to_string();
+        }
+        let edge_prefix = if callsite_path.is_empty() {
+            prefix.to_string()
         } else {
-            writeln!(out, "{prefix}{branch}{other_name}  {location}")?;
+            format!("{prefix}  ")
+        };
+        let location = hierarchy_call_location(call);
+        if location.is_empty() {
+            writeln!(out, "{edge_prefix}{branch}{other_name}")?;
+        } else {
+            writeln!(out, "{edge_prefix}{branch}{other_name}  {location}")?;
         }
         if let Some(children) = call.get("children").and_then(Value::as_array) {
-            let child_prefix = format!("{prefix}{}", if is_last { "   " } else { "|  " });
+            let child_prefix = format!("{edge_prefix}{}", if is_last { "   " } else { "|  " });
             render_text_hierarchy_edges(children, other_path, incoming, &child_prefix, out)?;
         }
     }
@@ -408,34 +417,42 @@ fn item_path(item: &Value) -> Option<&str> {
     item.get("path").and_then(Value::as_str)
 }
 
-fn item_location(item: &Value) -> String {
+fn item_def_location(item: &Value) -> String {
     let path = item.get("path").and_then(Value::as_str).unwrap_or("");
     if path.is_empty() {
         return String::new();
     }
-    format_location(
-        path,
-        item.get("selectionRange").or_else(|| item.get("range")),
-    )
+    let line = format_line_range(item.get("selectionRange").or_else(|| item.get("range")));
+    if line.is_empty() {
+        String::new()
+    } else {
+        format!("def@{path}{line}")
+    }
 }
 
-fn hierarchy_call_location(call: &Value, path: &str, parent_path: &str, item: &Value) -> String {
-    if path.is_empty() {
-        return String::new();
+fn hierarchy_callsite_path<'a>(incoming: bool, parent_path: &'a str, item: &'a Value) -> &'a str {
+    if incoming {
+        item_path(item).unwrap_or("")
+    } else {
+        parent_path
     }
+}
+
+fn hierarchy_call_location(call: &Value) -> String {
     let range = call
         .get("fromRanges")
         .and_then(Value::as_array)
         .and_then(|ranges| ranges.first())
-        .or_else(|| item.get("selectionRange"))
-        .or_else(|| item.get("range"));
-    if path == parent_path {
-        return format_relative_location(range);
+        .map(|range| format_line_range(Some(range)))
+        .unwrap_or_default();
+    if range.is_empty() {
+        String::new()
+    } else {
+        format!("call@{}", range.trim_start_matches(':'))
     }
-    format_location(path, range)
 }
 
-fn format_relative_location(range: Option<&Value>) -> String {
+fn format_line_range(range: Option<&Value>) -> String {
     let Some(range) = range else {
         return String::new();
     };
