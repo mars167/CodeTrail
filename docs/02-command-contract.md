@@ -23,7 +23,7 @@ flowchart TB
 | --- | --- | --- |
 | 符号与定义 | `symbols`, `defs` | 优先 fresh SCIP；缺失时可使用 tree-sitter parser fallback，可靠性为 `parser_fact` |
 | 精确引用 | `refs` | 只返回 fresh SCIP occurrence 引用；没有可用 SCIP 时返回空结果，不做文本 fallback |
-| 调用关系 | `calls`, `callers`, `call-hierarchy` | 返回调用候选或 Java call hierarchy；结果是导航证据，可能不完整，编辑前必须复核调用点 |
+| 调用关系 | `calls`, `callers`, `call-hierarchy` | 返回调用候选或 call hierarchy；结果是导航证据，可能不完整，编辑前必须复核调用点 |
 | 索引 | `index build`, `index status`, `index doctor` | 构建、查看和诊断语义索引/SCIP provider 状态 |
 
 旧的文本、路径、route、watch、serve、saved-query、remote pack/unpack、hook 等命令仍可能留在实现中用于兼容、测试或内部维护，但不属于新的公共策略面。Agent 和 MCP 不应把 CodeTrail 当作 `rg`、`fd`、`cat`、`git` 或编辑器读取工具的替代品。
@@ -72,7 +72,7 @@ codetrail call-hierarchy <identifier> [--direction incoming|outgoing|both] [--de
 - `defs <identifier>` 和 `symbols <query>` 优先 SCIP；缺失时可返回 parser fallback 的定义/符号事实。
 - `calls <caller-name>` 查询某个函数或方法体内发出的调用。
 - `callers <callee-name>` 查询调用某个目标的调用点。
-- `call-hierarchy <identifier>` 查询 Java incomingCalls/outgoingCalls 结构化调用层级，默认 `--depth 2`。它需要 fresh Java semantic index；缺失时返回空结果和 freshness 说明。公开层级只返回已解析的 callable 节点并显示签名；方法和构造器会显示，没解析到唯一签名的裸调用点不作为 hierarchy function 返回。Text 输出采用 `Class.method(args)  (package)`，root 用 `def@path:line` 标明声明位置，子调用按调用点文件分块并用 `call@line` 标明调用位置。
+- `call-hierarchy <identifier>` 查询 incomingCalls/outgoingCalls 结构化调用层级，默认 `--depth 2`。Java 优先使用 fresh Java semantic index；其他语言和 Java fallback 使用 fresh graph index。缺失时返回空结果和 freshness 说明。公开层级只返回已解析的 callable 节点并显示签名；方法、函数和构造器会显示，没解析到声明位置的裸调用点不作为 hierarchy function 返回。Text 输出采用 `Class.method(args)  (package)` 或语言原始函数签名，root 用 `def@path:line` 标明声明位置，子调用按调用点文件分块并用 `call@line` 标明调用位置。
 - `calls`/`callers`/`call-hierarchy` 无论来自 Java semantic index、graph 还是 parser，都只是候选关系。
 - 兼容输入命中时结果会带 `matchedInputVariant`；内部诊断可记录输入扩展，但 public JSON 不暴露诊断字段。
 

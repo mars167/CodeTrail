@@ -379,7 +379,7 @@ fn tool_definitions() -> Vec<ToolDef> {
         ToolDef {
             name: "codetrail_call_hierarchy".to_string(),
             description:
-                "Find Java incomingCalls/outgoingCalls call hierarchy using available indexes. Results are navigation evidence and may be incomplete; verify call sites before editing."
+                "Find incomingCalls/outgoingCalls call hierarchy using available indexes. Results are navigation evidence and may be incomplete; verify call sites before editing."
                     .to_string(),
             input_schema: json!({
                 "type": "object",

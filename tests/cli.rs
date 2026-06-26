@@ -6242,6 +6242,139 @@ fn calls_and_callers_do_not_claim_graph_store_before_kuzu_backend_exists() {
 }
 
 #[test]
+fn graph_call_hierarchy_supports_rust_go_typescript_and_python() {
+    struct Fixture<'a> {
+        setup_files: &'a [(&'a str, &'a str)],
+        identifier: &'a str,
+        callee: &'a str,
+        language: &'a str,
+        path: &'a str,
+        root_signature_fragment: &'a str,
+        callee_signature_fragment: &'a str,
+    }
+
+    let fixtures = [
+        Fixture {
+            setup_files: &[
+                (
+                    "Cargo.toml",
+                    "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+                ),
+                (
+                    "src/lib.rs",
+                    "fn alpha() {\n    beta();\n}\n\nfn beta() {}\n",
+                ),
+            ],
+            identifier: "alpha",
+            callee: "beta",
+            language: "rust",
+            path: "src/lib.rs",
+            root_signature_fragment: "fn alpha",
+            callee_signature_fragment: "fn beta",
+        },
+        Fixture {
+            setup_files: &[
+                ("go.mod", "module example.com/sample\n"),
+                (
+                    "main.go",
+                    "package main\n\nfunc Alpha() {\n    Beta()\n}\n\nfunc Beta() {}\n",
+                ),
+            ],
+            identifier: "Alpha",
+            callee: "Beta",
+            language: "go",
+            path: "main.go",
+            root_signature_fragment: "func Alpha",
+            callee_signature_fragment: "func Beta",
+        },
+        Fixture {
+            setup_files: &[(
+                "src/app.ts",
+                "function start() {\n  helper();\n}\n\nfunction helper() {}\n",
+            )],
+            identifier: "start",
+            callee: "helper",
+            language: "typescript",
+            path: "src/app.ts",
+            root_signature_fragment: "function start",
+            callee_signature_fragment: "function helper",
+        },
+        Fixture {
+            setup_files: &[(
+                "app.py",
+                "def start():\n    helper()\n\n\ndef helper():\n    pass\n",
+            )],
+            identifier: "start",
+            callee: "helper",
+            language: "python",
+            path: "app.py",
+            root_signature_fragment: "def start",
+            callee_signature_fragment: "def helper",
+        },
+    ];
+
+    for fixture in fixtures {
+        let dir = tempdir().unwrap();
+        for (path, content) in fixture.setup_files {
+            let path = dir.path().join(path);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(path, content).unwrap();
+        }
+
+        codetrail()
+            .arg("--path")
+            .arg(dir.path())
+            .args(["index", "build"])
+            .assert()
+            .success();
+
+        let output = codetrail()
+            .arg("--path")
+            .arg(dir.path())
+            .args([
+                "call-hierarchy",
+                fixture.identifier,
+                "--direction",
+                "outgoing",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let json: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(
+            json["query"]["producer"], "graph",
+            "expected graph-backed hierarchy for {}: {json}",
+            fixture.language
+        );
+        assert_eq!(json["index"]["source"], "petgraph");
+        let root = &json["results"][0]["root"];
+        assert_eq!(root["language"], fixture.language);
+        assert_eq!(root["path"], fixture.path);
+        assert!(root["signature"]
+            .as_str()
+            .unwrap_or("")
+            .contains(fixture.root_signature_fragment));
+
+        let outgoing = json["results"][0]["outgoingCalls"].as_array().unwrap();
+        let call = outgoing
+            .iter()
+            .find(|call| call["to"]["name"] == fixture.callee)
+            .unwrap_or_else(|| panic!("missing {} callee in {json}", fixture.callee));
+        assert_eq!(call["to"]["kind"], "function");
+        assert_eq!(call["to"]["path"], fixture.path);
+        assert!(call["to"]["signature"]
+            .as_str()
+            .unwrap_or("")
+            .contains(fixture.callee_signature_fragment));
+        assert!(call["fromRanges"][0]["start"]["line"].as_u64().unwrap() > 0);
+    }
+}
+
+#[test]
 fn callers_after_index_build_matches_qualified_method_target_by_simple_name() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();

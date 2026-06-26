@@ -28,7 +28,7 @@ pub mod builder;
 pub mod schema;
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeSet, HashSet},
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -46,7 +46,7 @@ use crate::{
     workspace::{ScanOptions, Workspace},
 };
 
-use self::schema::{CallCandidate, EdgeMetadata, GraphNode, SerialisedGraph};
+use self::schema::{CallCandidate, EdgeMetadata, GraphNode, HierarchyDirection, SerialisedGraph};
 
 // Re-exports
 pub use self::schema::EdgeKind;
@@ -77,6 +77,16 @@ pub trait GraphBackend {
         plan: &InputPlan,
         case_sensitive: bool,
     ) -> Result<Vec<CallCandidate>>;
+
+    fn query_call_hierarchy(
+        &self,
+        plan: &InputPlan,
+        direction: HierarchyDirection,
+        depth: usize,
+        limit: usize,
+        case_sensitive: bool,
+        allowed_paths: Option<&HashSet<String>>,
+    ) -> Result<Vec<Value>>;
 
     /// Check whether the stored graph is fresh relative to the given snapshot.
     fn freshness_check(&self, snapshot_id: &str) -> Result<bool>;
@@ -153,6 +163,38 @@ impl GraphStore {
         case_sensitive: bool,
     ) -> Result<Vec<CallCandidate>> {
         self.backend.query_callers_with_input(plan, case_sensitive)
+    }
+
+    pub fn query_call_hierarchy(
+        &self,
+        workspace: &Workspace,
+        opts: &ScanOptions,
+        identifier: &str,
+        direction: HierarchyDirection,
+        depth: usize,
+    ) -> Result<Vec<Value>> {
+        let allowed_paths = if graph_scope_restricts_paths(opts) {
+            let mut scope_opts = opts.clone();
+            scope_opts.limit = 0;
+            Some(
+                workspace
+                    .scan_catalog(&scope_opts)?
+                    .into_iter()
+                    .map(|file| file.path)
+                    .collect::<HashSet<_>>(),
+            )
+        } else {
+            None
+        };
+        let plan = InputPlan::new(identifier, opts.input_mode);
+        self.backend.query_call_hierarchy(
+            &plan,
+            direction,
+            depth.max(1),
+            opts.limit,
+            opts.case_sensitive,
+            allowed_paths.as_ref(),
+        )
     }
 
     /// Check whether the persisted graph matches the current snapshot.
@@ -398,6 +440,69 @@ impl GraphBackend for PetgraphBackend {
         Ok(results)
     }
 
+    fn query_call_hierarchy(
+        &self,
+        plan: &InputPlan,
+        direction: HierarchyDirection,
+        depth: usize,
+        limit: usize,
+        case_sensitive: bool,
+        allowed_paths: Option<&HashSet<String>>,
+    ) -> Result<Vec<Value>> {
+        let mut results = Vec::new();
+        let mut root_indices = self
+            .matching_node_indices_for_plan(plan, case_sensitive)
+            .into_iter()
+            .filter_map(|(node_idx, _)| {
+                let root = &self.graph[node_idx];
+                (is_hierarchy_callable(root) && path_allowed(allowed_paths, &root.file_path))
+                    .then_some(node_idx)
+            })
+            .collect::<Vec<_>>();
+        root_indices.sort_by(|a, b| {
+            hierarchy_root_key(&self.graph[*a])
+                .cmp(&hierarchy_root_key(&self.graph[*b]))
+                .then(
+                    hierarchy_root_rank(&self.graph[*a]).cmp(&hierarchy_root_rank(&self.graph[*b])),
+                )
+        });
+        root_indices.dedup_by(|a, b| {
+            hierarchy_root_key(&self.graph[*a]) == hierarchy_root_key(&self.graph[*b])
+        });
+
+        for node_idx in root_indices {
+            let root = &self.graph[node_idx];
+            let mut result = json!({
+                "root": graph_node_item(root),
+                "incomingCalls": [],
+                "outgoingCalls": [],
+            });
+            if direction.include_incoming() {
+                result["incomingCalls"] = Value::Array(self.expand_incoming_hierarchy(
+                    node_idx,
+                    depth,
+                    limit,
+                    allowed_paths,
+                    &mut BTreeSet::new(),
+                ));
+            }
+            if direction.include_outgoing() {
+                result["outgoingCalls"] = Value::Array(self.expand_outgoing_hierarchy(
+                    node_idx,
+                    depth,
+                    limit,
+                    allowed_paths,
+                    &mut BTreeSet::new(),
+                ));
+            }
+            results.push(result);
+            if limit > 0 && results.len() >= limit {
+                break;
+            }
+        }
+        Ok(results)
+    }
+
     fn freshness_check(&self, snapshot_id: &str) -> Result<bool> {
         Ok(self.snapshot_id == snapshot_id
             && !self.snapshot_id.is_empty()
@@ -423,6 +528,116 @@ impl PetgraphBackend {
             }
         }
         matches
+    }
+
+    fn expand_incoming_hierarchy(
+        &self,
+        node_idx: NodeIndex,
+        depth: usize,
+        limit: usize,
+        allowed_paths: Option<&HashSet<String>>,
+        seen: &mut BTreeSet<String>,
+    ) -> Vec<Value> {
+        let symbol_id = self.graph[node_idx].id.clone();
+        if depth == 0 || !seen.insert(format!("incoming:{symbol_id}")) {
+            return Vec::new();
+        }
+        let mut calls = Vec::new();
+        let mut seen_edges = BTreeSet::new();
+        let mut edges = self
+            .graph
+            .edges_directed(node_idx, petgraph::Direction::Incoming)
+            .collect::<Vec<_>>();
+        edges.sort_by(|a, b| edge_sort_key(a.weight()).cmp(&edge_sort_key(b.weight())));
+        for edge in edges {
+            let meta = edge.weight();
+            if !path_allowed(allowed_paths, &meta.file_path) {
+                continue;
+            }
+            let caller = &self.graph[edge.source()];
+            if !is_hierarchy_callable(caller) {
+                continue;
+            }
+            let edge_key = hierarchy_edge_key(meta, &caller.id);
+            if !seen_edges.insert(edge_key) {
+                continue;
+            }
+            let mut value = json!({
+                "from": graph_node_item(caller),
+                "fromRanges": [edge_range(meta)],
+                "dispatchKind": "unknown",
+            });
+            if depth > 1 {
+                value["children"] = Value::Array(self.expand_incoming_hierarchy(
+                    edge.source(),
+                    depth - 1,
+                    limit,
+                    allowed_paths,
+                    seen,
+                ));
+            }
+            calls.push(value);
+            if limit > 0 && calls.len() >= limit {
+                break;
+            }
+        }
+        seen.remove(&format!("incoming:{symbol_id}"));
+        calls
+    }
+
+    fn expand_outgoing_hierarchy(
+        &self,
+        node_idx: NodeIndex,
+        depth: usize,
+        limit: usize,
+        allowed_paths: Option<&HashSet<String>>,
+        seen: &mut BTreeSet<String>,
+    ) -> Vec<Value> {
+        let symbol_id = self.graph[node_idx].id.clone();
+        if depth == 0 || !seen.insert(format!("outgoing:{symbol_id}")) {
+            return Vec::new();
+        }
+        let mut calls = Vec::new();
+        let mut seen_edges = BTreeSet::new();
+        let mut edges = self
+            .graph
+            .edges_directed(node_idx, petgraph::Direction::Outgoing)
+            .collect::<Vec<_>>();
+        edges.sort_by(|a, b| edge_sort_key(a.weight()).cmp(&edge_sort_key(b.weight())));
+        for edge in edges {
+            let meta = edge.weight();
+            if !path_allowed(allowed_paths, &meta.file_path) {
+                continue;
+            }
+            let callee = &self.graph[edge.target()];
+            if !is_hierarchy_callable(callee) {
+                continue;
+            }
+            let edge_key = hierarchy_edge_key(meta, &callee.id);
+            if !seen_edges.insert(edge_key) {
+                continue;
+            }
+            let mut value = json!({
+                "to": graph_node_item(callee),
+                "fromRanges": [edge_range(meta)],
+                "dispatchKind": "unknown",
+            });
+            if depth > 1 {
+                value["children"] = Value::Array(self.expand_outgoing_hierarchy(
+                    edge.target(),
+                    depth - 1,
+                    limit,
+                    allowed_paths,
+                    seen,
+                ));
+            }
+            calls.push(value);
+            if limit > 0 && calls.len() >= limit {
+                break;
+            }
+        }
+        seen.remove(&format!("outgoing:{symbol_id}"));
+        calls
     }
 }
 
@@ -514,6 +729,90 @@ fn node_display_name(node: &GraphNode) -> String {
     }
 }
 
+fn graph_node_item(node: &GraphNode) -> Value {
+    let signature = node
+        .signature
+        .clone()
+        .filter(|signature| !signature.is_empty())
+        .unwrap_or_else(|| node_display_name(node));
+    json!({
+        "symbol_id": node.id,
+        "name": node_display_name(node),
+        "kind": "function",
+        "path": node.file_path,
+        "range": node_range(node),
+        "selectionRange": node_range(node),
+        "signature": signature,
+        "language": node.language,
+        "container": node.container,
+    })
+}
+
+fn node_range(node: &GraphNode) -> Value {
+    json!({
+        "start": { "line": node.start_line, "character": node.start_column },
+        "end": { "line": node.end_line, "character": node.end_column }
+    })
+}
+
+fn edge_range(meta: &EdgeMetadata) -> Value {
+    json!({
+        "start": { "line": meta.call_line, "character": meta.call_column },
+        "end": { "line": meta.call_line, "character": meta.call_column + 1 }
+    })
+}
+
+fn is_hierarchy_callable(node: &GraphNode) -> bool {
+    node.kind == self::schema::NodeKind::Function
+        && !node.file_path.is_empty()
+        && node.start_line > 0
+}
+
+fn path_allowed(allowed_paths: Option<&HashSet<String>>, path: &str) -> bool {
+    allowed_paths
+        .map(|paths| paths.contains(path))
+        .unwrap_or(true)
+}
+
+fn edge_sort_key(meta: &EdgeMetadata) -> (&str, u32, u32, &str) {
+    (
+        meta.file_path.as_str(),
+        meta.call_line,
+        meta.call_column,
+        meta.callee_id.as_str(),
+    )
+}
+
+fn hierarchy_edge_key(meta: &EdgeMetadata, item_id: &str) -> (String, u32, u32, String) {
+    (
+        meta.file_path.clone(),
+        meta.call_line,
+        meta.call_column,
+        item_id.to_string(),
+    )
+}
+
+fn hierarchy_root_key(node: &GraphNode) -> (String, String, String) {
+    (
+        node.language.clone(),
+        node.file_path.clone(),
+        node_display_name(node),
+    )
+}
+
+fn hierarchy_root_rank(node: &GraphNode) -> u8 {
+    let has_signature = node
+        .signature
+        .as_deref()
+        .is_some_and(|signature| signature.contains('('));
+    match (node.id.starts_with("parser:"), has_signature) {
+        (true, true) => 0,
+        (false, true) => 1,
+        (true, false) => 2,
+        (false, false) => 3,
+    }
+}
+
 fn candidate_start_line(candidate: &CallCandidate) -> u64 {
     candidate.range["start"]["line"].as_u64().unwrap_or(0)
 }
@@ -590,6 +889,8 @@ mod tests {
         GraphNode {
             id: id.to_string(),
             display_name: id.to_string(),
+            signature: Some(id.to_string()),
+            container: None,
             kind,
             language: "rust".to_string(),
             file_path: format!("src/{}.rs", id),

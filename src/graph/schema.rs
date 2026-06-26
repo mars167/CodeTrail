@@ -43,6 +43,12 @@ pub struct GraphNode {
     pub id: String,
     #[serde(default)]
     pub display_name: String,
+    /// Function signature or best available callable label.
+    #[serde(default)]
+    pub signature: Option<String>,
+    /// Containing type/module when the parser can identify one.
+    #[serde(default)]
+    pub container: Option<String>,
     pub kind: NodeKind,
     /// Source language (rust, python, typescript, …).
     pub language: String,
@@ -156,6 +162,23 @@ pub struct CallCandidate {
     pub level: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matched_input_variant: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HierarchyDirection {
+    Incoming,
+    Outgoing,
+    Both,
+}
+
+impl HierarchyDirection {
+    pub const fn include_incoming(self) -> bool {
+        matches!(self, Self::Incoming | Self::Both)
+    }
+
+    pub const fn include_outgoing(self) -> bool {
+        matches!(self, Self::Outgoing | Self::Both)
+    }
 }
 
 // ---------------------------------------------------------------------------

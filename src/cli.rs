@@ -75,7 +75,7 @@ pub struct Cli {
     )]
     pub ignore_case: bool,
 
-    #[arg(long, global = true, value_enum, default_value_t = InputMode::Compatible, help = "Symbol input handling for defs/refs/symbols/calls/callers")]
+    #[arg(long, global = true, value_enum, default_value_t = InputMode::Compatible, help = "Symbol input handling for defs/refs/symbols/calls/callers/call-hierarchy")]
     pub input_mode: InputMode,
 
     #[arg(long, global = true)]
@@ -187,7 +187,7 @@ pub enum Command {
     },
     #[command(
         name = "call-hierarchy",
-        about = "Find Java call hierarchy using available indexes. Results are navigation evidence and may be incomplete; verify call sites before editing."
+        about = "Find call hierarchy using available indexes. Results are navigation evidence and may be incomplete; verify call sites before editing."
     )]
     CallHierarchy {
         identifier: String,
