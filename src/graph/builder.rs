@@ -289,6 +289,7 @@ fn build_tree_sitter_edges(
 ) {
     let mut definitions_by_body_hash = HashMap::<String, GraphNode>::new();
     let mut definitions_by_name = HashMap::<String, Vec<GraphNode>>::new();
+    let mut definitions_by_scoped_name = HashMap::<String, Vec<GraphNode>>::new();
     for candidate in candidates.iter().filter(|candidate| {
         candidate.kind != "call"
             && candidate
@@ -311,6 +312,18 @@ fn build_tree_sitter_edges(
             .entry(key)
             .or_default()
             .push(node.clone());
+        if let Some(container) = candidate.container.as_deref() {
+            let scoped_key = tree_symbol_scoped_lookup_key(
+                &candidate.language,
+                &candidate.root_id,
+                container,
+                candidate.name.as_deref().unwrap_or(""),
+            );
+            definitions_by_scoped_name
+                .entry(scoped_key)
+                .or_default()
+                .push(node.clone());
+        }
     }
 
     for call in candidates
@@ -340,8 +353,9 @@ fn build_tree_sitter_edges(
         let target_name = syntax::last_identifier(target);
         let callee_node = resolve_tree_callee(
             &definitions_by_name,
-            &call.language,
-            &call.root_id,
+            &definitions_by_scoped_name,
+            call,
+            target,
             target_name,
         )
         .unwrap_or_else(|| unresolved_callee_node_from_call(call, target));
@@ -489,13 +503,42 @@ fn unresolved_callee_node_from_call(
 
 fn resolve_tree_callee(
     definitions_by_name: &HashMap<String, Vec<GraphNode>>,
-    language: &str,
-    root_id: &str,
+    definitions_by_scoped_name: &HashMap<String, Vec<GraphNode>>,
+    call: &syntax::TreeSitterCandidate,
+    target: &str,
     target_name: &str,
 ) -> Option<GraphNode> {
-    let candidates =
-        definitions_by_name.get(&tree_symbol_lookup_key(language, root_id, target_name))?;
-    (candidates.len() == 1).then(|| candidates[0].clone())
+    if call.symbol_kind.as_deref() == Some("constructor") {
+        return unique_definition(
+            definitions_by_scoped_name.get(&tree_symbol_scoped_lookup_key(
+                &call.language,
+                &call.root_id,
+                target_name,
+                "constructor",
+            )),
+        );
+    }
+
+    if is_same_instance_call(target) {
+        if let Some(container) = call.container.as_deref() {
+            if let Some(node) = unique_definition(definitions_by_scoped_name.get(
+                &tree_symbol_scoped_lookup_key(
+                    &call.language,
+                    &call.root_id,
+                    container,
+                    target_name,
+                ),
+            )) {
+                return Some(node);
+            }
+        }
+    }
+
+    unique_definition(definitions_by_name.get(&tree_symbol_lookup_key(
+        &call.language,
+        &call.root_id,
+        target_name,
+    )))
 }
 
 fn tree_symbol_id(candidate: &syntax::TreeSitterCandidate) -> String {
@@ -509,6 +552,28 @@ fn tree_symbol_id(candidate: &syntax::TreeSitterCandidate) -> String {
 
 fn tree_symbol_lookup_key(language: &str, root_id: &str, name: &str) -> String {
     format!("{language}:{root_id}:{}", syntax::last_identifier(name))
+}
+
+fn tree_symbol_scoped_lookup_key(
+    language: &str,
+    root_id: &str,
+    container: &str,
+    name: &str,
+) -> String {
+    format!(
+        "{language}:{root_id}:{}:{}",
+        syntax::last_identifier(container),
+        syntax::last_identifier(name)
+    )
+}
+
+fn unique_definition(candidates: Option<&Vec<GraphNode>>) -> Option<GraphNode> {
+    candidates.and_then(|candidates| (candidates.len() == 1).then(|| candidates[0].clone()))
+}
+
+fn is_same_instance_call(target: &str) -> bool {
+    let target = target.trim();
+    target.starts_with("this.") || target.starts_with("self.")
 }
 
 fn tree_symbol_signature(candidate: &syntax::TreeSitterCandidate, name: &str) -> String {

@@ -72,7 +72,7 @@ codetrail call-hierarchy <identifier> [--direction incoming|outgoing|both] [--de
 - `defs <identifier>` 和 `symbols <query>` 优先 SCIP；缺失时可返回 parser fallback 的定义/符号事实。
 - `calls <caller-name>` 查询某个函数或方法体内发出的调用。
 - `callers <callee-name>` 查询调用某个目标的调用点。
-- `call-hierarchy <identifier>` 查询 incomingCalls/outgoingCalls 结构化调用层级，默认 `--depth 2`。Java 优先使用 fresh Java semantic index；其他语言和 Java fallback 使用 fresh graph index。缺失时返回空结果和 freshness 说明。公开层级只返回已解析的 callable 节点并显示签名；方法、函数和构造器会显示，没解析到声明位置的裸调用点不作为 hierarchy function 返回。Text 输出采用 `Class.method(args)  (package)` 或语言原始函数签名，root 用 `def@path:line` 标明声明位置，子调用按调用点文件分块并用 `call@line` 标明调用位置。
+- `call-hierarchy <identifier>` 查询 incomingCalls/outgoingCalls 结构化调用层级，默认 `--depth 2`。Java 优先使用 fresh Java semantic index；其他语言和 Java fallback 使用 fresh graph index。`--include-overrides` 只在当前 semantic index 支持 override/implementation expansion 时生效。缺失时返回空结果和 freshness 说明。公开层级只返回已解析的 callable 节点并显示签名；方法、函数和构造器会显示，没解析到声明位置的裸调用点不作为 hierarchy function 返回。Text 输出采用 `Class.method(args)  (package)` 或语言原始函数签名，root 用 `def@path:line` 标明声明位置，子调用按调用点文件分块并用 `call@line` 标明调用位置。
 - `calls`/`callers`/`call-hierarchy` 无论来自 Java semantic index、graph 还是 parser，都只是候选关系。
 - 兼容输入命中时结果会带 `matchedInputVariant`；内部诊断可记录输入扩展，但 public JSON 不暴露诊断字段。
 

@@ -195,7 +195,10 @@ pub enum Command {
         direction: CallHierarchyDirection,
         #[arg(long, default_value_t = 2, value_parser = parse_call_hierarchy_depth)]
         depth: usize,
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Include override/implementation expansion when the active semantic index supports it"
+        )]
         include_overrides: bool,
     },
     #[command(hide = true)]

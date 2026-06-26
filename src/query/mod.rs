@@ -1043,7 +1043,6 @@ impl QueryService {
                         "producer": "graph",
                         "direction": hierarchy_opts.direction.as_str(),
                         "depth": hierarchy_opts.depth,
-                        "includeOverrides": hierarchy_opts.include_overrides,
                     }),
                     &scan,
                 ),
@@ -1058,13 +1057,12 @@ impl QueryService {
             "call-hierarchy",
             scoped_query(
                 json!({
-                    "identifier": identifier,
-                    "producer": "graph",
-                    "direction": hierarchy_opts.direction.as_str(),
-                    "depth": hierarchy_opts.depth,
-                    "includeOverrides": hierarchy_opts.include_overrides,
-                    "requires": "fresh_call_hierarchy_index"
-                }),
+                        "identifier": identifier,
+                        "producer": "graph",
+                        "direction": hierarchy_opts.direction.as_str(),
+                        "depth": hierarchy_opts.depth,
+                        "requires": "fresh_call_hierarchy_index"
+                    }),
                 &scan,
             ),
             &self.workspace.snapshot_id,

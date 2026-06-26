@@ -6375,6 +6375,113 @@ fn graph_call_hierarchy_supports_rust_go_typescript_and_python() {
 }
 
 #[test]
+fn graph_call_hierarchy_resolves_typescript_this_method_when_short_name_collides() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/app.ts"),
+        "class A {\n  start() { this.helper(); }\n  helper() {}\n}\n\nclass B {\n  helper() {}\n}\n",
+    )
+    .unwrap();
+
+    codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args([
+            "call-hierarchy",
+            "start",
+            "--direction",
+            "outgoing",
+            "--include-overrides",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["query"]["producer"], "graph");
+    assert!(
+        json["query"].get("includeOverrides").is_none(),
+        "graph fallback must not claim override expansion was applied: {json}"
+    );
+    let outgoing = json["results"][0]["outgoingCalls"].as_array().unwrap();
+    let helper = outgoing
+        .iter()
+        .find(|call| call["to"]["signature"] == "A.helper()")
+        .unwrap_or_else(|| panic!("expected A.helper() in outgoing hierarchy: {json}"));
+    assert_eq!(helper["to"]["container"], "A");
+    assert_eq!(helper["to"]["path"], "src/app.ts");
+}
+
+#[test]
+fn graph_call_hierarchy_includes_typescript_new_expression_constructor() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/app.ts"),
+        "class Foo { constructor(value?: string) {} }\nfunction start() {\n  new Foo(\"x\");\n  helper();\n}\nfunction helper() {}\n",
+    )
+    .unwrap();
+
+    codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let outgoing = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["call-hierarchy", "start", "--direction", "outgoing"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let outgoing_json: Value = serde_json::from_slice(&outgoing).unwrap();
+    let calls = outgoing_json["results"][0]["outgoingCalls"]
+        .as_array()
+        .unwrap();
+    assert!(
+        calls.iter().any(|call| {
+            call["to"]["name"] == "constructor"
+                && call["to"]["signature"] == "Foo.constructor(value?: string)"
+                && call["to"]["container"] == "Foo"
+        }),
+        "expected new Foo() to resolve to Foo.constructor(...): {outgoing_json}"
+    );
+
+    let incoming = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["call-hierarchy", "constructor", "--direction", "incoming"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let incoming_json: Value = serde_json::from_slice(&incoming).unwrap();
+    let incoming_calls = incoming_json["results"][0]["incomingCalls"]
+        .as_array()
+        .unwrap();
+    assert!(
+        incoming_calls
+            .iter()
+            .any(|call| call["from"]["signature"] == "function start()"),
+        "expected constructor incoming hierarchy to include start(): {incoming_json}"
+    );
+}
+
+#[test]
 fn callers_after_index_build_matches_qualified_method_target_by_simple_name() {
     let dir = tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();

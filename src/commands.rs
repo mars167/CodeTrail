@@ -783,7 +783,6 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                             "producer": "graph",
                             "direction": direction.as_str(),
                             "depth": depth,
-                            "includeOverrides": include_overrides,
                         }),
                         &scan_opts,
                     ),
@@ -802,7 +801,6 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                             "producer": "graph",
                             "direction": direction.as_str(),
                             "depth": depth,
-                            "includeOverrides": include_overrides,
                             "requires": "fresh_call_hierarchy_index"
                         }),
                         &scan_opts,
