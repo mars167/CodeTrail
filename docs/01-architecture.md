@@ -68,17 +68,23 @@ flowchart TD
   Scip -->|missing for defs/symbols| Fallback["tree-sitter parser_fact"]
   Scip -->|missing for refs| Reject["empty results + caveat"]
 
-  Kind -->|calls / callers| Graph["petgraph backend"]
-  Graph --> Candidate["inferred_candidate"]
+  Kind -->|calls / callers / call-hierarchy| JavaSem["Java semantic index"]
+  JavaSem -->|available and fresh| Candidate["inferred_candidate"]
+  JavaSem -->|missing for calls/callers| Graph["petgraph backend"]
+  JavaSem -->|missing for call-hierarchy| RejectHierarchy["empty results + freshness"]
+  Graph --> Candidate
 
   Precise --> Json
   Fallback --> Json
   Reject --> Json
+  RejectHierarchy --> Json
   Candidate --> Json
 ```
 
 `refs` 是 precise-only：没有 fresh SCIP occurrence 时不做文本 fallback。`defs`
-和 `symbols` 可以使用 tree-sitter 作为语法事实。`calls` 和 `callers` 始终是候选关系。
+和 `symbols` 可以使用 tree-sitter 作为语法事实。Java `calls`、`callers`
+优先使用 Rust-native Java semantic index，缺失时退到 graph/parser；`call-hierarchy`
+需要 fresh Java semantic index。所有调用关系始终是候选关系。
 文本/路径 discovery 不属于新的公共查询路径。
 
 ## Legacy Watcher 和 Hook

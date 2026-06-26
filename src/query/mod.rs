@@ -13,7 +13,7 @@ use serde_json::{json, Map, Value};
 
 use crate::{
     code_context::{self, CodeContextOptions},
-    config_index, graph, output,
+    config_index, graph, java_semantic, output,
     query_input::{InputMode, InputPlan},
     routes, scip_index, search,
     search_pattern::SearchPatternMode,
@@ -878,6 +878,22 @@ impl QueryService {
     pub fn calls(&self, identifier: &str, opts: &QueryOptions) -> Result<Value> {
         let scan = opts.to_scan_options();
 
+        if let Some((index_meta, results)) =
+            java_semantic::calls(&self.workspace, &scan, identifier)?
+        {
+            return Ok(self.finalize(output::response_with_index(
+                "calls",
+                "calls",
+                scoped_query(
+                    json!({ "identifier": identifier, "producer": "java_semantic" }),
+                    &scan,
+                ),
+                &self.workspace.snapshot_id,
+                output::inferred_candidate(),
+                output::IndexedResponseParts::new(index_meta, results, Vec::new()),
+            )));
+        }
+
         // 1. Try graph backend first.
         let graph_store = graph::GraphStore::open(&self.workspace).ok();
         if let Some(ref store) = graph_store {
@@ -926,6 +942,22 @@ impl QueryService {
     pub fn callers(&self, identifier: &str, opts: &QueryOptions) -> Result<Value> {
         let scan = opts.to_scan_options();
 
+        if let Some((index_meta, results)) =
+            java_semantic::callers(&self.workspace, &scan, identifier)?
+        {
+            return Ok(self.finalize(output::response_with_index(
+                "callers",
+                "callers",
+                scoped_query(
+                    json!({ "identifier": identifier, "producer": "java_semantic" }),
+                    &scan,
+                ),
+                &self.workspace.snapshot_id,
+                output::inferred_candidate(),
+                output::IndexedResponseParts::new(index_meta, results, Vec::new()),
+            )));
+        }
+
         // 1. Try graph backend first.
         let graph_store = graph::GraphStore::open(&self.workspace).ok();
         if let Some(ref store) = graph_store {
@@ -967,6 +999,62 @@ impl QueryService {
             output::inferred_candidate(),
             results,
             warnings,
+        )))
+    }
+
+    pub fn call_hierarchy(
+        &self,
+        identifier: &str,
+        opts: &QueryOptions,
+        hierarchy_opts: java_semantic::CallHierarchyOptions,
+    ) -> Result<Value> {
+        let scan = opts.to_scan_options();
+        if let Some((index_meta, results)) =
+            java_semantic::query_call_hierarchy(&self.workspace, &scan, identifier, hierarchy_opts)?
+        {
+            return Ok(self.finalize(output::response_with_index(
+                "call-hierarchy",
+                "call-hierarchy",
+                scoped_query(
+                    json!({
+                        "identifier": identifier,
+                        "producer": "java_semantic",
+                        "direction": hierarchy_opts.direction.as_str(),
+                        "depth": hierarchy_opts.depth,
+                        "includeOverrides": hierarchy_opts.include_overrides,
+                    }),
+                    &scan,
+                ),
+                &self.workspace.snapshot_id,
+                output::inferred_candidate(),
+                output::IndexedResponseParts::new(index_meta, results, Vec::new()),
+            )));
+        }
+
+        Ok(self.finalize(output::response_with_index(
+            "call-hierarchy",
+            "call-hierarchy",
+            scoped_query(
+                json!({
+                    "identifier": identifier,
+                    "producer": "java_semantic",
+                    "direction": hierarchy_opts.direction.as_str(),
+                    "depth": hierarchy_opts.depth,
+                    "includeOverrides": hierarchy_opts.include_overrides,
+                    "requires": "fresh_java_semantic_index"
+                }),
+                &scan,
+            ),
+            &self.workspace.snapshot_id,
+            output::freshness(),
+            output::IndexedResponseParts::new(
+                output::live_scan_index(),
+                json!([]),
+                vec![
+                    "Java call hierarchy index unavailable; run `codetrail index build` to create call hierarchy data."
+                        .to_string(),
+                ],
+            ),
         )))
     }
 
@@ -1136,8 +1224,17 @@ fn compact_explore_result(
     copy_field(result, &mut object, "kind");
     copy_field(result, &mut object, "name");
     copy_field(result, &mut object, "symbolName");
+    copy_field(result, &mut object, "qualifiedName");
+    copy_field(result, &mut object, "signature");
+    copy_field(result, &mut object, "container");
     copy_field(result, &mut object, "target");
+    copy_field(result, &mut object, "targetDetail");
+    copy_field(result, &mut object, "targetSignature");
+    copy_field(result, &mut object, "targetSymbolId");
     copy_field(result, &mut object, "enclosingSymbol");
+    copy_field(result, &mut object, "enclosingSymbolDetail");
+    copy_field(result, &mut object, "enclosingSymbolSignature");
+    copy_field(result, &mut object, "enclosingSymbolId");
     let layer = result
         .get("layer")
         .and_then(Value::as_str)
@@ -1262,7 +1359,13 @@ fn take_compact_relations(items: &[Value], remaining: &mut usize) -> Vec<Value> 
         copy_field(item, &mut object, "language");
         copy_field(item, &mut object, "kind");
         copy_field(item, &mut object, "target");
+        copy_field(item, &mut object, "targetDetail");
+        copy_field(item, &mut object, "targetSignature");
+        copy_field(item, &mut object, "targetSymbolId");
         copy_field(item, &mut object, "enclosingSymbol");
+        copy_field(item, &mut object, "enclosingSymbolDetail");
+        copy_field(item, &mut object, "enclosingSymbolSignature");
+        copy_field(item, &mut object, "enclosingSymbolId");
         copy_field(item, &mut object, "layer");
         output.push(Value::Object(object));
         *remaining -= 1;

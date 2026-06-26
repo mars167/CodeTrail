@@ -6,6 +6,7 @@ const COMMANDS: &[&str] = &[
     "defs",
     "calls",
     "callers",
+    "call-hierarchy",
     "index",
     "completions",
 ];

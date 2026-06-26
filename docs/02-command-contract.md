@@ -15,7 +15,7 @@ flowchart TB
   Nav --> Defs["defs"]
   Nav --> Refs["refs"]
   Nav --> Symbols["symbols"]
-  Rel --> Calls["calls / callers"]
+  Rel --> Calls["calls / callers / call-hierarchy"]
   Index --> IndexCmds["index build / status / doctor"]
 ```
 
@@ -23,7 +23,7 @@ flowchart TB
 | --- | --- | --- |
 | 符号与定义 | `symbols`, `defs` | 优先 fresh SCIP；缺失时可使用 tree-sitter parser fallback，可靠性为 `parser_fact` |
 | 精确引用 | `refs` | 只返回 fresh SCIP occurrence 引用；没有可用 SCIP 时返回空结果，不做文本 fallback |
-| 调用关系 | `calls`, `callers` | 返回调用候选；结果是导航证据，可能不完整，编辑前必须复核调用点 |
+| 调用关系 | `calls`, `callers`, `call-hierarchy` | 返回调用候选或 Java call hierarchy；结果是导航证据，可能不完整，编辑前必须复核调用点 |
 | 索引 | `index build`, `index status`, `index doctor` | 构建、查看和诊断语义索引/SCIP provider 状态 |
 
 旧的文本、路径、route、watch、serve、saved-query、remote pack/unpack、hook 等命令仍可能留在实现中用于兼容、测试或内部维护，但不属于新的公共策略面。Agent 和 MCP 不应把 CodeTrail 当作 `rg`、`fd`、`cat`、`git` 或编辑器读取工具的替代品。
@@ -50,7 +50,7 @@ codetrail --dir src/main --ext java --file-pattern '*Service.java' defs UserServ
 
 ## 标识符输入
 
-`defs`、`refs`、`symbols`、`calls` 和 `callers` 默认使用
+`defs`、`refs`、`symbols`、`calls`、`callers` 和 `call-hierarchy` 默认使用
 `--input-mode compatible`。调用方可以传 simple name、`Class.method`、
 `findUser(Long)`、`Class.findUser(Long)`、snake_case 或 kebab-case style key。
 兼容模式会一次性生成有限候选集合并在已抽取的 symbol/call 名上匹配，不做编辑距离 fuzzy。需要精确原样匹配时使用 `--input-mode strict`。
@@ -63,6 +63,7 @@ codetrail defs <identifier>
 codetrail symbols <query>
 codetrail calls <caller-name>
 codetrail callers <callee-name>
+codetrail call-hierarchy <identifier> [--direction incoming|outgoing|both] [--depth <n>] [--include-overrides]
 ```
 
 如果字符串包含空格、括号或 shell 特殊字符，调用方必须按普通 shell 规则加引号；以 `-` 开头的值应放在 `--` 之后。
@@ -71,7 +72,8 @@ codetrail callers <callee-name>
 - `defs <identifier>` 和 `symbols <query>` 优先 SCIP；缺失时可返回 parser fallback 的定义/符号事实。
 - `calls <caller-name>` 查询某个函数或方法体内发出的调用。
 - `callers <callee-name>` 查询调用某个目标的调用点。
-- `calls`/`callers` 无论来自 graph 还是 parser，都只是候选关系。
+- `call-hierarchy <identifier>` 查询 Java incomingCalls/outgoingCalls 结构化调用层级，默认 `--depth 2`。它需要 fresh Java semantic index；缺失时返回空结果和 freshness 说明。公开层级只返回已解析的 callable 节点并显示签名；方法和构造器会显示，没解析到唯一签名的裸调用点不作为 hierarchy function 返回。Text 输出采用 `Class.method(args)  (package)`，root 用 `def@path:line` 标明声明位置，子调用按调用点文件分块并用 `call@line` 标明调用位置。
+- `calls`/`callers`/`call-hierarchy` 无论来自 Java semantic index、graph 还是 parser，都只是候选关系。
 - 兼容输入命中时结果会带 `matchedInputVariant`；内部诊断可记录输入扩展，但 public JSON 不暴露诊断字段。
 
 `symbols` 和 `defs` 支持显式源码上下文：
@@ -85,7 +87,7 @@ codetrail defs <identifier> --include-code [--code-context <lines>] [--code-max-
 
 ## Index Build 与 Doctor
 
-- `index build` 默认 best-effort 运行 provider 语义阶段，生成并导入 `.codetrail/scip/<snapshot-key>/occurrences.db`。
+- `index build` 默认 best-effort 运行 provider 语义阶段，生成并导入 `.codetrail/scip/<snapshot-key>/occurrences.db`，同时为 Java 源码构建 Rust-native `.codetrail/java-semantic.sqlite` 结构化语义索引。Java semantic 查询直接走 SQLite 索引。
 - `--no-semantic` 关闭 provider/SCIP 生成；`index build --staged` 不运行语义阶段。
 - `index status` 返回索引 freshness、SCIP occurrence DB 状态、provider 状态和语言覆盖。
 - `index status --summary` 返回紧凑状态，适合脚本预检。
@@ -104,6 +106,7 @@ MCP `tools/list` 只暴露语义索引相关工具：
 - `codetrail_symbols`
 - `codetrail_calls`
 - `codetrail_callers`
+- `codetrail_call_hierarchy`
 - `codetrail_status`
 
 旧的 MCP text/path/route/explore 工具不再出现在 `tools/list`。直接调用这些旧工具会返回 tool error。MCP tool result 的 `content[0].text` 使用同一 public JSON 投影。
@@ -150,7 +153,7 @@ MCP `tools/list` 只暴露语义索引相关工具：
 flowchart LR
   Precise["precise_fact\nSCIP defs/refs"] --> Verify["host source read"]
   Parser["parser_fact\ntree-sitter defs/symbols"] --> Verify
-  Candidate["inferred_candidate\ncalls/callers"] --> Verify
+  Candidate["inferred_candidate\ncalls/callers/call-hierarchy"] --> Verify
   Verify --> Edit
 ```
 
@@ -159,7 +162,7 @@ flowchart LR
 - `exact=true` 只允许出现在 `source_fact` 或 `precise_fact`。
 - `parser_fact` 可以是确定性语法事实，但不能代表 precise semantic reference resolution。
 - `refs` 没有 fresh SCIP occurrence 时不得伪装为语义引用，也不得自动把文本匹配标成 reference。
-- `calls` 和 `callers` 即使来自图索引，也必须标为候选。
+- `calls`、`callers` 和 `call-hierarchy` 即使来自 Java semantic index 或图索引，也必须标为候选。
 - 开发者修改代码前仍应通过宿主编辑器或 Agent read 工具读取关键结果的精确范围。
 
 ## Text 输出

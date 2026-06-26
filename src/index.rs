@@ -245,6 +245,22 @@ pub fn build(
         crate::lsp::SemanticBuildReport::skipped(reason)
     };
 
+    let java_semantic = if !staged && semantic_enabled {
+        crate::java_semantic::build(workspace, &records, &snapshot_id, verbose).unwrap_or_else(
+            |error| {
+                verbose.log(format!("java semantic: phase failed (non-fatal): {error}"));
+                crate::java_semantic::JavaSemanticBuildReport::skipped("java_semantic_failed")
+            },
+        )
+    } else {
+        let reason = if staged {
+            "staged_build"
+        } else {
+            "semantic_disabled"
+        };
+        crate::java_semantic::JavaSemanticBuildReport::skipped(reason)
+    };
+
     if !staged {
         let _ =
             crate::graph::GraphStore::open(workspace).and_then(|mut store| store.build(workspace));
@@ -276,8 +292,11 @@ pub fn build(
                 "skipped": skipped_count,
                 "semanticAttempted": semantic.attempted,
                 "semanticSkipped": semantic.skipped,
+                "javaSemanticAttempted": java_semantic.attempted,
+                "javaSemanticSkipped": java_semantic.skipped,
                 "graphAttempted": !staged
             },
+            "javaSemantic": java_semantic,
             "skipped": {
                 "count": skipped_count,
                 "path": skipped_log_path

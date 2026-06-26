@@ -60,6 +60,12 @@ pub(super) fn render_text(value: &Value, out: &mut dyn Write) -> io::Result<()> 
             .pointer("/ambiguity/candidateCount")
             .and_then(Value::as_u64)
             .unwrap_or(0);
+        let result_count = value
+            .get("results")
+            .and_then(Value::as_array)
+            .map(|results| results.len() as u64)
+            .unwrap_or(0);
+        let count = count.max(result_count);
         writeln!(out, "ambiguous results: {count} candidates")?;
         render_text_facets(value.pointer("/ambiguity/groups/kind"), out, "kinds")?;
         render_text_facets(value.pointer("/ambiguity/groups/topDir"), out, "top dirs")?;
@@ -73,6 +79,9 @@ pub(super) fn render_text(value: &Value, out: &mut dyn Write) -> io::Result<()> 
 fn render_text_results(value: &Value, out: &mut dyn Write) -> io::Result<()> {
     if let Some(results) = value.get("results").and_then(Value::as_array) {
         let command = value.get("command").and_then(Value::as_str).unwrap_or("");
+        if command == "call-hierarchy" {
+            return render_text_call_hierarchy(value, results, out);
+        }
         if matches!(command, "calls" | "callers") {
             return render_text_graph(value, results, out);
         }
@@ -132,11 +141,8 @@ fn render_text_routes(results: &[Value], out: &mut dyn Write) -> io::Result<()> 
 fn render_text_result(result: &Value, out: &mut dyn Write) -> io::Result<()> {
     if let Some(path) = result.get("path").and_then(Value::as_str) {
         let location = format_location(path, result.get("range"));
-        if let Some(name) = result
-            .get("name")
-            .or_else(|| result.get("symbolName"))
-            .and_then(Value::as_str)
-        {
+        if result.get("name").is_some() || result.get("symbolName").is_some() {
+            let name = result_symbol_label(result);
             let kind = result
                 .get("kind")
                 .and_then(Value::as_str)
@@ -205,15 +211,18 @@ fn render_text_graph(value: &Value, results: &[Value], out: &mut dyn Write) -> i
     }
     writeln!(out)?;
     for result in results {
-        let caller = result
-            .get("enclosingSymbol")
-            .and_then(Value::as_str)
-            .map(display_symbol)
-            .unwrap_or_else(|| identifier.to_string());
-        let callee = result
-            .get("target")
-            .and_then(Value::as_str)
-            .map(display_symbol)
+        let caller = first_string(
+            result,
+            &[
+                "enclosingSymbolSignature",
+                "enclosingSymbolDetail",
+                "enclosingSymbol",
+            ],
+        )
+        .map(display_graph_symbol)
+        .unwrap_or_else(|| identifier.to_string());
+        let callee = first_string(result, &["targetSignature", "targetDetail", "target"])
+            .map(display_graph_symbol)
             .unwrap_or_else(|| identifier.to_string());
         let path = result.get("path").and_then(Value::as_str).unwrap_or("");
         let location = if path.is_empty() {
@@ -228,6 +237,248 @@ fn render_text_graph(value: &Value, results: &[Value], out: &mut dyn Write) -> i
         }
     }
     Ok(())
+}
+
+fn render_text_call_hierarchy(
+    value: &Value,
+    results: &[Value],
+    out: &mut dyn Write,
+) -> io::Result<()> {
+    let identifier = value
+        .pointer("/query/identifier")
+        .and_then(Value::as_str)
+        .unwrap_or("symbol");
+    writeln!(
+        out,
+        "Call hierarchy for \"{identifier}\" ({})",
+        results.len()
+    )?;
+    if results.is_empty() {
+        if let Some(message) = call_hierarchy_empty_hint(value) {
+            writeln!(out, "{message}")?;
+        }
+        return Ok(());
+    }
+    writeln!(out)?;
+    for (idx, result) in results.iter().enumerate() {
+        if idx > 0 {
+            writeln!(out)?;
+        }
+        let root = result.get("root").unwrap_or(&Value::Null);
+        let root_name = item_label(root).unwrap_or_else(|| identifier.to_string());
+        let root_path = item_path(root).unwrap_or("");
+        writeln!(out, "{root_name}")?;
+        let root_location = item_def_location(root);
+        if !root_location.is_empty() {
+            writeln!(out, "  {root_location}")?;
+        }
+
+        let mut rendered_section = false;
+        if let Some(incoming) = result.get("incomingCalls").and_then(Value::as_array) {
+            if !incoming.is_empty() {
+                rendered_section = true;
+                writeln!(out, "incoming:")?;
+                render_text_hierarchy_edges(incoming, root_path, true, "  ", out)?;
+            }
+        }
+        if let Some(outgoing) = result.get("outgoingCalls").and_then(Value::as_array) {
+            if !outgoing.is_empty() {
+                rendered_section = true;
+                writeln!(out, "outgoing:")?;
+                render_text_hierarchy_edges(outgoing, root_path, false, "  ", out)?;
+            }
+        }
+        if !rendered_section {
+            writeln!(out, "  no calls found for requested direction")?;
+        }
+    }
+    Ok(())
+}
+
+fn render_text_hierarchy_edges(
+    calls: &[Value],
+    parent_path: &str,
+    incoming: bool,
+    prefix: &str,
+    out: &mut dyn Write,
+) -> io::Result<()> {
+    let mut last_callsite_path = String::new();
+    for (idx, call) in calls.iter().enumerate() {
+        let is_last = idx + 1 == calls.len();
+        let branch = if is_last { "`- " } else { "|- " };
+        let item_key = if incoming { "from" } else { "to" };
+        let item = call.get(item_key).unwrap_or(&Value::Null);
+        let other_name = item_label(item).unwrap_or_else(|| "<unknown>".to_string());
+        let other_path = item_path(item).unwrap_or("");
+        let callsite_path = hierarchy_callsite_path(incoming, parent_path, item);
+        if !callsite_path.is_empty() && callsite_path != last_callsite_path {
+            writeln!(out, "{prefix}{callsite_path}")?;
+            last_callsite_path = callsite_path.to_string();
+        }
+        let edge_prefix = if callsite_path.is_empty() {
+            prefix.to_string()
+        } else {
+            format!("{prefix}  ")
+        };
+        let location = hierarchy_call_location(call);
+        if location.is_empty() {
+            writeln!(out, "{edge_prefix}{branch}{other_name}")?;
+        } else {
+            writeln!(out, "{edge_prefix}{branch}{other_name}  {location}")?;
+        }
+        if let Some(children) = call.get("children").and_then(Value::as_array) {
+            let child_prefix = format!("{edge_prefix}{}", if is_last { "   " } else { "|  " });
+            render_text_hierarchy_edges(children, other_path, incoming, &child_prefix, out)?;
+        }
+    }
+    Ok(())
+}
+
+fn result_symbol_label(result: &Value) -> String {
+    first_string(
+        result,
+        &["qualifiedName", "signature", "detail", "symbolName", "name"],
+    )
+    .map(display_symbol_label)
+    .unwrap_or_else(|| "<unknown>".to_string())
+}
+
+fn display_graph_symbol(symbol: &str) -> String {
+    display_symbol_label(symbol)
+}
+
+fn item_label(item: &Value) -> Option<String> {
+    first_string(item, &["signature", "detail", "name"]).map(display_hierarchy_symbol_label)
+}
+
+fn display_hierarchy_symbol_label(symbol: &str) -> String {
+    let symbol = display_symbol_label(symbol);
+    let Some(paren_idx) = symbol.find('(') else {
+        return symbol;
+    };
+    let head = &symbol[..paren_idx];
+    let params = simplify_signature_params(&symbol[paren_idx..]);
+    let Some(method_dot) = head.rfind('.') else {
+        return symbol;
+    };
+    let owner = &head[..method_dot];
+    let method = &head[method_dot + 1..];
+    let Some(class_dot) = owner.rfind('.') else {
+        return symbol;
+    };
+    let package = &owner[..class_dot];
+    let class_name = &owner[class_dot + 1..];
+    format!("{class_name}.{method}{params}  ({package})")
+}
+
+fn simplify_signature_params(params: &str) -> String {
+    let Some(body) = params
+        .strip_prefix('(')
+        .and_then(|value| value.strip_suffix(')'))
+    else {
+        return params.to_string();
+    };
+    if body.trim().is_empty() {
+        return "()".to_string();
+    }
+    let simplified = body
+        .split(',')
+        .map(|part| simplify_type_name(part.trim()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("({simplified})")
+}
+
+fn simplify_type_name(value: &str) -> String {
+    let mut suffix = String::new();
+    let mut base = value.trim();
+    while let Some(stripped) = base.strip_suffix("[]") {
+        suffix.push_str("[]");
+        base = stripped;
+    }
+    if let Some(stripped) = base.strip_suffix("...") {
+        suffix.push_str("...");
+        base = stripped;
+    }
+    let simple = base.rsplit('.').next().unwrap_or(base);
+    format!("{simple}{suffix}")
+}
+
+fn first_string<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+    })
+}
+
+fn item_path(item: &Value) -> Option<&str> {
+    item.get("path").and_then(Value::as_str)
+}
+
+fn item_def_location(item: &Value) -> String {
+    let path = item.get("path").and_then(Value::as_str).unwrap_or("");
+    if path.is_empty() {
+        return String::new();
+    }
+    let line = format_line_range(item.get("selectionRange").or_else(|| item.get("range")));
+    if line.is_empty() {
+        String::new()
+    } else {
+        format!("def@{path}{line}")
+    }
+}
+
+fn hierarchy_callsite_path<'a>(incoming: bool, parent_path: &'a str, item: &'a Value) -> &'a str {
+    if incoming {
+        item_path(item).unwrap_or("")
+    } else {
+        parent_path
+    }
+}
+
+fn hierarchy_call_location(call: &Value) -> String {
+    let range = call
+        .get("fromRanges")
+        .and_then(Value::as_array)
+        .and_then(|ranges| ranges.first())
+        .map(|range| format_line_range(Some(range)))
+        .unwrap_or_default();
+    if range.is_empty() {
+        String::new()
+    } else {
+        format!("call@{}", range.trim_start_matches(':'))
+    }
+}
+
+fn format_line_range(range: Option<&Value>) -> String {
+    let Some(range) = range else {
+        return String::new();
+    };
+    let start = range
+        .pointer("/start/line")
+        .and_then(Value::as_u64)
+        .unwrap_or(1);
+    let end = range
+        .pointer("/end/line")
+        .and_then(Value::as_u64)
+        .unwrap_or(start);
+    if start == end {
+        format!(":{start}")
+    } else {
+        format!(":{start}-{end}")
+    }
+}
+
+fn call_hierarchy_empty_hint(value: &Value) -> Option<&str> {
+    value
+        .get("warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|warning| warning.get("message").and_then(Value::as_str))
+        .find(|message| message.contains("Java call hierarchy index unavailable"))
 }
 
 fn render_text_page_hint(value: &Value, out: &mut dyn Write) -> io::Result<()> {
@@ -351,6 +602,10 @@ fn display_symbol(symbol: &str) -> String {
         .trim_start_matches("function")
         .trim_start_matches('-')
         .to_string()
+}
+
+fn display_symbol_label(symbol: &str) -> String {
+    symbol.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn one_line_json(value: &Value) -> String {

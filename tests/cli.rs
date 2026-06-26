@@ -1,4 +1,4 @@
-use std::fs;
+use std::{collections::BTreeSet, fs};
 
 use assert_cmd::Command;
 use serde_json::json;
@@ -3333,7 +3333,7 @@ fn text_output_symbols_keep_location_on_result_line() {
     let text = String::from_utf8(output).unwrap();
     let mut lines = text.lines();
 
-    assert_eq!(lines.next(), Some("function     beta  src/lib.rs:1"));
+    assert_eq!(lines.next(), Some("function     fn beta()  src/lib.rs:1"));
     assert_ne!(lines.next(), Some("  src/lib.rs:1"));
 }
 
@@ -5341,7 +5341,7 @@ fn completions_print_shell_script_without_workspace() {
     let script = String::from_utf8(output).unwrap();
 
     assert!(script.contains("complete -F _codetrail codetrail"));
-    assert!(script.contains("refs symbols defs calls callers index completions"));
+    assert!(script.contains("refs symbols defs calls callers call-hierarchy index completions"));
     assert!(script.contains("build status doctor"));
     assert!(!script.contains("find grep files"));
     assert!(!script.contains("build update status skipped verify clean pack unpack"));
@@ -5667,6 +5667,445 @@ fn parser_fallback_supports_java_methods_and_callers() {
     assert_eq!(callers_json["results"][0]["target"], "run");
     assert_eq!(callers_json["results"][0]["enclosingSymbol"], "start");
     assert_eq!(callers_json["results"][0]["language"], "java");
+}
+
+#[test]
+fn java_semantic_index_supports_call_hierarchy_and_lombok_overlay() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/example")).unwrap();
+    fs::write(
+        dir.path().join("src/main/java/example/SampleService.java"),
+        r#"package example;
+
+import lombok.Builder;
+import lombok.Data;
+
+public class SampleService {
+    @Data
+    @Builder
+    static class Payload {
+        private String name;
+    }
+
+    public void run() {}
+
+    public void start() {
+        Payload payload = new Payload();
+        run();
+        payload.getName();
+        Payload.builder();
+        missingAudit();
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let callers = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["callers", "getName"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let callers_json: Value = serde_json::from_slice(&callers).unwrap();
+    assert_eq!(callers_json["index"]["source"], "java_semantic");
+    assert_eq!(
+        callers_json["results"][0]["producer"],
+        "java_semantic_resolver"
+    );
+    assert_eq!(callers_json["results"][0]["target"], "getName");
+    assert_eq!(callers_json["results"][0]["enclosingSymbol"], "start");
+
+    let outgoing = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args([
+            "call-hierarchy",
+            "start",
+            "--direction",
+            "outgoing",
+            "--include-overrides",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let outgoing_json: Value = serde_json::from_slice(&outgoing).unwrap();
+    assert_eq!(outgoing_json["index"]["source"], "java_semantic");
+    let outgoing_calls = outgoing_json["results"][0]["outgoingCalls"]
+        .as_array()
+        .unwrap();
+    assert!(outgoing_calls
+        .iter()
+        .any(|call| call["to"]["name"] == "run"));
+    assert!(outgoing_calls
+        .iter()
+        .any(|call| call["to"]["name"] == "getName"));
+    assert!(outgoing_calls
+        .iter()
+        .any(|call| call["to"]["name"] == "builder"));
+    assert!(outgoing_calls.iter().all(|call| {
+        matches!(
+            call["to"]["kind"].as_str(),
+            Some("function" | "constructor")
+        ) && call["to"]["signature"]
+            .as_str()
+            .is_some_and(|signature| signature.contains('('))
+    }));
+
+    let incoming = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["call-hierarchy", "getName", "--direction", "incoming"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let incoming_json: Value = serde_json::from_slice(&incoming).unwrap();
+    let incoming_calls = incoming_json["results"][0]["incomingCalls"]
+        .as_array()
+        .unwrap();
+    assert!(incoming_calls
+        .iter()
+        .any(|call| call["from"]["name"] == "start"));
+    assert_no_public_caveats(&incoming_json);
+
+    let calls_text = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["calls", "start"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let calls_text = String::from_utf8(calls_text).unwrap();
+    assert!(calls_text.contains(
+        "SampleService.start() -> SampleService.run()  src/main/java/example/SampleService.java:17"
+    ));
+
+    let text = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["call-hierarchy", "start", "--direction", "outgoing"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(text).unwrap();
+    assert!(text.contains("Call hierarchy for \"start\""));
+    assert!(text.contains("outgoing:"));
+    assert!(text.contains("def@src/main/java/example/SampleService.java:"));
+    assert!(text.contains("\n  src/main/java/example/SampleService.java\n"));
+    assert_eq!(
+        text.matches("src/main/java/example/SampleService.java:")
+            .count(),
+        1,
+        "call-hierarchy text should keep full file paths in context lines instead of repeating them on every child edge: {text}"
+    );
+    assert!(text.contains("    |- SampleService.run()  call@17"));
+    assert!(text.contains("    |- Payload.getName()  (SampleService)  call@18"));
+    assert!(text.contains("Payload.builder()  (SampleService)  call@19"));
+    assert!(
+        !text.contains("missingAudit"),
+        "call-hierarchy text must not expose unresolved calls without a function signature: {text}"
+    );
+    assert!(
+        !text.contains("SampleService.start() ->"),
+        "call-hierarchy text should not repeat the root on every edge: {text}"
+    );
+    assert!(
+        !text.trim_start().starts_with('{'),
+        "call-hierarchy text output must not be raw JSON: {text}"
+    );
+}
+
+#[test]
+fn java_semantic_call_hierarchy_keeps_overload_signatures_unique() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/example")).unwrap();
+    fs::write(
+        dir.path().join("src/main/java/example/Overloads.java"),
+        r#"package example;
+
+public class Overloads {
+    public void start() {
+        Object[] values = new Object[0];
+        choose("x");
+        choose(values);
+    }
+
+    public void choose(String value) {}
+
+    public void choose(Object[] values) {}
+}
+"#,
+    )
+    .unwrap();
+
+    codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["call-hierarchy", "start", "--direction", "outgoing"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let outgoing = json["results"][0]["outgoingCalls"].as_array().unwrap();
+    let signatures = outgoing
+        .iter()
+        .filter_map(|call| call["to"]["signature"].as_str())
+        .collect::<BTreeSet<_>>();
+    assert!(signatures.contains("Overloads.choose(String)"));
+    assert!(signatures.contains("Overloads.choose(Object[])"));
+
+    let choose_symbol_ids = outgoing
+        .iter()
+        .filter(|call| call["to"]["name"] == "choose")
+        .filter_map(|call| call["to"]["symbol_id"].as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        choose_symbol_ids.len(),
+        2,
+        "overloads must not collapse to a single name/arity symbol id"
+    );
+}
+
+#[test]
+fn java_call_hierarchy_text_explains_missing_semantic_index() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/example")).unwrap();
+    fs::write(
+        dir.path().join("src/main/java/example/SampleService.java"),
+        "package example;\npublic class SampleService { public void start() { run(); } public void run() {} }\n",
+    )
+    .unwrap();
+
+    let text = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["call-hierarchy", "start", "--direction", "outgoing"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(text).unwrap();
+    assert!(text.contains("Call hierarchy for \"start\" (0)"));
+    assert!(text.contains("run `codetrail index build`"));
+    assert!(
+        !text.contains("fresh_java_semantic_index"),
+        "text output must not expose internal index labels: {text}"
+    );
+}
+
+#[test]
+fn java_call_hierarchy_incoming_include_overrides_uses_possible_callees() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/p")).unwrap();
+    fs::write(
+        dir.path().join("src/main/java/p/I.java"),
+        "package p;\npublic interface I { void m(); }\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("src/main/java/p/A.java"),
+        "package p;\npublic class A implements I { public void m() {} }\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("src/main/java/p/C.java"),
+        "package p;\npublic class C { public void call() { I i = new A(); i.m(); } }\n",
+    )
+    .unwrap();
+
+    codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args([
+            "call-hierarchy",
+            "p.A.m()",
+            "--direction",
+            "incoming",
+            "--include-overrides",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let results = json["results"].as_array().unwrap();
+    let a_root = results
+        .iter()
+        .find(|result| result["root"]["path"] == "src/main/java/p/A.java")
+        .expect("expected A.m root");
+    let a_incoming = a_root["incomingCalls"].as_array().unwrap();
+    assert_eq!(a_incoming.len(), 1, "{a_incoming:?}");
+    assert_eq!(a_incoming[0]["from"]["name"], "call");
+
+    let i_root = results
+        .iter()
+        .find(|result| result["root"]["path"] == "src/main/java/p/I.java")
+        .expect("expected I.m root");
+    assert_eq!(
+        i_root["incomingCalls"].as_array().unwrap().len(),
+        1,
+        "declared and possible callee entries should not duplicate the same call site"
+    );
+}
+
+#[test]
+fn java_semantic_index_includes_module_generated_sources() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("app/src/main/java/p")).unwrap();
+    fs::create_dir_all(
+        dir.path()
+            .join("app/target/generated-sources/annotations/p/gen"),
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("app/src/main/java/p/C.java"),
+        r#"package p;
+
+import p.gen.G;
+
+public class C {
+    public void call() {
+        new G().m();
+    }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.path()
+            .join("app/target/generated-sources/annotations/p/gen/G.java"),
+        r#"package p.gen;
+
+public class G {
+    public void m() {}
+}
+"#,
+    )
+    .unwrap();
+
+    codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["callers", "m"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["index"]["source"], "java_semantic");
+    assert_eq!(json["results"][0]["resolveStatus"], "Resolved");
+    assert_eq!(json["results"][0]["targetSignature"], "p.gen.G.m()");
+
+    let text = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["callers", "m"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(text).unwrap();
+    assert!(
+        text.contains("C.call() -> p.gen.G.m()  app/src/main/java/p/C.java:7"),
+        "{text}"
+    );
+}
+
+#[test]
+fn java_semantic_index_uses_sqlite_not_json_artifacts() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src/main/java/example")).unwrap();
+    fs::write(
+        dir.path().join("src/main/java/example/Sample.java"),
+        r#"package example;
+
+public class Sample {
+    public void target() {}
+    public void caller() {
+        target();
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let codetrail_dir = dir.path().join(".codetrail");
+    assert!(codetrail_dir.join("java-semantic.sqlite").exists());
+    assert!(
+        !codetrail_dir.join("java-semantic").exists(),
+        "Java semantic must not write legacy artifact directories"
+    );
+
+    let callers = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["callers", "target"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let callers_json: Value = serde_json::from_slice(&callers).unwrap();
+    assert!(callers_json["index"]["path"]
+        .as_str()
+        .unwrap()
+        .ends_with(".codetrail/java-semantic.sqlite"));
+    assert_eq!(
+        callers_json["results"][0]["targetSignature"],
+        "Sample.target()"
+    );
 }
 
 #[test]
@@ -6973,7 +7412,7 @@ fn mcp_subcommand_is_hidden_from_help() {
 
 #[test]
 fn call_graph_help_uses_user_facing_boundary_language() {
-    for command in ["calls", "callers"] {
+    for command in ["calls", "callers", "call-hierarchy"] {
         let output = raw_codetrail()
             .args([command, "--help"])
             .assert()

@@ -180,6 +180,8 @@ struct Symbol {
     name: String,
     kind: String,
     candidate_kind: String,
+    container: Option<String>,
+    signature: Option<String>,
     range: Value,
     body_range: Value,
     enclosing_symbol: Option<String>,
@@ -217,6 +219,8 @@ pub(crate) struct TreeSitterCandidate {
     pub target: Option<String>,
     pub kind: String,
     pub symbol_kind: Option<String>,
+    pub container: Option<String>,
+    pub signature: Option<String>,
     pub range: Value,
     pub body_range: Option<Value>,
     pub call_range: Option<Value>,
@@ -696,6 +700,8 @@ fn symbol_candidate(node: Node, context: &CandidateWalkContext) -> Option<TreeSi
     }
     let body_node = node.child_by_field_name("body").unwrap_or(node);
     let candidate_kind = candidate_kind_for_symbol(node, context.language);
+    let container = enclosing_container_name(node, context.source);
+    let signature = symbol_signature(node, body_node, context.source);
     let reliability = PARSER_FACT.to_string();
     Some(TreeSitterCandidate {
         path: context.path.to_string(),
@@ -705,6 +711,8 @@ fn symbol_candidate(node: Node, context: &CandidateWalkContext) -> Option<TreeSi
         target: None,
         kind: candidate_kind.to_string(),
         symbol_kind: Some(symbol_kind.to_string()),
+        container,
+        signature,
         range: point_range(node),
         body_range: Some(point_range(body_node)),
         call_range: None,
@@ -726,6 +734,7 @@ fn import_candidate(node: Node, context: &CandidateWalkContext) -> Option<TreeSi
     if name.is_empty() {
         return None;
     }
+    let signature = Some(name.clone());
     let reliability = PARSER_FACT.to_string();
     Some(TreeSitterCandidate {
         path: context.path.to_string(),
@@ -735,6 +744,8 @@ fn import_candidate(node: Node, context: &CandidateWalkContext) -> Option<TreeSi
         target: None,
         kind: "import".to_string(),
         symbol_kind: Some("import".to_string()),
+        container: enclosing_container_name(node, context.source),
+        signature,
         range: point_range(node),
         body_range: None,
         call_range: None,
@@ -776,6 +787,8 @@ fn call_candidate(node: Node, context: &CandidateWalkContext) -> Option<TreeSitt
         target: Some(target),
         kind: "call".to_string(),
         symbol_kind: None,
+        container: None,
+        signature: None,
         range: point_range(node),
         body_range: None,
         call_range: Some(point_range(node)),
@@ -815,6 +828,63 @@ fn enclosing_symbol_name(node: Node, source: &[u8]) -> Option<String> {
     enclosing_symbol_details(node, source).map(|details| details.name)
 }
 
+fn enclosing_container_name(node: Node, source: &[u8]) -> Option<String> {
+    let mut parts = Vec::new();
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if is_container_symbol_node(parent.kind()) {
+            let name_node = candidate_name_node(parent)?;
+            let name = symbol_name(parent, name_node, source)?;
+            if !name.is_empty() {
+                parts.push(name);
+            }
+        }
+        current = parent.parent();
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    parts.reverse();
+    Some(parts.join("."))
+}
+
+fn is_container_symbol_node(kind: &str) -> bool {
+    matches!(
+        kind,
+        "class_definition"
+            | "class_declaration"
+            | "class"
+            | "interface_declaration"
+            | "protocol_declaration"
+            | "record_declaration"
+            | "annotation_type_declaration"
+            | "object_declaration"
+            | "companion_object"
+            | "module"
+    )
+}
+
+fn symbol_signature(node: Node, body_node: Node, source: &[u8]) -> Option<String> {
+    let end = if body_node.start_byte() == node.start_byte()
+        && body_node.end_byte() == node.end_byte()
+        && body_node.kind() == node.kind()
+    {
+        node.end_byte()
+    } else {
+        body_node.start_byte()
+    };
+    let bytes = source.get(node.start_byte()..end)?;
+    let raw = std::str::from_utf8(bytes).ok()?;
+    let signature = raw
+        .trim()
+        .trim_end_matches('{')
+        .trim_end_matches(';')
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!signature.is_empty()).then_some(signature)
+}
+
 fn is_symbol_candidate(candidate: &TreeSitterCandidate) -> bool {
     candidate.reliability == PARSER_FACT && candidate.kind != "import"
 }
@@ -827,6 +897,8 @@ fn symbol_from_candidate(candidate: TreeSitterCandidate) -> Option<Symbol> {
         name: candidate.name?,
         kind: candidate.symbol_kind?,
         candidate_kind: candidate.kind,
+        container: candidate.container,
+        signature: candidate.signature,
         range: candidate.range,
         body_range: candidate.body_range?,
         enclosing_symbol: candidate.enclosing_symbol,
@@ -1142,15 +1214,18 @@ fn point_range(node: Node) -> Value {
 }
 
 fn symbol_to_json(symbol: Symbol) -> Value {
+    let qualified_name = qualified_symbol_name(&symbol);
     json!({
         "path": symbol.path,
         "name": symbol.name,
         "symbolName": symbol.name,
+        "qualifiedName": qualified_name,
+        "signature": symbol.signature,
         "kind": symbol.kind,
         "candidateKind": symbol.candidate_kind,
         "language": symbol.language,
         "rootId": symbol.root_id,
-        "container": Value::Null,
+        "container": symbol.container,
         "enclosingSymbol": symbol.enclosing_symbol,
         "role": "definition",
         "range": symbol.range,
@@ -1165,6 +1240,17 @@ fn symbol_to_json(symbol: Symbol) -> Value {
         "knownBlindSpots": symbol.known_blind_spots,
         "warning": symbol.warning
     })
+}
+
+fn qualified_symbol_name(symbol: &Symbol) -> String {
+    match (symbol.container.as_deref(), symbol.signature.as_deref()) {
+        (Some(container), Some(signature)) if !signature.starts_with(container) => {
+            format!("{container}#{signature}")
+        }
+        (_, Some(signature)) => signature.to_string(),
+        (Some(container), None) => format!("{container}#{}", symbol.name),
+        (None, None) => symbol.name.clone(),
+    }
 }
 
 fn call_to_json(call: CallCandidate) -> Value {
