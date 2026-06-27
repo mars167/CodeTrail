@@ -175,7 +175,7 @@ run_pr() {
   run_step "cargo fmt --check" run_cargo fmt --check
   run_step "git diff --check" git diff --check
   run_step "installer smoke tests" "$ROOT/scripts/test-installers.sh"
-  run_step "cargo test --all-targets --locked --no-fail-fast" run_cargo test --all-targets --locked --no-fail-fast
+  run_step "cargo test --all-targets --locked --no-fail-fast" run_with_keepalive "cargo test --all-targets --locked --no-fail-fast" run_cargo test --all-targets --locked --no-fail-fast
 }
 
 run_ruoyi_smoke() {
