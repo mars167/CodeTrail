@@ -123,6 +123,29 @@ run_cargo() {
   "$CARGO_BIN" "$@"
 }
 
+run_with_keepalive() {
+  local label="$1"
+  shift
+
+  local interval="${KEEPALIVE_INTERVAL:-60}"
+  local start=$SECONDS
+  local status=0
+
+  "$@" &
+  local cmd_pid=$!
+
+  while kill -0 "$cmd_pid" >/dev/null 2>&1; do
+    sleep "$interval"
+    if kill -0 "$cmd_pid" >/dev/null 2>&1; then
+      local elapsed=$((SECONDS - start))
+      printf '[keepalive] %s still running (%ss elapsed)\n' "$label" "$elapsed"
+    fi
+  done
+
+  wait "$cmd_pid" || status=$?
+  return "$status"
+}
+
 run_codetrail_json() {
   "$CS_BIN" --output json --path "$TEST_REPO" "$@"
 }
@@ -203,7 +226,7 @@ run_main() {
   note "main quality gate"
   cd "$ROOT"
   run_pr
-  run_step "cargo build --release --locked" run_cargo build --release --locked --bin codetrail
+  run_step "cargo build --release --locked" run_with_keepalive "cargo build --release --locked" run_cargo build --release --locked --bin codetrail
   run_ruoyi_smoke
 }
 
@@ -215,7 +238,7 @@ run_bench() {
   require_tool bc
   # Reuse release binary if already built (e.g. from 'full' gate)
   if [[ ! -x "$CS_BIN" ]]; then
-    run_step "cargo build --release --locked" run_cargo build --release --locked --bin codetrail
+    run_step "cargo build --release --locked" run_with_keepalive "cargo build --release --locked" run_cargo build --release --locked --bin codetrail
   fi
   if [[ ! -d "$TEST_REPO" ]]; then
     if [[ "${REQUIRE_TEST_REPO:-0}" == "1" ]]; then
