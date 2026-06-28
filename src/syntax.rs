@@ -308,19 +308,22 @@ pub fn symbols(
     let mut warnings = Vec::new();
     let plan = InputPlan::new(query, opts.input_mode);
     let budget = CandidateBudget::default();
-    let (query_limit, budget_limited) = query_result_limit(opts, budget);
+    let (query_limit, budget_limited) = query_budget_limit(budget);
     let prefilter = (opts.input_mode == InputMode::Strict).then_some(query);
     for symbol in collect_symbols_prefiltered(workspace, opts, &mut warnings, prefilter)? {
-        if let Some(variant) =
-            plan.matched_variant(&symbol.name, opts.case_sensitive, SymbolMatchMode::Contains)
-        {
+        if let Some(variant) = matched_symbol_variant(
+            &symbol,
+            &plan,
+            opts.case_sensitive,
+            SymbolMatchMode::Contains,
+        ) {
             if results.len() >= query_limit {
                 if budget_limited {
                     push_query_budget_warning(&mut warnings, "symbols", budget.max_per_query);
                 }
                 break;
             }
-            results.push(attach_matched_input(symbol_to_json(symbol), variant));
+            results.push(attach_matched_input(symbol_to_json(symbol), &variant));
         }
     }
     push_input_plan_warning(&mut warnings, &plan);
@@ -336,11 +339,11 @@ pub fn defs(
     let mut warnings = Vec::new();
     let plan = InputPlan::new(identifier, opts.input_mode);
     let budget = CandidateBudget::default();
-    let (query_limit, budget_limited) = query_result_limit(opts, budget);
+    let (query_limit, budget_limited) = query_budget_limit(budget);
     let prefilter = (opts.input_mode == InputMode::Strict).then_some(identifier);
     for symbol in collect_symbols_prefiltered(workspace, opts, &mut warnings, prefilter)? {
         if let Some(variant) =
-            plan.matched_variant(&symbol.name, opts.case_sensitive, SymbolMatchMode::Exact)
+            matched_symbol_variant(&symbol, &plan, opts.case_sensitive, SymbolMatchMode::Exact)
         {
             if results.len() >= query_limit {
                 if budget_limited {
@@ -348,7 +351,7 @@ pub fn defs(
                 }
                 break;
             }
-            results.push(attach_matched_input(symbol_to_json(symbol), variant));
+            results.push(attach_matched_input(symbol_to_json(symbol), &variant));
         }
     }
     push_input_plan_warning(&mut warnings, &plan);
@@ -421,12 +424,39 @@ fn push_input_plan_warning(warnings: &mut Vec<String>, plan: &InputPlan) {
     }
 }
 
+fn matched_symbol_variant(
+    symbol: &Symbol,
+    plan: &InputPlan,
+    case_sensitive: bool,
+    mode: SymbolMatchMode,
+) -> Option<crate::query_input::InputVariant> {
+    let scoped = symbol
+        .container
+        .as_ref()
+        .map(|container| format!("{container}.{}", symbol.name));
+    let qualified = qualified_symbol_name(symbol);
+    let candidates = vec![
+        Some(symbol.name.as_str()),
+        scoped.as_deref(),
+        Some(qualified.as_str()),
+    ];
+    let matched = candidates.into_iter().find_map(|candidate| {
+        plan.matched_variant(candidate?, case_sensitive, mode)
+            .cloned()
+    });
+    matched
+}
+
 fn query_result_limit(opts: &ScanOptions, budget: CandidateBudget) -> (usize, bool) {
     if opts.limit > 0 && opts.limit <= budget.max_per_query {
         (opts.limit, false)
     } else {
         (budget.max_per_query, true)
     }
+}
+
+fn query_budget_limit(budget: CandidateBudget) -> (usize, bool) {
+    (budget.max_per_query, true)
 }
 
 fn push_query_budget_warning(warnings: &mut Vec<String>, query: &str, max: usize) {
@@ -661,6 +691,12 @@ fn walk_candidates(node: Node, context: &mut CandidateWalkContext) {
             return;
         }
     }
+    if let Some(candidate) = assignment_symbol_candidate(node, context) {
+        push_candidate(candidate, context);
+        if *context.truncated {
+            return;
+        }
+    }
     if let Some(candidate) = import_candidate(node, context) {
         push_candidate(candidate, context);
         if *context.truncated {
@@ -724,6 +760,88 @@ fn symbol_candidate(node: Node, context: &CandidateWalkContext) -> Option<TreeSi
         layer: reliability,
         known_blind_spots: known_blind_spots(context.language).to_vec(),
     })
+}
+
+fn assignment_symbol_candidate(
+    node: Node,
+    context: &CandidateWalkContext,
+) -> Option<TreeSitterCandidate> {
+    if !matches!(context.language, "javascript" | "typescript")
+        || node.kind() != "assignment_expression"
+    {
+        return None;
+    }
+    let left = node.child_by_field_name("left")?;
+    let right = node.child_by_field_name("right")?;
+    if !matches!(right.kind(), "function_expression" | "arrow_function") {
+        return None;
+    }
+    let (container, property) = member_assignment_parts(left, context.source)?;
+    if property.is_empty() {
+        return None;
+    }
+    let body_node = right.child_by_field_name("body").unwrap_or(right);
+    let signature = symbol_signature(node, body_node, context.source);
+    let reliability = PARSER_FACT.to_string();
+    Some(TreeSitterCandidate {
+        path: context.path.to_string(),
+        language: context.language.to_string(),
+        root_id: context.root_id.to_string(),
+        name: Some(property),
+        target: None,
+        kind: "method".to_string(),
+        symbol_kind: Some("function".to_string()),
+        container: Some(container),
+        signature,
+        range: point_range(node),
+        body_range: Some(point_range(body_node)),
+        call_range: None,
+        enclosing_symbol: enclosing_symbol_name(node, context.source),
+        body_hash: Some(hash_node(body_node, context.source)),
+        file_hash: context.file_hash.to_string(),
+        producer: PARSER_PRODUCER.to_string(),
+        reliability: reliability.clone(),
+        layer: reliability,
+        known_blind_spots: known_blind_spots(context.language).to_vec(),
+    })
+}
+
+fn member_assignment_parts(left: Node, source: &[u8]) -> Option<(String, String)> {
+    let property = left
+        .child_by_field_name("property")
+        .or_else(|| left.child_by_field_name("name"))
+        .and_then(|node| member_property_name(node, source))
+        .or_else(|| {
+            let raw = left.utf8_text(source).ok()?.trim();
+            raw.rsplit_once('.')
+                .map(|(_, property)| property.trim().to_string())
+        })?;
+    let container = left
+        .child_by_field_name("object")
+        .and_then(|node| node.utf8_text(source).ok())
+        .map(str::trim)
+        .map(ToString::to_string)
+        .or_else(|| {
+            let raw = left.utf8_text(source).ok()?.trim();
+            raw.rsplit_once('.')
+                .map(|(container, _)| container.trim().to_string())
+        })?;
+    (!container.is_empty() && !property.is_empty()).then_some((container, property))
+}
+
+fn member_property_name(node: Node, source: &[u8]) -> Option<String> {
+    let raw = node.utf8_text(source).ok()?.trim();
+    let value = raw
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .or_else(|| {
+            raw.strip_prefix('\'')
+                .and_then(|value| value.strip_suffix('\''))
+        })
+        .unwrap_or(raw)
+        .trim()
+        .to_string();
+    (!value.is_empty()).then_some(value)
 }
 
 fn import_candidate(node: Node, context: &CandidateWalkContext) -> Option<TreeSitterCandidate> {
@@ -834,9 +952,7 @@ fn enclosing_container_name(node: Node, source: &[u8]) -> Option<String> {
     let mut current = node.parent();
     while let Some(parent) = current {
         if is_container_symbol_node(parent.kind()) {
-            let name_node = candidate_name_node(parent)?;
-            let name = symbol_name(parent, name_node, source)?;
-            if !name.is_empty() {
+            if let Some(name) = container_symbol_name(parent, source) {
                 parts.push(name);
             }
         }
@@ -847,6 +963,64 @@ fn enclosing_container_name(node: Node, source: &[u8]) -> Option<String> {
     }
     parts.reverse();
     Some(parts.join("."))
+}
+
+fn container_symbol_name(node: Node, source: &[u8]) -> Option<String> {
+    if node.kind() == "impl_item" {
+        return impl_container_name(node, source);
+    }
+    let name_node = candidate_name_node(node)?;
+    let name = symbol_name(node, name_node, source)?;
+    (!name.is_empty()).then_some(name)
+}
+
+fn impl_container_name(node: Node, source: &[u8]) -> Option<String> {
+    let raw = node.utf8_text(source).ok()?;
+    let header = raw.split('{').next().unwrap_or(raw).trim();
+    let mut value = header.strip_prefix("impl")?.trim();
+    if value.starts_with('<') {
+        value = strip_leading_angle_group(value).trim();
+    }
+    if let Some((_trait_name, ty)) = value.rsplit_once(" for ") {
+        value = ty.trim();
+    }
+    if let Some((ty, _where_clause)) = value.split_once(" where ") {
+        value = ty.trim();
+    }
+    let value = strip_angle_groups(value);
+    let name = last_identifier(value.trim());
+    (!name.is_empty()).then_some(name.to_string())
+}
+
+fn strip_leading_angle_group(value: &str) -> &str {
+    let mut depth = 0usize;
+    for (idx, ch) in value.char_indices() {
+        match ch {
+            '<' => depth = depth.saturating_add(1),
+            '>' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return value.get(idx + ch.len_utf8()..).unwrap_or("").trim_start();
+                }
+            }
+            _ => {}
+        }
+    }
+    value
+}
+
+fn strip_angle_groups(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut depth = 0usize;
+    for ch in value.chars() {
+        match ch {
+            '<' => depth = depth.saturating_add(1),
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+    out
 }
 
 fn is_container_symbol_node(kind: &str) -> bool {
@@ -861,6 +1035,7 @@ fn is_container_symbol_node(kind: &str) -> bool {
             | "annotation_type_declaration"
             | "object_declaration"
             | "companion_object"
+            | "impl_item"
             | "module"
     )
 }
@@ -1030,6 +1205,7 @@ fn is_enclosing_symbol_node(kind: &str) -> bool {
         "function_item"
             | "function_definition"
             | "function_declaration"
+            | "function_expression"
             | "protocol_function_declaration"
             | "method_definition"
             | "method_declaration"
@@ -1246,6 +1422,11 @@ fn symbol_to_json(symbol: Symbol) -> Value {
 
 fn qualified_symbol_name(symbol: &Symbol) -> String {
     match (symbol.container.as_deref(), symbol.signature.as_deref()) {
+        (Some(container), Some(signature))
+            if signature.starts_with(&format!("{container}.{}", symbol.name)) =>
+        {
+            format!("{container}.{}", symbol.name)
+        }
         (Some(container), Some(signature)) if !signature.starts_with(container) => {
             format!("{container}#{signature}")
         }

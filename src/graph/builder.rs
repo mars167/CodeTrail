@@ -287,7 +287,7 @@ fn build_tree_sitter_edges(
     backend: &mut PetgraphBackend,
     candidates: &[syntax::TreeSitterCandidate],
 ) {
-    let mut definitions_by_body_hash = HashMap::<String, GraphNode>::new();
+    let mut definitions_by_body_hash = HashMap::<String, Vec<GraphNode>>::new();
     let mut definitions_by_name = HashMap::<String, Vec<GraphNode>>::new();
     let mut definitions_by_scoped_name = HashMap::<String, Vec<GraphNode>>::new();
     for candidate in candidates.iter().filter(|candidate| {
@@ -301,7 +301,10 @@ fn build_tree_sitter_edges(
         let node = graph_node_from_tree_symbol(candidate);
         backend.ensure_node(node.clone());
         if let Some(body_hash) = candidate.body_hash.as_ref() {
-            definitions_by_body_hash.insert(body_hash.clone(), node.clone());
+            definitions_by_body_hash
+                .entry(body_hash.clone())
+                .or_default()
+                .push(node.clone());
         }
         let key = tree_symbol_lookup_key(
             &candidate.language,
@@ -331,12 +334,9 @@ fn build_tree_sitter_edges(
         .filter(|candidate| candidate.kind == "call")
     {
         // Register caller function node
-        let Some(caller_node) = call
-            .body_hash
-            .as_ref()
-            .and_then(|hash| definitions_by_body_hash.get(hash))
-            .cloned()
-            .or_else(|| fallback_caller_node_from_call(call))
+        let Some(caller_node) =
+            resolve_tree_caller(&definitions_by_body_hash, &definitions_by_scoped_name, call)
+                .or_else(|| fallback_caller_node_from_call(call))
         else {
             continue;
         };
@@ -539,6 +539,33 @@ fn resolve_tree_callee(
         &call.root_id,
         target_name,
     )))
+}
+
+fn resolve_tree_caller(
+    definitions_by_body_hash: &HashMap<String, Vec<GraphNode>>,
+    definitions_by_scoped_name: &HashMap<String, Vec<GraphNode>>,
+    call: &syntax::TreeSitterCandidate,
+) -> Option<GraphNode> {
+    if let Some(hash) = call.body_hash.as_ref() {
+        if let Some(candidates) = definitions_by_body_hash.get(hash) {
+            if candidates.len() == 1 {
+                return candidates.first().cloned();
+            }
+        }
+    }
+    let (Some(container), Some(enclosing)) =
+        (call.container.as_deref(), call.enclosing_symbol.as_deref())
+    else {
+        return None;
+    };
+    unique_definition(
+        definitions_by_scoped_name.get(&tree_symbol_scoped_lookup_key(
+            &call.language,
+            &call.root_id,
+            container,
+            enclosing,
+        )),
+    )
 }
 
 fn tree_symbol_id(candidate: &syntax::TreeSitterCandidate) -> String {

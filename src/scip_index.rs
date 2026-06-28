@@ -15,6 +15,7 @@ use crate::{
     query_input::{attach_matched_input, InputPlan, InputVariant, SymbolMatchMode},
     scip,
     scip::store::{OccurrenceResult, SymbolResult},
+    search,
     workspace::{ScanOptions, Workspace},
 };
 
@@ -269,7 +270,12 @@ fn query_native_defs(
         opts.case_sensitive,
         SymbolMatchMode::Exact,
     );
-    filter_and_limit_occurrence_matches(workspace, &mut results, opts)?;
+    filter_and_limit_occurrence_matches(
+        workspace,
+        &mut results,
+        opts,
+        Some((&plan, SymbolMatchMode::Exact)),
+    )?;
     if results.is_empty() {
         return Ok(Some(PreciseQueryOutput {
             results: Value::Array(Vec::new()),
@@ -310,7 +316,7 @@ fn query_native_refs(
         opts.case_sensitive,
         SymbolMatchMode::Exact,
     );
-    filter_and_limit_occurrence_matches(workspace, &mut results, opts)?;
+    filter_and_limit_occurrence_matches(workspace, &mut results, opts, None)?;
     if results.is_empty() {
         return Ok(Some(PreciseQueryOutput {
             results: Value::Array(Vec::new()),
@@ -351,7 +357,13 @@ fn query_native_symbols(
         opts.case_sensitive,
         SymbolMatchMode::Contains,
     );
-    filter_and_limit_symbol_matches(workspace, &mut results, opts)?;
+    filter_and_limit_symbol_matches(
+        workspace,
+        &mut results,
+        opts,
+        &plan,
+        SymbolMatchMode::Contains,
+    )?;
     if results.is_empty() {
         return Ok(Some(PreciseQueryOutput {
             results: Value::Array(Vec::new()),
@@ -382,9 +394,15 @@ fn filter_and_limit_occurrence_matches(
     workspace: &Workspace,
     results: &mut Vec<(OccurrenceResult, InputVariant)>,
     opts: &ScanOptions,
+    relevance: Option<(&InputPlan, SymbolMatchMode)>,
 ) -> Result<()> {
     let allowed_paths = allowed_scan_paths(workspace, opts)?;
     results.retain(|(result, _variant)| allowed_paths.contains(&result.path));
+    if let Some((plan, mode)) = relevance {
+        results.sort_by_cached_key(|(result, _variant)| {
+            search::code_result_sort_key(&scip::occurrence_to_json(result), &plan.raw, opts, mode)
+        });
+    }
     if opts.limit > 0 && results.len() > opts.limit {
         results.truncate(opts.limit);
     }
@@ -395,9 +413,14 @@ fn filter_and_limit_symbol_matches(
     workspace: &Workspace,
     results: &mut Vec<(SymbolResult, InputVariant)>,
     opts: &ScanOptions,
+    plan: &InputPlan,
+    mode: SymbolMatchMode,
 ) -> Result<()> {
     let allowed_paths = allowed_scan_paths(workspace, opts)?;
     results.retain(|(result, _variant)| allowed_paths.contains(&result.path));
+    results.sort_by_cached_key(|(result, _variant)| {
+        search::code_result_sort_key(&scip::symbol_to_json(result), &plan.raw, opts, mode)
+    });
     if opts.limit > 0 && results.len() > opts.limit {
         results.truncate(opts.limit);
     }

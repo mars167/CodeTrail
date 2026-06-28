@@ -14,7 +14,7 @@ use serde_json::{json, Map, Value};
 use crate::{
     code_context::{self, CodeContextOptions},
     config_index, graph, java_semantic, output,
-    query_input::{InputMode, InputPlan},
+    query_input::{InputMode, InputPlan, SymbolMatchMode},
     routes, scip_index, search,
     search_pattern::SearchPatternMode,
     syntax,
@@ -388,9 +388,14 @@ impl QueryService {
                 let mut index = precise.index;
                 if let Some(config) = config_index::defs(&self.workspace, &scan, identifier)? {
                     append_results(&mut results, config.results);
-                    truncate_results_to_limit(&mut results, scan.limit);
                     append_config_index(&mut index, config.index);
                 }
+                search::rank_and_truncate_code_results(
+                    &mut results,
+                    identifier,
+                    &scan,
+                    SymbolMatchMode::Exact,
+                );
                 let response = output::response_with_index(
                     "defs",
                     "defs",
@@ -419,8 +424,13 @@ impl QueryService {
         let parser_had_results = has_results(&results);
         if let Some(config) = config_index::defs(&self.workspace, &scan, identifier)? {
             append_results(&mut results, config.results);
-            truncate_results_to_limit(&mut results, scan.limit);
         }
+        search::rank_and_truncate_code_results(
+            &mut results,
+            identifier,
+            &scan,
+            SymbolMatchMode::Exact,
+        );
         if !has_results(&results) {
             if let Some(precise) = precise_empty {
                 let response = output::response_with_index(
@@ -550,7 +560,7 @@ impl QueryService {
                     append_results(&mut results, config.results);
                     append_config_index(&mut index, config.index);
                 }
-                let page = search::page_results(
+                let page = search::page_ranked_code_results(
                     results,
                     &scan,
                     "symbols",
@@ -559,6 +569,8 @@ impl QueryService {
                         code_options,
                     ),
                     &self.workspace.snapshot_id,
+                    query,
+                    SymbolMatchMode::Contains,
                 )?;
                 let response = output::response_with_index(
                     "symbols",
@@ -613,7 +625,7 @@ impl QueryService {
                 return Ok(self.finalize(response));
             }
         }
-        let page = search::page_results(
+        let page = search::page_ranked_code_results(
             results,
             &scan,
             "symbols",
@@ -622,6 +634,8 @@ impl QueryService {
                 code_options,
             ),
             &self.workspace.snapshot_id,
+            query,
+            SymbolMatchMode::Contains,
         )?;
         let response = output::response(
             "symbols",

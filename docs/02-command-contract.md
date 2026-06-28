@@ -135,7 +135,7 @@ MCP `tools/list` 只暴露语义索引相关工具：
 稳定字段：
 
 - `results` 是唯一的主要结果载体。每条结果只保留定位、文本、符号、关系或命令结果本身需要的字段；内部审计字段、producer、source target、index freshness 和 agent next action 不进入公开 JSON。
-- `symbols/defs --include-code` 的每条结果可包含 `source` 和 `relations`；relation 条目只保留公开定位和候选关系字段。
+- `symbols/defs --include-code` 的每条结果可包含 `source` 和 `relations`；relation 条目只保留公开定位和候选关系字段。宽名或多组候选导致结果明显模糊时，`source` 只附加到排序最高的少量候选，其余候选保留定位 metadata，并通过 `ambiguous_include_code_capped` warning 标记。
 - `page.truncated` 表示本次输出被裁切或分页，调用方应缩小查询或使用 `page.nextCursor` 翻页。
 - `page.nextCursor` 是下一页游标；没有下一页时为 `null`。
 - 失败 JSON 仍保留结构化 `error.code` / `error.message`，同时带空 `results` 和 `page`。
@@ -176,7 +176,7 @@ flowchart LR
 
 - `calls`/`callers` 按 caller -> callee 关系渲染，关系和位置保持同一行。
 - `symbols/defs` 默认结果行包含 kind、name 和位置，保持一行可跳转。
-- `symbols/defs --include-code` 会在 symbol/def 行下渲染带行号的 source block，并附简短 calls/callers 摘要；JSON/JSONL 仍是该能力的主契约。
+- `symbols/defs --include-code` 会在 symbol/def 行下渲染带行号的 source block，并附简短 calls/callers 摘要；模糊结果可能只为 top ranked 候选渲染 source block，以控制输出量。JSON/JSONL 仍是该能力的主契约。
 - `index build` 和 `index-provider install` 在 TTY 上显示加载进度；非 TTY 保持无 spinner，避免污染脚本输出。
 - 不渲染诊断提示块；能力边界放在 help 和文档中，内部审计、agent next action 或完整 schema 不打到终端。
 

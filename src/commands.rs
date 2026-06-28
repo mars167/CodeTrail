@@ -16,7 +16,7 @@ use crate::{
     java_semantic::{self, CallHierarchyOptions},
     output,
     query::{ExploreNodeOptions, QueryOptions, QueryService},
-    query_input::InputPlan,
+    query_input::{InputPlan, SymbolMatchMode},
     routes, saved_query, scip_index, search,
     search_pattern::SearchPatternMode,
     syntax,
@@ -294,7 +294,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                         append_results(&mut results, config.results);
                         append_config_index(&mut index, config.index);
                     }
-                    let page = search::page_results(
+                    let page = search::page_ranked_code_results(
                         results,
                         &scan_opts,
                         "symbols",
@@ -303,6 +303,8 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                             &code_options,
                         ),
                         &workspace.snapshot_id,
+                        query,
+                        SymbolMatchMode::Contains,
                     )?;
                     let response = code_context::enrich_response(
                         &workspace,
@@ -382,7 +384,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                     );
                 }
             }
-            let page = search::page_results(
+            let page = search::page_ranked_code_results(
                 results,
                 &scan_opts,
                 "symbols",
@@ -391,6 +393,8 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                     &code_options,
                 ),
                 &workspace.snapshot_id,
+                query,
+                SymbolMatchMode::Contains,
             )?;
             exit_code = output::no_match_exit(&page.results);
             code_context::enrich_response(
@@ -444,9 +448,14 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                     let mut index = precise.index;
                     if let Some(config) = config_index::defs(&workspace, &scan_opts, identifier)? {
                         append_results(&mut results, config.results);
-                        truncate_results_to_limit(&mut results, scan_opts.limit);
                         append_config_index(&mut index, config.index);
                     }
+                    search::rank_and_truncate_code_results(
+                        &mut results,
+                        identifier,
+                        &scan_opts,
+                        SymbolMatchMode::Exact,
+                    );
                     let response = code_context::enrich_response(
                         &workspace,
                         &scan_opts,
@@ -485,8 +494,13 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             let parser_had_results = has_results(&results);
             if let Some(config) = config_index::defs(&workspace, &scan_opts, identifier)? {
                 append_results(&mut results, config.results);
-                truncate_results_to_limit(&mut results, scan_opts.limit);
             }
+            search::rank_and_truncate_code_results(
+                &mut results,
+                identifier,
+                &scan_opts,
+                SymbolMatchMode::Exact,
+            );
             if !has_results(&results) {
                 if let Some(precise) = precise_empty {
                     let response = code_context::enrich_response(

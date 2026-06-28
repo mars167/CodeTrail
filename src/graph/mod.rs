@@ -450,13 +450,18 @@ impl GraphBackend for PetgraphBackend {
         allowed_paths: Option<&HashSet<String>>,
     ) -> Result<Vec<Value>> {
         let mut results = Vec::new();
+        let qualified = qualified_hierarchy_query(&plan.raw);
         let mut root_indices = self
             .matching_node_indices_for_plan(plan, case_sensitive)
             .into_iter()
             .filter_map(|(node_idx, _)| {
                 let root = &self.graph[node_idx];
-                (is_hierarchy_callable(root) && path_allowed(allowed_paths, &root.file_path))
-                    .then_some(node_idx)
+                (is_hierarchy_callable(root)
+                    && path_allowed(allowed_paths, &root.file_path)
+                    && qualified.as_ref().is_none_or(|query| {
+                        node_matches_qualified_hierarchy(root, query, case_sensitive)
+                    }))
+                .then_some(node_idx)
             })
             .collect::<Vec<_>>();
         root_indices.sort_by(|a, b| {
@@ -721,6 +726,73 @@ fn matched_node_variant(
     })
 }
 
+#[derive(Clone, Debug)]
+struct QualifiedHierarchyQuery {
+    qualifier: String,
+    name: String,
+}
+
+fn qualified_hierarchy_query(input: &str) -> Option<QualifiedHierarchyQuery> {
+    let head = input
+        .trim()
+        .split_once('(')
+        .map(|(head, _)| head)
+        .unwrap_or_else(|| input.trim());
+    let (qualifier, name) = head
+        .rsplit_once("::")
+        .or_else(|| head.rsplit_once('.'))
+        .or_else(|| head.rsplit_once('#'))
+        .or_else(|| head.rsplit_once('$'))?;
+    let qualifier = last_identifier(qualifier).trim();
+    let name = last_identifier(name).trim();
+    (!qualifier.is_empty() && !name.is_empty()).then(|| QualifiedHierarchyQuery {
+        qualifier: qualifier.to_string(),
+        name: name.to_string(),
+    })
+}
+
+fn node_matches_qualified_hierarchy(
+    node: &GraphNode,
+    query: &QualifiedHierarchyQuery,
+    case_sensitive: bool,
+) -> bool {
+    let display_name = node_display_name(node);
+    let node_name = method_base_identifier(&display_name);
+    if !text_eq(node_name, &query.name, case_sensitive) {
+        return false;
+    }
+    node.container.as_deref().is_some_and(|container| {
+        text_eq(last_identifier(container), &query.qualifier, case_sensitive)
+    }) || text_eq(
+        &canonical_qualified_node_name(node),
+        &format!("{}.{}", query.qualifier, query.name),
+        case_sensitive,
+    )
+}
+
+fn canonical_qualified_node_name(node: &GraphNode) -> String {
+    if let Some(container) = node.container.as_deref() {
+        return format!(
+            "{}.{}",
+            last_identifier(container),
+            method_base_identifier(&node_display_name(node))
+        );
+    }
+    node.id
+        .replace("::", ".")
+        .replace('#', ".")
+        .replace('$', ".")
+        .replace(':', ".")
+}
+
+fn text_eq(left: &str, right: &str, case_sensitive: bool) -> bool {
+    if case_sensitive {
+        left == right
+    } else {
+        left.eq_ignore_ascii_case(right)
+    }
+}
+
 fn node_display_name(node: &GraphNode) -> String {
     if node.display_name.is_empty() {
         node.id.clone()
@@ -792,10 +864,11 @@ fn hierarchy_edge_key(meta: &EdgeMetadata, item_id: &str) -> (String, u32, u32, 
     )
 }
 
-fn hierarchy_root_key(node: &GraphNode) -> (String, String, String) {
+fn hierarchy_root_key(node: &GraphNode) -> (String, String, String, String) {
     (
         node.language.clone(),
         node.file_path.clone(),
+        node.container.clone().unwrap_or_default(),
         node_display_name(node),
     )
 }

@@ -14,6 +14,10 @@ pub const DEFAULT_CODE_CONTEXT_LINES: u16 = 20;
 pub const DEFAULT_CODE_MAX_LINES: usize = 200;
 pub const MAX_CODE_MAX_LINES: usize = 2000;
 const RELATION_LIMIT: usize = 12;
+const AMBIGUOUS_SOURCE_RESULT_THRESHOLD: usize = 8;
+const AMBIGUOUS_SOURCE_VISIBLE_LIMIT: usize = 3;
+const AMBIGUOUS_SOURCE_LINE_BUDGET: usize = 120;
+const AMBIGUOUS_SOURCE_BYTE_BUDGET: usize = 8 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CodeContextOptions {
@@ -90,7 +94,13 @@ pub fn enrich_response(
     let mut relation_context = RelationContext::default();
     let mut warnings = Vec::<Warning>::new();
     if let Some(results) = response.get_mut("results").and_then(Value::as_array_mut) {
-        for result in results {
+        let source_limit = ambiguous_source_limit(workspace, scan, results, options);
+        let mut omitted = 0usize;
+        for (idx, result) in results.iter_mut().enumerate() {
+            if source_limit.is_some_and(|limit| idx >= limit) {
+                omitted += 1;
+                continue;
+            }
             enrich_result(
                 workspace,
                 scan,
@@ -100,9 +110,71 @@ pub fn enrich_response(
                 &mut warnings,
             )?;
         }
+        if let Some(limit) = source_limit {
+            if omitted > 0 {
+                push_warning(
+                    &mut warnings,
+                    "ambiguous_include_code_capped",
+                    format!(
+                        "ambiguous_include_code_capped: source shown for top {limit} ranked candidates; omitted for {omitted} ambiguous candidates"
+                    ),
+                );
+            }
+        }
     }
     append_warnings(&mut response, warnings);
     Ok(response)
+}
+
+fn ambiguous_source_limit(
+    workspace: &Workspace,
+    scan: &ScanOptions,
+    results: &[Value],
+    options: &CodeContextOptions,
+) -> Option<usize> {
+    if results.len() < AMBIGUOUS_SOURCE_RESULT_THRESHOLD {
+        return None;
+    }
+    let mut groups = BTreeSet::<String>::new();
+    let mut estimated_lines = 0usize;
+    for result in results {
+        let kind = result.get("kind").and_then(Value::as_str).unwrap_or("");
+        let container = result
+            .get("container")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let top_dir = result
+            .get("path")
+            .and_then(Value::as_str)
+            .and_then(|path| path.split('/').next())
+            .unwrap_or("");
+        groups.insert(format!("{kind}:{container}:{top_dir}"));
+        estimated_lines += estimated_source_lines(workspace, scan, result, options);
+    }
+    let estimated_bytes = estimated_lines.saturating_mul(80);
+    if groups.len() > 1
+        || estimated_lines > AMBIGUOUS_SOURCE_LINE_BUDGET
+        || estimated_bytes > AMBIGUOUS_SOURCE_BYTE_BUDGET
+    {
+        Some(AMBIGUOUS_SOURCE_VISIBLE_LIMIT.min(results.len()))
+    } else {
+        None
+    }
+}
+
+fn estimated_source_lines(
+    _workspace: &Workspace,
+    _scan: &ScanOptions,
+    result: &Value,
+    options: &CodeContextOptions,
+) -> usize {
+    let lines = result
+        .get("bodyRange")
+        .and_then(range_lines)
+        .or_else(|| result.get("range").and_then(range_lines))
+        .map(|(start, end)| end.saturating_sub(start).saturating_add(1))
+        .unwrap_or(1);
+    lines.min(options.code_max_lines.clamp(1, MAX_CODE_MAX_LINES))
 }
 
 fn enrich_result(
