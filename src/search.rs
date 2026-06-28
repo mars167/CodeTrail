@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
@@ -50,6 +50,12 @@ pub struct Page {
     pub next_cursor: Option<String>,
     pub facets: Value,
     pub guard: Option<Value>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CodeResultMerge {
+    pub retained: usize,
+    pub retained_parser: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -625,6 +631,161 @@ pub fn rank_and_truncate_code_results(
             items.truncate(opts.limit);
         }
     }
+}
+
+pub fn merge_code_result_supplement(target: &mut Value, extra: Value) -> CodeResultMerge {
+    let Some(target_items) = target.as_array_mut() else {
+        return CodeResultMerge::default();
+    };
+    let Value::Array(extra_items) = extra else {
+        return CodeResultMerge::default();
+    };
+    let mut positions = HashMap::<CodeResultIdentity, usize>::new();
+    for (idx, item) in target_items.iter().enumerate() {
+        positions.insert(code_result_identity(item), idx);
+    }
+
+    let mut outcome = CodeResultMerge::default();
+    for item in extra_items {
+        let key = code_result_identity(&item);
+        if let Some(existing_idx) = positions.get(&key).copied() {
+            if is_precise_code_result(&item) && !is_precise_code_result(&target_items[existing_idx])
+            {
+                target_items[existing_idx] = item;
+            }
+            continue;
+        }
+        if let Some(existing_idx) = target_items
+            .iter()
+            .position(|existing| same_precise_parser_definition(existing, &item))
+        {
+            if is_precise_code_result(&item) && !is_precise_code_result(&target_items[existing_idx])
+            {
+                target_items[existing_idx] = item;
+                positions.insert(key, existing_idx);
+            }
+            continue;
+        }
+        let retained_parser = is_parser_code_result(&item);
+        target_items.push(item);
+        positions.insert(key, target_items.len().saturating_sub(1));
+        outcome.retained += 1;
+        if retained_parser {
+            outcome.retained_parser += 1;
+        }
+    }
+    outcome
+}
+
+pub fn results_contain_parser_fact(results: &Value) -> bool {
+    results
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(is_parser_code_result)
+}
+
+type CodeResultIdentity = (String, String, String, String, u64);
+
+fn code_result_identity(value: &Value) -> CodeResultIdentity {
+    (
+        value
+            .get("language")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        value
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        value
+            .get("symbolName")
+            .or_else(|| value.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        value
+            .get("container")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        value
+            .pointer("/range/start/line")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+    )
+}
+
+fn is_precise_code_result(value: &Value) -> bool {
+    value.get("producer").and_then(Value::as_str) == Some("scip")
+        || value.get("reliability").and_then(Value::as_str) == Some("precise_fact")
+}
+
+fn is_parser_code_result(value: &Value) -> bool {
+    value.get("producer").and_then(Value::as_str) == Some("tree_sitter_parser")
+        || value.get("reliability").and_then(Value::as_str) == Some("parser_fact")
+}
+
+fn same_precise_parser_definition(left: &Value, right: &Value) -> bool {
+    if !(is_precise_code_result(left) && is_parser_code_result(right)
+        || is_parser_code_result(left) && is_precise_code_result(right))
+    {
+        return false;
+    }
+    if !same_string_field(left, right, "language") || !same_string_field(left, right, "path") {
+        return false;
+    }
+    if code_result_display_name(left) != code_result_display_name(right) {
+        return false;
+    }
+    if !containers_compatible_for_dedup(left, right) {
+        return false;
+    }
+    line_ranges_overlap(left, right)
+}
+
+fn same_string_field(left: &Value, right: &Value, field: &str) -> bool {
+    match (
+        left.get(field).and_then(Value::as_str),
+        right.get(field).and_then(Value::as_str),
+    ) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn code_result_display_name(value: &Value) -> &str {
+    value
+        .get("symbolName")
+        .or_else(|| value.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+}
+
+fn containers_compatible_for_dedup(left: &Value, right: &Value) -> bool {
+    let left = left.get("container").and_then(Value::as_str).unwrap_or("");
+    let right = right.get("container").and_then(Value::as_str).unwrap_or("");
+    left.is_empty() || right.is_empty() || left == right
+}
+
+fn line_ranges_overlap(left: &Value, right: &Value) -> bool {
+    let Some((left_start, left_end)) = result_line_range(left) else {
+        return false;
+    };
+    let Some((right_start, right_end)) = result_line_range(right) else {
+        return false;
+    };
+    left_start <= right_end && right_start <= left_end
+}
+
+fn result_line_range(value: &Value) -> Option<(u64, u64)> {
+    let start = value.pointer("/range/start/line").and_then(Value::as_u64)?;
+    let end = value
+        .pointer("/range/end/line")
+        .and_then(Value::as_u64)
+        .unwrap_or(start);
+    Some((start.min(end), start.max(end)))
 }
 
 fn page_results_vec(

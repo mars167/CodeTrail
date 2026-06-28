@@ -166,6 +166,7 @@ flowchart LR
 
 - `exact=true` 只允许出现在 `source_fact` 或 `precise_fact`。
 - `parser_fact` 可以是确定性语法事实，但不能代表 precise semantic reference resolution。
+- `symbols/defs` 可以在 fresh SCIP 结果之外合并 parser supplement，以补齐明显语法定义；混合结果页的顶层 reliability 会降级为 `parser_fact`，单条结果仍保留各自的 reliability。
 - `refs` 没有 fresh SCIP occurrence 时不得伪装为语义引用，也不得自动把文本匹配标成 reference。
 - `calls`、`callers` 和 `call-hierarchy` 即使来自 Java semantic index 或图索引，也必须标为候选。
 - 开发者修改代码前仍应通过宿主编辑器或 Agent read 工具读取关键结果的精确范围。

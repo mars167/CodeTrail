@@ -290,6 +290,10 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 if has_results(&precise.results) {
                     let mut results = precise.results;
                     let mut index = precise.index;
+                    let mut warnings = scope_warnings.clone();
+                    let (parser_results, parser_warnings) =
+                        syntax::symbols(&workspace, &scan_opts, query)?;
+                    search::merge_code_result_supplement(&mut results, parser_results);
                     if let Some(config) = config_index::symbols(&workspace, &scan_opts, query)? {
                         append_results(&mut results, config.results);
                         append_config_index(&mut index, config.index);
@@ -306,6 +310,14 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                         query,
                         SymbolMatchMode::Contains,
                     )?;
+                    let page_has_parser = search::results_contain_parser_fact(&page.results);
+                    if page_has_parser {
+                        warnings = merge_warnings(parser_warnings, warnings);
+                        warnings.push(
+                            "parser_symbol_supplement: merged parser symbol candidates because SCIP symbols may be incomplete"
+                                .to_string(),
+                        );
+                    }
                     let response = code_context::enrich_response(
                         &workspace,
                         &scan_opts,
@@ -321,11 +333,15 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                                     &scan_opts,
                                 ),
                                 &workspace.snapshot_id,
-                                output::precise_fact(),
+                                if page_has_parser {
+                                    output::parser_fact()
+                                } else {
+                                    output::precise_fact()
+                                },
                                 output::IndexedResponseParts::new(
                                     index,
                                     page.results.clone(),
-                                    scope_warnings.clone(),
+                                    warnings,
                                 ),
                             ),
                             page.truncated,
@@ -446,6 +462,10 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 if has_results(&precise.results) {
                     let mut results = precise.results;
                     let mut index = precise.index;
+                    let mut warnings = scope_warnings.clone();
+                    let (parser_results, parser_warnings) =
+                        syntax::defs(&workspace, &scan_opts, identifier)?;
+                    search::merge_code_result_supplement(&mut results, parser_results);
                     if let Some(config) = config_index::defs(&workspace, &scan_opts, identifier)? {
                         append_results(&mut results, config.results);
                         append_config_index(&mut index, config.index);
@@ -456,6 +476,14 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                         &scan_opts,
                         SymbolMatchMode::Exact,
                     );
+                    let results_have_parser = search::results_contain_parser_fact(&results);
+                    if results_have_parser {
+                        warnings = merge_warnings(parser_warnings, warnings);
+                        warnings.push(
+                            "parser_def_supplement: merged parser definition candidates because SCIP definitions may be incomplete"
+                                .to_string(),
+                        );
+                    }
                     let response = code_context::enrich_response(
                         &workspace,
                         &scan_opts,
@@ -470,12 +498,12 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                                 &scan_opts,
                             ),
                             &workspace.snapshot_id,
-                            output::precise_fact(),
-                            output::IndexedResponseParts::new(
-                                index,
-                                results,
-                                scope_warnings.clone(),
-                            ),
+                            if results_have_parser {
+                                output::parser_fact()
+                            } else {
+                                output::precise_fact()
+                            },
+                            output::IndexedResponseParts::new(index, results, warnings),
                         ),
                         &code_options,
                     )?;

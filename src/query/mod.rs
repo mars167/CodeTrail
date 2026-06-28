@@ -386,6 +386,10 @@ impl QueryService {
             if has_results(&precise.results) {
                 let mut results = precise.results;
                 let mut index = precise.index;
+                let mut warnings = Vec::new();
+                let (parser_results, parser_warnings) =
+                    syntax::defs(&self.workspace, &scan, identifier)?;
+                search::merge_code_result_supplement(&mut results, parser_results);
                 if let Some(config) = config_index::defs(&self.workspace, &scan, identifier)? {
                     append_results(&mut results, config.results);
                     append_config_index(&mut index, config.index);
@@ -396,6 +400,14 @@ impl QueryService {
                     &scan,
                     SymbolMatchMode::Exact,
                 );
+                let results_have_parser = search::results_contain_parser_fact(&results);
+                if results_have_parser {
+                    warnings = merge_warnings(parser_warnings, warnings);
+                    warnings.push(
+                        "parser_def_supplement: merged parser definition candidates because SCIP definitions may be incomplete"
+                            .to_string(),
+                    );
+                }
                 let response = output::response_with_index(
                     "defs",
                     "defs",
@@ -407,8 +419,12 @@ impl QueryService {
                         &scan,
                     ),
                     &self.workspace.snapshot_id,
-                    output::precise_fact(),
-                    output::IndexedResponseParts::new(index, results, Vec::new()),
+                    if results_have_parser {
+                        output::parser_fact()
+                    } else {
+                        output::precise_fact()
+                    },
+                    output::IndexedResponseParts::new(index, results, warnings),
                 );
                 let response =
                     code_context::enrich_response(&self.workspace, &scan, response, code_options)?;
@@ -556,6 +572,10 @@ impl QueryService {
             if has_results(&precise.results) {
                 let mut results = precise.results;
                 let mut index = precise.index;
+                let mut warnings = Vec::new();
+                let (parser_results, parser_warnings) =
+                    syntax::symbols(&self.workspace, &scan, query)?;
+                search::merge_code_result_supplement(&mut results, parser_results);
                 if let Some(config) = config_index::symbols(&self.workspace, &scan, query)? {
                     append_results(&mut results, config.results);
                     append_config_index(&mut index, config.index);
@@ -572,6 +592,14 @@ impl QueryService {
                     query,
                     SymbolMatchMode::Contains,
                 )?;
+                let page_has_parser = search::results_contain_parser_fact(&page.results);
+                if page_has_parser {
+                    warnings = merge_warnings(parser_warnings, warnings);
+                    warnings.push(
+                        "parser_symbol_supplement: merged parser symbol candidates because SCIP symbols may be incomplete"
+                            .to_string(),
+                    );
+                }
                 let response = output::response_with_index(
                     "symbols",
                     "symbols",
@@ -583,8 +611,12 @@ impl QueryService {
                         &scan,
                     ),
                     &self.workspace.snapshot_id,
-                    output::precise_fact(),
-                    output::IndexedResponseParts::new(index, page.results.clone(), Vec::new()),
+                    if page_has_parser {
+                        output::parser_fact()
+                    } else {
+                        output::precise_fact()
+                    },
+                    output::IndexedResponseParts::new(index, page.results.clone(), warnings),
                 );
                 let response =
                     output::with_page_meta(response, page.truncated, page.next_cursor, page.facets);
