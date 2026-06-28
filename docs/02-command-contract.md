@@ -38,7 +38,9 @@ flowchart TB
 codetrail --dir src/main --ext java --file-pattern '*Service.java' defs UserService
 ```
 
-- `--dir <dir>` 可重复，workspace-relative，多个目录为 OR。
+- `--path <workspace>` / `-p <workspace>` 选择 workspace root，是全局参数，可放在子命令前后。
+- `--output text|json|jsonl|compact-json` 选择响应格式，是全局参数，可放在子命令前后；`output` 不表示文件写入目标。
+- `--dir <dir>` 可重复，始终按 workspace root 解析，多个目录为 OR。规范输入是 workspace-relative；为兼容旧 agent 调用，workspace 内的绝对目录会归一化为 workspace-relative；workspace 外、逃逸、缺失或非目录路径会被拒绝。不要把 workspace 绝对路径传给 `--dir`。
 - `--ext <ext>` 可重复，接受 `java` 或 `.java`，按路径后缀字符串匹配。
 - `--file-pattern <pattern>` 可重复，多个 pattern 为 OR。
 - `--file-mode literal|regex|wildcard|glob` 控制 `--file-pattern`，默认 `wildcard`。
@@ -47,6 +49,8 @@ codetrail --dir src/main --ext java --file-pattern '*Service.java' defs UserServ
 - `--cursor <cursor>` 是不透明分页 token，只能用于相同 query scope 和 snapshot。
 
 `--changed`、`--save-query` 等 legacy 选项可能仍被旧命令使用，但不应成为语义索引前端的新依赖。
+
+命令自己的文件或目录目标不得复用全局参数名：例如 project-scope `skill install` 使用 `--project-root <DIR>`，`index pack` 使用 `--archive <ARCHIVE>`。
 
 ## 标识符输入
 
@@ -92,6 +96,7 @@ codetrail defs <identifier> --include-code [--code-context <lines>] [--code-max-
 - `index status` 返回索引 freshness、SCIP occurrence DB 状态、provider 状态和语言覆盖。
 - `index status --summary` 返回紧凑状态，适合脚本预检。
 - `index doctor` 面向语义索引前端，突出 precise index 是否 fresh/usable、provider 状态、语言覆盖和下一步动作。
+- 内部/测试用 remote snapshot 命令中，`index pack --archive <ARCHIVE>` 写出 `.tar.gz` 归档；`index unpack <ARCHIVE>` 读取该归档。命令 query 参数字段使用 `archive`，结果路径字段使用 `archivePath`，不使用 `output` 表示文件目标。
 
 Provider 缺失或超时时会记录内部诊断。`defs`/`symbols` 可以退到 parser；`refs` 不退到文本引用。
 

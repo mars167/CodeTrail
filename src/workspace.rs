@@ -95,6 +95,11 @@ impl ScanOptions {
             .filter(|value| !value.is_empty())
             .collect()
     }
+
+    pub fn with_normalized_dirs(mut self, workspace: &Workspace) -> Result<Self> {
+        self.dirs = workspace.normalize_dir_scopes(&self.dirs)?;
+        Ok(self)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -221,6 +226,45 @@ impl Workspace {
 
     pub fn abs_path(&self, rel: &str) -> PathBuf {
         self.root.join(rel)
+    }
+
+    pub fn normalize_dir_scopes(&self, dirs: &[String]) -> Result<Vec<String>> {
+        dirs.iter()
+            .map(|dir| self.normalize_dir_scope(dir))
+            .collect()
+    }
+
+    fn normalize_dir_scope(&self, dir: &str) -> Result<String> {
+        let trimmed = dir.trim();
+        if trimmed.is_empty() || trimmed == "." {
+            return Ok(".".to_string());
+        }
+
+        let native = crate::path_compat::native_path(Path::new(trimmed));
+        let candidate = if native.is_absolute() {
+            native
+        } else {
+            self.root.join(native)
+        };
+
+        let canonical = dunce::canonicalize(&candidate).with_context(|| {
+            format!("failed to resolve scoped directory {}", candidate.display())
+        })?;
+        if !canonical.starts_with(&self.root) {
+            return Err(anyhow!(
+                "directory scope is outside workspace root: {trimmed}"
+            ));
+        }
+        if !canonical.is_dir() {
+            return Err(anyhow!("directory scope is not a directory: {trimmed}"));
+        }
+
+        let rel = self.rel_path(&canonical);
+        if rel.is_empty() {
+            Ok(".".to_string())
+        } else {
+            Ok(rel)
+        }
     }
 
     pub fn scan_catalog(&self, opts: &ScanOptions) -> Result<Vec<FileCatalogRecord>> {
@@ -496,7 +540,7 @@ impl Workspace {
         }
         let mut roots = Vec::new();
         for dir in &opts.dirs {
-            let rel = dir.trim().trim_start_matches('/');
+            let rel = dir.trim();
             let candidate = self.root.join(rel);
             let canonical = dunce::canonicalize(&candidate).with_context(|| {
                 format!("failed to resolve scoped directory {}", candidate.display())

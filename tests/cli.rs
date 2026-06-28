@@ -1,6 +1,7 @@
 use std::{collections::BTreeSet, fs};
 
 use assert_cmd::Command;
+use clap::CommandFactory;
 use serde_json::json;
 use serde_json::Value;
 use tempfile::tempdir;
@@ -233,6 +234,34 @@ fn assert_no_public_reliability_labels(json: &Value) {
             "public output must not include reliability label {label}: {text}"
         );
     }
+}
+
+fn collect_local_reserved_args(command: &clap::Command, path: &str, found: &mut Vec<String>) {
+    for arg in command.get_arguments() {
+        let Some(long) = arg.get_long() else {
+            continue;
+        };
+        if ["path", "output", "dir"].contains(&long) && !arg.is_global_set() {
+            found.push(format!("{path} --{long}"));
+        }
+    }
+
+    for subcommand in command.get_subcommands() {
+        let child_path = format!("{path} {}", subcommand.get_name());
+        collect_local_reserved_args(subcommand, &child_path, found);
+    }
+}
+
+#[test]
+fn reserved_scope_and_output_args_are_global_only() {
+    let command = codetrail::cli::Cli::command();
+    let mut found = Vec::new();
+    collect_local_reserved_args(&command, command.get_name(), &mut found);
+
+    assert!(
+        found.is_empty(),
+        "reserved CLI args must not be redefined locally: {found:?}"
+    );
 }
 
 #[test]
@@ -1298,6 +1327,131 @@ fn lang_scope_filters_symbols() {
 
     assert_eq!(json["query"]["scope"]["lang"], json!(["rust"]));
     assert_eq!(paths, vec!["src/lib.rs"]);
+}
+
+#[test]
+fn workspace_path_is_accepted_after_semantic_subcommand() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/lib.rs"), "fn alpha() {}\n").unwrap();
+
+    for path_flag in ["--path", "-p"] {
+        let output = raw_codetrail()
+            .env("CODETRAIL_INTERNAL_JSON", "1")
+            .args(["symbols", "alpha", path_flag])
+            .arg(dir.path())
+            .args(["--output", "json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let json: Value = serde_json::from_slice(&output).unwrap();
+
+        assert_eq!(json["results"][0]["path"], "src/lib.rs");
+    }
+}
+
+#[test]
+fn dir_scope_is_normalized_to_workspace_relative_scope() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::create_dir_all(dir.path().join("docs")).unwrap();
+    fs::write(dir.path().join("src/lib.rs"), "fn alpha() {}\n").unwrap();
+    fs::write(dir.path().join("docs/lib.rs"), "fn alpha() {}\n").unwrap();
+
+    let scoped_dirs = [
+        "src".to_string(),
+        "./src".to_string(),
+        dir.path().join("src").to_string_lossy().into_owned(),
+    ];
+    for scoped_dir in scoped_dirs {
+        let output = codetrail()
+            .arg("--path")
+            .arg(dir.path())
+            .args(["symbols", "alpha", "--dir"])
+            .arg(scoped_dir)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let json: Value = serde_json::from_slice(&output).unwrap();
+
+        assert_eq!(json["query"]["scope"]["dirs"], json!(["src"]));
+        assert_eq!(json["results"][0]["path"], "src/lib.rs");
+    }
+}
+
+#[test]
+fn absolute_dir_outside_workspace_is_rejected() {
+    let dir = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/lib.rs"), "fn alpha() {}\n").unwrap();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["symbols", "alpha", "--dir"])
+        .arg(outside.path())
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let message = json["error"]["message"].as_str().unwrap();
+
+    assert!(message.contains("directory scope is outside workspace root"));
+}
+
+#[test]
+fn relative_dir_escape_is_rejected() {
+    let dir = tempdir().unwrap();
+    let outside = tempfile::tempdir_in(dir.path().parent().unwrap()).unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/lib.rs"), "fn alpha() {}\n").unwrap();
+    let outside_rel = format!(
+        "../{}",
+        outside.path().file_name().unwrap().to_string_lossy()
+    );
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["symbols", "alpha", "--dir"])
+        .arg(outside_rel)
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let message = json["error"]["message"].as_str().unwrap();
+
+    assert!(message.contains("directory scope is outside workspace root"));
+}
+
+#[test]
+fn missing_dir_scope_is_rejected() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/lib.rs"), "fn alpha() {}\n").unwrap();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["symbols", "alpha", "--dir", "missing"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let message = json["error"]["message"].as_str().unwrap();
+
+    assert!(message.contains("failed to resolve scoped directory"));
 }
 
 #[test]
@@ -4053,7 +4207,7 @@ fn skill_install_supports_project_scope_and_dry_run() {
             "codex",
             "--scope",
             "project",
-            "--path",
+            "--project-root",
             project.path().to_str().unwrap(),
             "--dry-run",
         ])
@@ -4086,7 +4240,7 @@ fn skill_install_supports_project_scope_and_dry_run() {
             "codex",
             "--scope",
             "project",
-            "--path",
+            "--project-root",
             project.path().to_str().unwrap(),
             "--force",
         ])
@@ -4100,6 +4254,35 @@ fn skill_install_supports_project_scope_and_dry_run() {
         .path()
         .join(".codex/agents/codetrail-evidence.toml")
         .exists());
+}
+
+#[test]
+fn skill_install_project_root_requires_project_scope() {
+    let dir = tempdir().unwrap();
+    let project = tempdir().unwrap();
+
+    let output = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .arg("--output")
+        .arg("json")
+        .args([
+            "skill",
+            "install",
+            "codex",
+            "--project-root",
+            project.path().to_str().unwrap(),
+            "--dry-run",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let message = json["error"]["message"].as_str().unwrap();
+
+    assert!(message.contains("--project-root can only be used with --scope project"));
 }
 
 #[test]
@@ -7805,11 +7988,13 @@ fn index_pack_produces_valid_archive_with_checksums() {
 
     // Pack
     let archive_path = dir.path().join("output.tar.gz");
-    let output = codetrail()
+    let output = raw_codetrail()
+        .env("CODETRAIL_INTERNAL_JSON", "1")
         .arg("--path")
         .arg(dir.path())
-        .args(["index", "pack", "--output"])
+        .args(["index", "pack", "--archive"])
         .arg(&archive_path)
+        .args(["--output", "json"])
         .assert()
         .success()
         .get_output()
@@ -7821,6 +8006,12 @@ fn index_pack_produces_valid_archive_with_checksums() {
     assert_eq!(packed["packed"], true);
     assert!(packed["archiveSize"].as_u64().unwrap() > 0);
     assert_eq!(packed["source"], "packed_remote");
+    let archive_path_text = archive_path.to_string_lossy();
+    assert_eq!(
+        packed["archivePath"].as_str().unwrap(),
+        archive_path_text.as_ref()
+    );
+    assert!(packed.get("output").is_none());
 
     // Verify archive exists
     assert!(archive_path.exists());
@@ -7829,6 +8020,28 @@ fn index_pack_produces_valid_archive_with_checksums() {
     // Verify it's a valid gzip file (magic bytes 1f 8b)
     let archive_bytes = fs::read(&archive_path).unwrap();
     assert_eq!(&archive_bytes[0..2], &[0x1f, 0x8b]);
+}
+
+#[test]
+fn index_pack_rejects_old_output_archive_argument() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+
+    let stdout = raw_codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "pack", "--output"])
+        .arg(dir.path().join("legacy.tar.gz"))
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(stdout).unwrap();
+
+    assert!(stdout.contains("invalid value"));
+    assert!(stdout.contains("--output <OUTPUT>"));
 }
 
 #[test]
@@ -7853,7 +8066,7 @@ fn index_unpack_extracts_to_remote_dir_does_not_touch_working_or_staged() {
     codetrail()
         .arg("--path")
         .arg(dir.path())
-        .args(["index", "pack", "--output"])
+        .args(["index", "pack", "--archive"])
         .arg(&archive_path)
         .assert()
         .success();
@@ -7936,7 +8149,7 @@ fn remote_snapshot_never_overrides_local_when_local_is_fresh() {
     codetrail()
         .arg("--path")
         .arg(dir.path())
-        .args(["index", "pack", "--output"])
+        .args(["index", "pack", "--archive"])
         .arg(&archive_path)
         .assert()
         .success();
@@ -7997,7 +8210,7 @@ fn remote_query_is_used_when_local_is_clean_missing() {
     codetrail()
         .arg("--path")
         .arg(dir.path())
-        .args(["index", "pack", "--output"])
+        .args(["index", "pack", "--archive"])
         .arg(&archive_path)
         .assert()
         .success();
@@ -8065,7 +8278,7 @@ fn remote_fallback_respects_packed_scan_scope() {
     codetrail()
         .arg("--path")
         .arg(dir.path())
-        .args(["index", "pack", "--output"])
+        .args(["index", "pack", "--archive"])
         .arg(&archive_path)
         .assert()
         .success();
@@ -8139,7 +8352,7 @@ fn remote_mismatch_labels_results_as_unverified() {
     codetrail()
         .arg("--path")
         .arg(dir.path())
-        .args(["index", "pack", "--output"])
+        .args(["index", "pack", "--archive"])
         .arg(&archive_path)
         .assert()
         .success();
@@ -8235,7 +8448,7 @@ fn legacy_parquet_remote_snapshot_is_unverified_without_error() {
     codetrail()
         .arg("--path")
         .arg(dir.path())
-        .args(["index", "pack", "--output"])
+        .args(["index", "pack", "--archive"])
         .arg(&archive_path)
         .assert()
         .success();

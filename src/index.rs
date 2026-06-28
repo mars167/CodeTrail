@@ -1557,7 +1557,7 @@ pub fn pack(workspace: &Workspace, output_path: &str) -> Result<Value> {
     // Create .tar.gz
     let archive_data = build_tar_gz(&entries)?;
 
-    // Write to output
+    // Write archive bytes.
     if output_path == "-" || output_path.is_empty() {
         let stdout = std::io::stdout();
         let mut handle = stdout.lock();
@@ -1576,7 +1576,7 @@ pub fn pack(workspace: &Workspace, output_path: &str) -> Result<Value> {
         "entryCount": entries.len(),
         "snapshot_id": manifest.snapshot_id,
         "source": "packed_remote",
-        "output": output_path
+        "archivePath": output_path
     }]))
 }
 

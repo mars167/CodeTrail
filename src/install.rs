@@ -44,7 +44,7 @@ impl IndexProviderInstallReporter for NoopIndexProviderInstallReporter {}
 pub struct SkillInstallOptions {
     pub target: String,
     pub scope: SkillScope,
-    pub path: Option<String>,
+    pub project_root: Option<String>,
     pub dry_run: bool,
     pub force: bool,
 }
@@ -361,7 +361,7 @@ fn shell_command(command: &str) -> Command {
 fn skill_base_dir(workspace: &Workspace, options: &SkillInstallOptions) -> Result<PathBuf> {
     match options.scope {
         SkillScope::Project => Ok(options
-            .path
+            .project_root
             .as_deref()
             .map(PathBuf::from)
             .unwrap_or_else(|| workspace.root.clone())),
