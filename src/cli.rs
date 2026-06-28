@@ -12,13 +12,13 @@ use crate::{
 #[command(version)]
 #[command(about = "CodeTrail: semantic index frontend for symbols, refs, and call chains")]
 pub struct Cli {
-    #[arg(short, long, default_value = ".")]
+    #[arg(short, long, global = true, default_value = ".")]
     pub path: String,
 
     #[arg(short = 'v', long, global = true, action = ArgAction::Count)]
     pub verbose: u8,
 
-    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    #[arg(long, global = true, value_enum, default_value_t = OutputFormat::Text)]
     pub output: OutputFormat,
 
     #[arg(long, global = true)]
@@ -364,12 +364,13 @@ pub enum IndexCommand {
     Clean,
     #[command(hide = true)]
     Pack {
-        #[arg(long, default_value = "output.tar.gz")]
-        output: String,
+        #[arg(long, value_name = "ARCHIVE", default_value = "output.tar.gz")]
+        archive: String,
     },
     #[command(hide = true)]
     Unpack {
-        path: String,
+        #[arg(value_name = "ARCHIVE")]
+        archive: String,
     },
 }
 
@@ -392,8 +393,8 @@ pub enum SkillCommand {
         target: Option<String>,
         #[arg(long, value_enum, default_value_t = SkillScope::User)]
         scope: SkillScope,
-        #[arg(long)]
-        path: Option<String>,
+        #[arg(long, value_name = "DIR")]
+        project_root: Option<String>,
         #[arg(long)]
         dry_run: bool,
         #[arg(long)]

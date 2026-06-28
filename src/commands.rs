@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use crate::{
     cli::{
         Cli, Command, ExploreCommand, HooksCommand, IndexCommand, IndexProviderCommand,
-        OutputFormat, QueryCommand, SkillCommand,
+        OutputFormat, QueryCommand, SkillCommand, SkillScope,
     },
     code_context::{self, CodeContextOptions},
     completions, config_index, graph, index,
@@ -29,6 +29,12 @@ pub fn run(cli: Cli) -> AppResult<i32> {
     verbose.log(format!("command={}", command_name(&cli.command)));
     verbose.log(format!("path={}", cli.path));
 
+    if let Command::Completions { shell } = &cli.command {
+        print!("{}", completions::script(shell));
+        return Ok(0);
+    }
+
+    let workspace = Workspace::discover(&cli.path)?;
     let scan_opts = ScanOptions {
         dirs: cli.dir.clone(),
         extensions: cli.ext.clone(),
@@ -46,15 +52,10 @@ pub fn run(cli: Cli) -> AppResult<i32> {
         allow_broad: cli.allow_broad,
         limit: cli.limit,
         ..ScanOptions::default()
-    };
+    }
+    .with_normalized_dirs(&workspace)?;
     let mut exit_code = 0;
 
-    if let Command::Completions { shell } = &cli.command {
-        print!("{}", completions::script(shell));
-        return Ok(0);
-    }
-
-    let workspace = Workspace::discover(&cli.path)?;
     verbose.log(format!(
         "workspace root={} snapshot_id={} dirty={} staged={} worktree={}",
         workspace.root.display(),
@@ -1090,32 +1091,32 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                 json!([index::clean(&workspace)?]),
                 Vec::new(),
             ),
-            IndexCommand::Pack { output } => {
+            IndexCommand::Pack { archive } => {
                 let value =
                     with_progress(&cli.output, "Packing index", "Index pack complete", || {
-                        index::pack(&workspace, output)
+                        index::pack(&workspace, archive)
                     })?;
                 output::response(
                     "index pack",
                     "index pack",
-                    json!({ "output": output }),
+                    json!({ "archive": archive }),
                     &workspace.snapshot_id,
                     output::freshness(),
                     value,
                     Vec::new(),
                 )
             }
-            IndexCommand::Unpack { path } => {
+            IndexCommand::Unpack { archive } => {
                 let value = with_progress(
                     &cli.output,
                     "Unpacking index",
                     "Index unpack complete",
-                    || index::unpack(&workspace, path),
+                    || index::unpack(&workspace, archive),
                 )?;
                 output::response(
                     "index unpack",
                     "index unpack",
-                    json!({ "path": path }),
+                    json!({ "archive": archive }),
                     &workspace.snapshot_id,
                     output::freshness(),
                     value,
@@ -1166,15 +1167,20 @@ pub fn run(cli: Cli) -> AppResult<i32> {
             SkillCommand::Install {
                 target,
                 scope,
-                path,
+                project_root,
                 dry_run,
                 force,
             } => {
+                if project_root.is_some() && *scope != SkillScope::Project {
+                    return Err(anyhow::anyhow!(
+                        "--project-root can only be used with --scope project"
+                    ));
+                }
                 let target = resolve_skill_install_target(target.as_deref(), &cli.output)?;
                 output::response(
                     "skill install",
                     "skill install",
-                    json!({ "target": &target, "scope": format!("{scope:?}").to_lowercase(), "path": path, "dryRun": dry_run, "force": force }),
+                    json!({ "target": &target, "scope": format!("{scope:?}").to_lowercase(), "projectRoot": project_root, "dryRun": dry_run, "force": force }),
                     &workspace.snapshot_id,
                     output::freshness(),
                     crate::install::install_skill(
@@ -1182,7 +1188,7 @@ pub fn run(cli: Cli) -> AppResult<i32> {
                         &SkillInstallOptions {
                             target,
                             scope: *scope,
-                            path: path.clone(),
+                            project_root: project_root.clone(),
                             dry_run: *dry_run,
                             force: *force,
                         },

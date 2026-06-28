@@ -9,8 +9,8 @@ Use CodeTrail when you need structured navigation, not for broad repository
 exploration. Use normal tools (`rg`, `fd`, host read/editor, `git`) for text,
 paths, file reads, and Git workflows.
 
-The CLI defaults to compact text output. Add `--output json` only when another
-tool must parse the response.
+The CLI defaults to compact text output. Add `--output json` only when another tool must parse the response. Use global `--path <repo>` for roots outside cwd.
+Keep `--dir` workspace-relative (`.`, `src`, `crates/core`); absolute `--dir` is fallback only. For index archives, use `index pack --archive <path>`.
 
 ```bash
 codetrail routes <pattern> --framework <name> --method GET --lang <lang> --dir <src-dir> --limit 20
