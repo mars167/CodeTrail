@@ -130,12 +130,26 @@ run_with_keepalive() {
   local interval="${KEEPALIVE_INTERVAL:-60}"
   local start=$SECONDS
   local status=0
+  local log_file
+  local printed_bytes=0
 
-  "$@" &
+  log_file="$(mktemp "${TMPDIR:-/tmp}/quality-gate.XXXXXX.log")"
+
+  flush_keepalive_log() {
+    local current_size
+    current_size="$(wc -c < "$log_file")"
+    if (( current_size > printed_bytes )); then
+      tail -c "+$((printed_bytes + 1))" "$log_file"
+      printed_bytes=$current_size
+    fi
+  }
+
+  "$@" >"$log_file" 2>&1 &
   local cmd_pid=$!
 
   while kill -0 "$cmd_pid" >/dev/null 2>&1; do
     sleep "$interval"
+    flush_keepalive_log
     if kill -0 "$cmd_pid" >/dev/null 2>&1; then
       local elapsed=$((SECONDS - start))
       printf '[keepalive] %s still running (%ss elapsed)\n' "$label" "$elapsed"
@@ -143,6 +157,8 @@ run_with_keepalive() {
   done
 
   wait "$cmd_pid" || status=$?
+  flush_keepalive_log
+  rm -f "$log_file"
   return "$status"
 }
 
