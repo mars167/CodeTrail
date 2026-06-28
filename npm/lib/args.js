@@ -17,7 +17,13 @@ function isJsonOutput(args) {
 function commandName(args) {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--output" || arg === "--path" || arg === "--include" || arg === "--exclude") {
+    if (
+      arg === "--output" ||
+      arg === "--path" ||
+      arg === "--project-root" ||
+      arg === "--include" ||
+      arg === "--exclude"
+    ) {
       index += 1;
       continue;
     }

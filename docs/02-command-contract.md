@@ -21,7 +21,7 @@ flowchart TB
 
 | 族 | 命令 | 契约 |
 | --- | --- | --- |
-| 符号与定义 | `symbols`, `defs` | 优先 fresh SCIP；缺失时可使用 tree-sitter parser fallback，可靠性为 `parser_fact` |
+| 符号与定义 | `symbols`, `defs` | 优先 fresh SCIP；可合并 tree-sitter parser supplement 或在缺失 SCIP 时 parser fallback，parser 行可靠性为 `parser_fact` |
 | 精确引用 | `refs` | 只返回 fresh SCIP occurrence 引用；没有可用 SCIP 时返回空结果，不做文本 fallback |
 | 调用关系 | `calls`, `callers`, `call-hierarchy` | 返回调用候选或 call hierarchy；结果是导航证据，可能不完整，编辑前必须复核调用点 |
 | 索引 | `index build`, `index status`, `index doctor` | 构建、查看和诊断语义索引/SCIP provider 状态 |
@@ -73,7 +73,7 @@ codetrail call-hierarchy <identifier> [--direction incoming|outgoing|both] [--de
 如果字符串包含空格、括号或 shell 特殊字符，调用方必须按普通 shell 规则加引号；以 `-` 开头的值应放在 `--` 之后。
 
 - `refs <identifier>` 查 fresh SCIP occurrence。它匹配 exact display name、SCIP symbol、symbol key，以及不带签名的 bare method name。没有可用 SCIP 时返回空结果；调用方如果只需要文本出现位置，应使用 `rg`。
-- `defs <identifier>` 和 `symbols <query>` 优先 SCIP；缺失时可返回 parser fallback 的定义/符号事实。
+- `defs <identifier>` 和 `symbols <query>` 优先 SCIP；即使 SCIP 非空，也可合并 parser supplement 补齐明显语法定义；缺失 SCIP 时可返回 parser fallback 的定义/符号事实。
 - `calls <caller-name>` 查询某个函数或方法体内发出的调用。
 - `callers <callee-name>` 查询调用某个目标的调用点。
 - `call-hierarchy <identifier>` 查询 incomingCalls/outgoingCalls 结构化调用层级，默认 `--depth 2`。Java 优先使用 fresh Java semantic index；其他语言和 Java fallback 使用 fresh graph index。`--include-overrides` 只在当前 semantic index 支持 override/implementation expansion 时生效。缺失时返回空结果和 freshness 说明。公开层级只返回已解析的 callable 节点并显示签名；方法、函数和构造器会显示，没解析到声明位置的裸调用点不作为 hierarchy function 返回。Text 输出采用 `Class.method(args)  (package)` 或语言原始函数签名，root 用 `def@path:line` 标明声明位置，子调用按调用点文件分块并用 `call@line` 标明调用位置。

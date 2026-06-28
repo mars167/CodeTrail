@@ -21,14 +21,25 @@ function optionValue(args, name, fallback) {
   return index >= 0 && args[index + 1] ? args[index + 1] : fallback;
 }
 
+function hasOption(args, name) {
+  return args.includes(name) || args.some((arg) => arg.startsWith(`${name}=`));
+}
+
 function installOptions(args) {
   const scope = optionValue(args, "--scope", "user");
   if (!["user", "project"].includes(scope)) {
     throw new Error("scope must be user or project");
   }
+  if (hasOption(args, "--path")) {
+    throw new Error("--path is reserved for workspace roots; use --project-root for project-scope installs");
+  }
+  const projectRoot = optionValue(args, "--project-root", null);
+  if (projectRoot && scope !== "project") {
+    throw new Error("--project-root can only be used with --scope project");
+  }
   return {
     scope,
-    project: optionValue(args, "--path", process.cwd()),
+    project: projectRoot || process.cwd(),
     dryRun: args.includes("--dry-run"),
     force: args.includes("--force")
   };
@@ -51,7 +62,7 @@ function handleInstallCommand(kind, args) {
         : null;
 
   if (!fn || !target) {
-    throw new Error(`usage: codetrail ${kind} list|add|remove|doctor <target> [--scope user|project] [--path <path>] [--dry-run] [--force]`);
+    throw new Error(`usage: codetrail ${kind} list|add|remove|doctor <target> [--scope user|project] [--project-root <path>] [--dry-run] [--force]`);
   }
 
   const value = fn(target, installOptions(args));
