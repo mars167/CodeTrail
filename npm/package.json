@@ -1,6 +1,6 @@
 {
   "name": "@mars167/codetrail",
-  "version": "0.1.7-beta.6",
+  "version": "0.1.7",
   "description": "CodeTrail: deterministic-first code search with reliability-labeled evidence",
   "license": "MIT",
   "repository": {
@@ -25,12 +25,12 @@
     "smoke": "node ../scripts/npm/smoke.js"
   },
   "optionalDependencies": {
-    "@mars167/core-darwin-arm64": "0.1.7-beta.6",
-    "@mars167/core-darwin-x64": "0.1.7-beta.6",
-    "@mars167/core-linux-arm64": "0.1.7-beta.6",
-    "@mars167/core-linux-x64": "0.1.7-beta.6",
-    "@mars167/core-win32-arm64": "0.1.7-beta.6",
-    "@mars167/core-win32-x64": "0.1.7-beta.6"
+    "@mars167/core-darwin-arm64": "0.1.7",
+    "@mars167/core-darwin-x64": "0.1.7",
+    "@mars167/core-linux-arm64": "0.1.7",
+    "@mars167/core-linux-x64": "0.1.7",
+    "@mars167/core-win32-arm64": "0.1.7",
+    "@mars167/core-win32-x64": "0.1.7"
   },
   "engines": {
     "node": ">=20"
