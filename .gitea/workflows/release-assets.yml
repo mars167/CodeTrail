@@ -100,9 +100,12 @@ jobs:
             download_headers+=(-H "Authorization: Bearer ${GH_READ_TOKEN}")
           fi
 
+          # GitHub release builds routinely take 40-50 minutes before all assets are available.
+          max_attempts=180
+          sleep_seconds=20
           release_json="$(mktemp)"
           ready=0
-          for attempt in $(seq 1 90); do
+          for attempt in $(seq 1 "$max_attempts"); do
             if status="$(curl -sS "${curl_common[@]}" -o "$release_json" -w '%{http_code}' "${api_headers[@]}" "https://api.github.com/repos/${GITHUB_RELEASE_REPO}/releases/tags/${RELEASE_TAG}")"; then
               if [ "$status" = "200" ]; then
                 ready=1
@@ -121,8 +124,8 @@ jobs:
               break
             fi
 
-            echo "Waiting for GitHub release assets for ${RELEASE_TAG} (attempt ${attempt}/90, status ${status})."
-            sleep 20
+            echo "Waiting for GitHub release assets for ${RELEASE_TAG} (attempt ${attempt}/${max_attempts}, status ${status})."
+            sleep "$sleep_seconds"
           done
 
           if [ "$ready" -ne 1 ]; then
