@@ -10,10 +10,11 @@ const {
   defaultSelectedTargets,
   filterChoices,
   buildInstallSummary,
-  formatInstallResults
+  formatInstallResults,
+  maybeRunSkillInstallInteractive
 } = require("../lib/skill-install-ui");
 
-test("parses skill install with global and local path options", () => {
+test("parses skill install with global path and project-root options", () => {
   const parsed = parseSkillInstallArgs([
     "--path",
     "/repo",
@@ -21,7 +22,7 @@ test("parses skill install with global and local path options", () => {
     "install",
     "--scope",
     "project",
-    "--path",
+    "--project-root",
     "/override",
     "--dry-run"
   ]);
@@ -29,6 +30,7 @@ test("parses skill install with global and local path options", () => {
   assert.equal(parsed.matches, true);
   assert.equal(parsed.target, null);
   assert.equal(parsed.scope, "project");
+  assert.equal(parsed.projectRoot, "/override");
   assert.equal(parsed.project, "/override");
   assert.equal(parsed.dryRun, true);
 });
@@ -59,6 +61,15 @@ test("handles interactive install only for text tty with no target", () => {
   );
   assert.equal(shouldHandleInteractiveSkillInstall(["skill", "install"], pipe), false);
   assert.equal(shouldHandleInteractiveSkillInstall(["skill", "install", "--help"], tty), false);
+});
+
+test("project-root requires project scope for interactive skill install", async () => {
+  const tty = { stdin: { isTTY: true }, stdout: { isTTY: true } };
+  await assert.rejects(
+    () =>
+      maybeRunSkillInstallInteractive(["skill", "install", "--project-root", "/repo"], tty),
+    /--project-root can only be used with --scope project/
+  );
 });
 
 test("builds choices with destination hints and searchable labels", () => {

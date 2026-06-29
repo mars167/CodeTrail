@@ -65,7 +65,8 @@ flowchart TD
 
   Kind -->|defs / refs / symbols| Scip["SCIP occurrence store"]
   Scip -->|available and fresh| Precise["precise_fact"]
-  Scip -->|missing for defs/symbols| Fallback["tree-sitter parser_fact"]
+  Precise -->|defs/symbols supplement| Fallback["tree-sitter parser_fact"]
+  Scip -->|missing for defs/symbols| Fallback
   Scip -->|missing for refs| Reject["empty results + caveat"]
 
   Kind -->|calls / callers / call-hierarchy| JavaSem["Java semantic index"]
@@ -82,7 +83,7 @@ flowchart TD
 ```
 
 `refs` 是 precise-only：没有 fresh SCIP occurrence 时不做文本 fallback。`defs`
-和 `symbols` 可以使用 tree-sitter 作为语法事实。Java `calls`、`callers`
+和 `symbols` 可以在 fresh SCIP 结果外合并 tree-sitter supplement，也可以在缺少 SCIP 时使用 tree-sitter fallback；parser 结果仍只是语法事实。Java `calls`、`callers`
 和 `call-hierarchy` 优先使用 Rust-native Java semantic index，缺失时退到
 graph/parser；Go、Rust、TypeScript/JavaScript 和 Python 的 `call-hierarchy`
 使用 fresh graph index，把 SCIP/tree-sitter 结果投影为结构化层级。所有调用关系始终是候选关系。
@@ -110,7 +111,7 @@ flowchart LR
 `index build` 默认 best-effort 启动语义 provider。Go、Rust、Java/Kotlin、TypeScript/JavaScript 和 Ruby 优先使用 native SCIP provider（`scip-go`、`rust-analyzer scip .`、`scip-java index`、`scip-typescript index`、`scip-ruby .`）；Swift 继续使用 `sourcekit-lsp` bridge 合成 SCIP occurrence。所有 provider 产物会先写入 `.codetrail/scip/<snapshot-key>/provider-output/`，合并后在同一 build 阶段导入 `.codetrail/scip/<snapshot-key>/occurrences.db`。
 
 - `--no-semantic` 跳过该阶段；`index build --staged` 不运行语义阶段。
-- 任何 provider 失败只产生 partial/missing manifest 与 caveat，不阻塞 build；`defs`/`symbols` 可回退到 tree-sitter parser，`refs` 返回缺少 precise index 的 caveat。
+- 任何 provider 失败只产生 partial/missing manifest 与 caveat，不阻塞 build；`defs`/`symbols` 可合并或回退到 tree-sitter parser，`refs` 返回缺少 precise index 的 caveat。
 - 环境变量：`CODETRAIL_SCIP_<LANG>` 覆盖 native SCIP provider 命令；Swift 使用 `CODETRAIL_LSP_SWIFT` 覆盖 `sourcekit-lsp`；`CODETRAIL_SEMANTIC_BUDGET_MS` 控制总墙钟预算（默认 60s）。
 - Kotlin 使用 `CODETRAIL_SCIP_KOTLIN`，未设置时回退 `CODETRAIL_SCIP_JAVA`。同一 Gradle root 同时有 Java/Kotlin source 时，`scip-java index` 按 provider/root/command 分组只运行一次。
 - 若 `occurrences.db` 已与当前 snapshot 和 file hash 对齐，重复 build 会跳过语义阶段。

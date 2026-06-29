@@ -21,7 +21,7 @@ flowchart TB
 
 | 族 | 命令 | 契约 |
 | --- | --- | --- |
-| 符号与定义 | `symbols`, `defs` | 优先 fresh SCIP；缺失时可使用 tree-sitter parser fallback，可靠性为 `parser_fact` |
+| 符号与定义 | `symbols`, `defs` | 优先 fresh SCIP；可合并 tree-sitter parser supplement 或在缺失 SCIP 时 parser fallback，parser 行可靠性为 `parser_fact` |
 | 精确引用 | `refs` | 只返回 fresh SCIP occurrence 引用；没有可用 SCIP 时返回空结果，不做文本 fallback |
 | 调用关系 | `calls`, `callers`, `call-hierarchy` | 返回调用候选或 call hierarchy；结果是导航证据，可能不完整，编辑前必须复核调用点 |
 | 索引 | `index build`, `index status`, `index doctor` | 构建、查看和诊断语义索引/SCIP provider 状态 |
@@ -73,7 +73,7 @@ codetrail call-hierarchy <identifier> [--direction incoming|outgoing|both] [--de
 如果字符串包含空格、括号或 shell 特殊字符，调用方必须按普通 shell 规则加引号；以 `-` 开头的值应放在 `--` 之后。
 
 - `refs <identifier>` 查 fresh SCIP occurrence。它匹配 exact display name、SCIP symbol、symbol key，以及不带签名的 bare method name。没有可用 SCIP 时返回空结果；调用方如果只需要文本出现位置，应使用 `rg`。
-- `defs <identifier>` 和 `symbols <query>` 优先 SCIP；缺失时可返回 parser fallback 的定义/符号事实。
+- `defs <identifier>` 和 `symbols <query>` 优先 SCIP；即使 SCIP 非空，也可合并 parser supplement 补齐明显语法定义；缺失 SCIP 时可返回 parser fallback 的定义/符号事实。
 - `calls <caller-name>` 查询某个函数或方法体内发出的调用。
 - `callers <callee-name>` 查询调用某个目标的调用点。
 - `call-hierarchy <identifier>` 查询 incomingCalls/outgoingCalls 结构化调用层级，默认 `--depth 2`。Java 优先使用 fresh Java semantic index；其他语言和 Java fallback 使用 fresh graph index。`--include-overrides` 只在当前 semantic index 支持 override/implementation expansion 时生效。缺失时返回空结果和 freshness 说明。公开层级只返回已解析的 callable 节点并显示签名；方法、函数和构造器会显示，没解析到声明位置的裸调用点不作为 hierarchy function 返回。Text 输出采用 `Class.method(args)  (package)` 或语言原始函数签名，root 用 `def@path:line` 标明声明位置，子调用按调用点文件分块并用 `call@line` 标明调用位置。
@@ -135,7 +135,7 @@ MCP `tools/list` 只暴露语义索引相关工具：
 稳定字段：
 
 - `results` 是唯一的主要结果载体。每条结果只保留定位、文本、符号、关系或命令结果本身需要的字段；内部审计字段、producer、source target、index freshness 和 agent next action 不进入公开 JSON。
-- `symbols/defs --include-code` 的每条结果可包含 `source` 和 `relations`；relation 条目只保留公开定位和候选关系字段。
+- `symbols/defs --include-code` 的每条结果可包含 `source` 和 `relations`；relation 条目只保留公开定位和候选关系字段。宽名或多组候选导致结果明显模糊时，`source` 只附加到排序最高的少量候选，其余候选保留定位 metadata，并通过 `ambiguous_include_code_capped` warning 标记。
 - `page.truncated` 表示本次输出被裁切或分页，调用方应缩小查询或使用 `page.nextCursor` 翻页。
 - `page.nextCursor` 是下一页游标；没有下一页时为 `null`。
 - 失败 JSON 仍保留结构化 `error.code` / `error.message`，同时带空 `results` 和 `page`。
@@ -166,6 +166,7 @@ flowchart LR
 
 - `exact=true` 只允许出现在 `source_fact` 或 `precise_fact`。
 - `parser_fact` 可以是确定性语法事实，但不能代表 precise semantic reference resolution。
+- `symbols/defs` 可以在 fresh SCIP 结果之外合并 parser supplement，以补齐明显语法定义；混合结果页的顶层 reliability 会降级为 `parser_fact`，单条结果仍保留各自的 reliability。
 - `refs` 没有 fresh SCIP occurrence 时不得伪装为语义引用，也不得自动把文本匹配标成 reference。
 - `calls`、`callers` 和 `call-hierarchy` 即使来自 Java semantic index 或图索引，也必须标为候选。
 - 开发者修改代码前仍应通过宿主编辑器或 Agent read 工具读取关键结果的精确范围。
@@ -176,7 +177,7 @@ flowchart LR
 
 - `calls`/`callers` 按 caller -> callee 关系渲染，关系和位置保持同一行。
 - `symbols/defs` 默认结果行包含 kind、name 和位置，保持一行可跳转。
-- `symbols/defs --include-code` 会在 symbol/def 行下渲染带行号的 source block，并附简短 calls/callers 摘要；JSON/JSONL 仍是该能力的主契约。
+- `symbols/defs --include-code` 会在 symbol/def 行下渲染带行号的 source block，并附简短 calls/callers 摘要；模糊结果可能只为 top ranked 候选渲染 source block，以控制输出量。JSON/JSONL 仍是该能力的主契约。
 - `index build` 和 `index-provider install` 在 TTY 上显示加载进度；非 TTY 保持无 spinner，避免污染脚本输出。
 - 不渲染诊断提示块；能力边界放在 help 和文档中，内部审计、agent next action 或完整 schema 不打到终端。
 

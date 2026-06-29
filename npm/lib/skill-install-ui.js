@@ -18,6 +18,7 @@ const VALUE_FLAGS = new Set([
   "--limit",
   "--output",
   "--path",
+  "--project-root",
   "--save-query",
   "--scope"
 ]);
@@ -73,15 +74,16 @@ function parseSkillInstallArgs(args) {
 
   const localArgs = args.slice(commandIndex + 2);
   const scope = optionValue(localArgs, "--scope", "user");
-  const localPath = optionValue(localArgs, "--path", null);
-  const globalPath = optionValue(args.slice(0, commandIndex), "--path", null);
+  const projectRoot = optionValue(localArgs, "--project-root", null);
+  const globalPath = optionValue(args, "--path", null);
   const output = optionValue(args, "--output", "text");
   return {
     matches: true,
     help: localArgs.includes("--help") || localArgs.includes("-h"),
     target: firstPositional(localArgs),
     scope,
-    project: localPath || globalPath || process.cwd(),
+    projectRoot,
+    project: projectRoot || globalPath || process.cwd(),
     dryRun: localArgs.includes("--dry-run"),
     force: localArgs.includes("--force"),
     yes: localArgs.includes("--yes") || localArgs.includes("-y"),
@@ -362,6 +364,9 @@ async function maybeRunSkillInstallInteractive(args, io = process) {
   const parsed = parseSkillInstallArgs(args);
   if (!["user", "project"].includes(parsed.scope)) {
     throw new Error("scope must be user or project");
+  }
+  if (parsed.projectRoot && parsed.scope !== "project") {
+    throw new Error("--project-root can only be used with --scope project");
   }
   const options = {
     scope: parsed.scope,

@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -25,6 +26,27 @@ test("project scope writes into the project directory", () => {
   const rulePath = path.join(project, ".cursor", "rules", "codetrail.mdc");
   assert.equal(result.changed, true);
   assert.equal(fs.existsSync(rulePath), true);
+});
+
+test("legacy agent wrapper uses project-root for project scope", () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "codetrail-project-"));
+  const bin = path.resolve(__dirname, "..", "bin", "codetrail.js");
+  const ok = spawnSync(
+    process.execPath,
+    [bin, "skills", "add", "cursor", "--scope", "project", "--project-root", project, "--dry-run"],
+    { encoding: "utf8" }
+  );
+  assert.equal(ok.status, 0, ok.stderr);
+  const value = JSON.parse(ok.stdout);
+  assert.equal(value.planned[0].destination.startsWith(project), true);
+
+  const oldPath = spawnSync(
+    process.execPath,
+    [bin, "skills", "add", "cursor", "--scope", "project", "--path", project, "--dry-run"],
+    { encoding: "utf8" }
+  );
+  assert.notEqual(oldPath.status, 0);
+  assert.match(oldPath.stderr, /--project-root/);
 });
 
 test("doctor reports missing and installed states", () => {

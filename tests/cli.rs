@@ -6698,6 +6698,392 @@ fn callers_after_index_build_matches_qualified_method_target_by_simple_name() {
         .ends_with("helper"));
 }
 
+#[test]
+fn javascript_property_assignment_symbols_and_defs() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("lib")).unwrap();
+    fs::write(
+        dir.path().join("lib/utils.js"),
+        "exports.compileETag = function compileETag(value) {\n  return value;\n};\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("lib/application.js"),
+        "var app = {};\napp.handle = function handle(req, res, out) {\n  return this.router.handle(req, res, out);\n};\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("lib/response.js"),
+        "var res = {};\nres.render = function render(view, options, callback) {\n  return app.render(view, options, callback);\n};\n",
+    )
+    .unwrap();
+
+    let compile_etag = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args([
+            "defs",
+            "compileETag",
+            "--lang",
+            "javascript",
+            "--file-pattern",
+            "lib/utils.js",
+            "--include-code",
+            "--code-max-lines",
+            "25",
+            "--limit",
+            "3",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let compile_etag_json: Value = serde_json::from_slice(&compile_etag).unwrap();
+    assert_eq!(compile_etag_json["results"][0]["symbolName"], "compileETag");
+    assert_eq!(compile_etag_json["results"][0]["container"], "exports");
+    assert_eq!(
+        compile_etag_json["results"][0]["qualifiedName"],
+        "exports.compileETag"
+    );
+    assert!(compile_etag_json["results"][0]["source"]["content"]
+        .as_str()
+        .unwrap()
+        .contains("return value"));
+
+    let handle = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args([
+            "defs",
+            "handle",
+            "--lang",
+            "javascript",
+            "--file-pattern",
+            "lib/application.js",
+            "--include-code",
+            "--code-max-lines",
+            "30",
+            "--limit",
+            "5",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let handle_json: Value = serde_json::from_slice(&handle).unwrap();
+    assert_eq!(handle_json["results"][0]["symbolName"], "handle");
+    assert_eq!(handle_json["results"][0]["container"], "app");
+
+    let render = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args([
+            "symbols",
+            "res.render",
+            "--lang",
+            "javascript",
+            "--file-pattern",
+            "lib/response.js",
+            "--include-code",
+            "--code-max-lines",
+            "25",
+            "--limit",
+            "10",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let render_json: Value = serde_json::from_slice(&render).unwrap();
+    assert_eq!(render_json["results"][0]["symbolName"], "render");
+    assert_eq!(render_json["results"][0]["qualifiedName"], "res.render");
+    assert!(render_json["results"][0]["source"]["content"]
+        .as_str()
+        .unwrap()
+        .contains("app.render"));
+}
+
+#[test]
+fn precise_symbols_merge_javascript_parser_property_assignments() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("lib")).unwrap();
+    fs::write(
+        dir.path().join("lib/application.js"),
+        "const compileETag = app.get('etag fn');\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("lib/utils.js"),
+        "exports.compileETag = function compileETag(value) {\n  return value;\n};\n",
+    )
+    .unwrap();
+    let scip_path = dir.path().join("index.scip.json");
+    write_single_symbol_scip_json(
+        &scip_path,
+        "javascript",
+        "lib/application.js",
+        "compileETag",
+        "variable",
+    );
+    let workspace = codetrail::workspace::Workspace::discover(dir.path()).unwrap();
+    codetrail::scip_index::import_scip_json(&workspace, &scip_path).unwrap();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args([
+            "symbols",
+            "compileETag",
+            "--lang",
+            "javascript",
+            "--dir",
+            "lib",
+            "--limit",
+            "10",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["reliability"]["level"], "parser_fact");
+    assert_eq!(json["results"][0]["path"], "lib/utils.js");
+    assert_eq!(json["results"][0]["qualifiedName"], "exports.compileETag");
+    assert_eq!(json["results"][0]["reliability"], "parser_fact");
+    assert!(json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|result| { result["path"] == "lib/application.js" && result["producer"] == "scip" }));
+    assert!(json["warnings"].as_array().unwrap().iter().any(|warning| {
+        warning["code"] == "parser_symbol_supplement"
+            && warning["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("SCIP symbols may be incomplete")
+    }));
+}
+
+#[test]
+fn precise_defs_and_symbols_merge_parser_supplements_across_languages() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/indexed.rs"), "struct Config;\n").unwrap();
+    fs::write(dir.path().join("src/parser.rs"), "struct Config;\n").unwrap();
+    let scip_path = dir.path().join("index.scip.json");
+    write_single_symbol_scip_json(&scip_path, "rust", "src/indexed.rs", "Config", "struct");
+    let workspace = codetrail::workspace::Workspace::discover(dir.path()).unwrap();
+    codetrail::scip_index::import_scip_json(&workspace, &scip_path).unwrap();
+
+    let symbols = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["symbols", "Config", "--lang", "rust", "--limit", "10"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let symbols_json: Value = serde_json::from_slice(&symbols).unwrap();
+    assert_eq!(symbols_json["reliability"]["level"], "parser_fact");
+    assert!(symbols_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|result| { result["path"] == "src/indexed.rs" && result["producer"] == "scip" }));
+    assert!(symbols_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|result| {
+            result["path"] == "src/parser.rs" && result["producer"] == "tree_sitter_parser"
+        }));
+    assert!(symbols_json["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|warning| { warning["code"] == "parser_symbol_supplement" }));
+
+    let defs = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "Config", "--lang", "rust", "--limit", "10"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let defs_json: Value = serde_json::from_slice(&defs).unwrap();
+    assert_eq!(defs_json["reliability"]["level"], "parser_fact");
+    assert!(defs_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|result| { result["path"] == "src/indexed.rs" && result["producer"] == "scip" }));
+    assert!(defs_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|result| {
+            result["path"] == "src/parser.rs"
+                && result["producer"] == "tree_sitter_parser"
+                && result["reliability"] == "parser_fact"
+                && result["exact"] == false
+        }));
+    assert!(defs_json["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|warning| { warning["code"] == "parser_def_supplement" }));
+}
+
+#[test]
+fn rust_config_defs_rank_and_cap_ambiguous_include_code() {
+    let dir = tempdir().unwrap();
+    let files = [
+        ("crates/a/src/lib.rs", "mod Config {}\n"),
+        (
+            "crates/core/src/search.rs",
+            "struct Config {\n    enabled: bool,\n}\n",
+        ),
+        ("crates/core/src/worker.rs", "struct Config;\n"),
+        ("crates/globset/src/lib.rs", "struct Config;\n"),
+        ("crates/printer/src/lib.rs", "struct Config;\n"),
+        ("tools/one/src/lib.rs", "struct Config;\n"),
+        ("tools/two/src/lib.rs", "struct Config;\n"),
+        ("tools/three/src/lib.rs", "struct Config;\n"),
+    ];
+    for (path, content) in files {
+        let path = dir.path().join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args([
+            "defs",
+            "Config",
+            "--lang",
+            "rust",
+            "--include-code",
+            "--code-max-lines",
+            "20",
+            "--limit",
+            "20",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["results"][0]["kind"], "struct");
+    let source_count = json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|result| result.get("source").is_some())
+        .count();
+    assert!(
+        source_count <= 3,
+        "ambiguous include-code should cap source blocks: {json}"
+    );
+    assert!(json["warnings"].as_array().unwrap().iter().any(|warning| {
+        warning["code"] == "ambiguous_include_code_capped"
+            && warning["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("omitted")
+    }));
+}
+
+#[test]
+fn rust_qualified_call_hierarchy_filters_same_name_methods() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("crates/core/src")).unwrap();
+    fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("crates/core/src/lib.rs"),
+        r#"pub struct SearcherBuilder;
+
+impl SearcherBuilder {
+    pub fn call(&self) -> usize {
+        self.build()
+    }
+
+    pub fn build(&self) -> usize {
+        1
+    }
+}
+
+pub struct OtherBuilder;
+
+impl OtherBuilder {
+    pub fn call(&self) -> usize {
+        self.build()
+    }
+
+    pub fn build(&self) -> usize {
+        2
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["index", "build"])
+        .assert()
+        .success();
+
+    let output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args([
+            "call-hierarchy",
+            "SearcherBuilder.build",
+            "--direction",
+            "incoming",
+            "--depth",
+            "2",
+            "--lang",
+            "rust",
+            "--dir",
+            "crates",
+            "--limit",
+            "50",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    let results = json["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1, "{json}");
+    assert_eq!(results[0]["root"]["container"], "SearcherBuilder");
+    assert_eq!(results[0]["root"]["name"], "build");
+    let incoming = results[0]["incomingCalls"].as_array().unwrap();
+    assert!(incoming
+        .iter()
+        .any(|call| call["from"]["container"] == "SearcherBuilder"));
+    assert!(incoming
+        .iter()
+        .all(|call| call["from"]["container"] != "OtherBuilder"));
+}
+
 fn write_minimal_scip_json(path: &std::path::Path) {
     let value = json!({
         "documents": [
@@ -6721,6 +7107,38 @@ fn write_minimal_scip_json(path: &std::path::Path) {
                         "symbol": "local 1",
                         "displayName": "needle",
                         "kind": "function"
+                    }
+                ]
+            }
+        ]
+    });
+    fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+}
+
+fn write_single_symbol_scip_json(
+    path: &std::path::Path,
+    language: &str,
+    relative_path: &str,
+    display_name: &str,
+    kind: &str,
+) {
+    let value = json!({
+        "documents": [
+            {
+                "relativePath": relative_path,
+                "language": language,
+                "occurrences": [
+                    {
+                        "range": [0, 0, 0, display_name.len()],
+                        "symbol": "local supplement-test",
+                        "symbolRoles": 1
+                    }
+                ],
+                "symbols": [
+                    {
+                        "symbol": "local supplement-test",
+                        "displayName": display_name,
+                        "kind": kind
                     }
                 ]
             }

@@ -62,7 +62,7 @@ codetrail call-hierarchy <handler> --direction outgoing --depth 2 --lang <lang> 
 | --- | --- | --- |
 | Go | Scope by package or file. `codetrail symbols Default --lang go --file-pattern gin.go --limit 5`; `codetrail defs Engine.addRoute --lang go --include-code --code-max-lines 20 --limit 3`; `codetrail call-hierarchy Engine.addRoute --direction incoming --lang go --depth 2 --limit 40`; route tasks start with `routes --framework gin\|chi\|gorilla\|net/http`. | Selector or interface dispatch is the key fact, or generated/test/vendor code pollutes results. |
 | Rust | Scope by crate or exact file. `codetrail symbols Config --lang rust --dir crates/core --limit 30`; `codetrail defs run --lang rust --file-pattern crates/core/main.rs --include-code --code-max-lines 25 --limit 3`; `codetrail call-hierarchy search --lang rust --dir crates/core --direction outgoing --depth 2 --limit 40`. | Macros, cfg/features, trait dispatch, or broad names like `run`, `search`, `new` need source confirmation. |
-| TypeScript/JavaScript | Always set `--lang typescript` or `--lang javascript` and scope to `src`, `lib`, or a file. Express/NestJS endpoint tasks start with `routes`. For handlers use `symbols app.render --lang javascript --file-pattern lib/application.js --limit 10`, then `symbols/defs --include-code`. | CommonJS assignments like `exports.foo = function`, `app.handle = function`, dynamic router dispatch, or 0-result `defs`/`refs` appear; use `rg` on the exact property/call. |
+| TypeScript/JavaScript | Always set `--lang typescript` or `--lang javascript` and scope to `src`, `lib`, or a file. Express/NestJS endpoint tasks start with `routes`. CommonJS assignments like `exports.foo = function`, `app.handle = function`, and `res.render = function` are parser-visible; use qualified `symbols res.render` or bare `defs handle`, then `--include-code`. | Dynamic router dispatch, prototype mutation, generated code, or 0-result `refs` decides the answer; use `rg` on the exact property/call. |
 | Python | FastAPI/Django endpoint tasks start with `routes`. Otherwise use `symbols`/`defs` with `--lang python --dir <pkg>` to locate functions/classes, then shallow `call-hierarchy` only as a lead. | You need precise refs, decorators, monkey patches, dynamic imports, or runtime framework wiring. |
 | Java/Kotlin | Spring endpoint tasks start with `routes --framework spring`. Scope production code with `--dir src/main/java` or `--dir src/main/kotlin`; use `--file-pattern` for overloaded or common method names. | The index is stale/missing, annotation-generated behavior matters, or Java/Kotlin cross-language calls are incomplete. |
 | Swift | Vapor endpoint tasks start with `routes --framework vapor`. Scope to `Sources/<Target>` or a specific file before `defs`/`symbols` and shallow call queries. | SourceKit or build settings are missing, or protocol/extension dispatch decides behavior. |
@@ -81,8 +81,8 @@ query that identifies the concrete file.
   routing behavior.
 - `refs` is `precise_fact` only with a fresh SCIP index. If it reports missing
   or stale precise index, use `rg` or `index doctor`.
-- `defs` and `symbols` may fall back to tree-sitter `parser_fact` when SCIP is
-  unavailable.
+- `defs` and `symbols` may include tree-sitter `parser_fact` supplements even
+  when SCIP is fresh, or fall back to parser when SCIP is unavailable.
 - `calls`, `callers`, and `call-hierarchy` are `inferred_candidate` navigation
   leads.
 - Verify exact source ranges with the host read/editor before editing or making

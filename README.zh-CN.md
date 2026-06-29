@@ -104,7 +104,7 @@ codetrail mcp
 
 公开 JSON 只包含 `results`、`page` 和 `caveats`；每个 caveat 都带稳定 `severity` 与 `category`，用于区分风险警告和预期能力级别说明。
 
-修改代码前用编辑器或 Agent read 工具验证搜索、remote 或图候选结果。不同来源的结果会用不同可靠性级别表达：文本命中是可验证线索，SCIP occurrence 更精确但仍应复核范围，parser fallback 和调用候选不能当作语义证明，remote 结果必须区分是否与本地 file proof 对齐。
+修改代码前用编辑器或 Agent read 工具验证搜索、remote 或图候选结果。不同来源的结果会用不同可靠性级别表达：文本命中是可验证线索，SCIP occurrence 更精确但仍应复核范围，parser fallback 或 supplement 行和调用候选不能当作语义证明，remote 结果必须区分是否与本地 file proof 对齐。`defs`/`symbols` 可以在 fresh SCIP 结果中合并 parser supplement；混合结果页的顶层 reliability 会降级为 `parser_fact`，单条结果保留各自 reliability。
 
 ## 项目架构设计
 
@@ -148,7 +148,7 @@ flowchart TB
 - 本地索引是加速层：索引缺失、过期或只覆盖部分文件时，查询应回退到实时扫描、dirty overlay，或返回明确 caveat。
 - 能利用索引的 discovery 命令限定为 `find`、`grep`、`files`、`find-path`、`glob`、`defs`、`refs`、`symbols`、`routes`、`calls` 和 `callers`；CLI 不再暴露 `list`、`tree` 或 `read`。
 - 查询服务是集成边界：CLI、MCP、saved query replay 和 remote snapshot 都通过同一 public JSON/text 投影输出。
-- Reliability 是调用契约：文本命中、精确 occurrence、parser fallback、调用候选和 remote 结果要用不同可靠性级别表达，关键编辑前仍用源码读取工具复核。
+- Reliability 是调用契约：文本命中、精确 occurrence、parser fallback 或 supplement 行、调用候选和 remote 结果要用不同可靠性级别表达，关键编辑前仍用源码读取工具复核。
 - Remote 和 saved query 不是真相源：remote 只在本地 proof 对齐时提升可信度；saved query 只保存可重放元数据，不保存结果正文。
 
 ## Agent Skill

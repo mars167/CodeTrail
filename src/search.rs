@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     index,
+    query_input::{InputPlan, SymbolMatchMode},
     search_pattern::{compile_any, PatternMatcher, PatternTarget, SearchPatternMode},
     workspace::{
         language_for_path, matches_filters, matches_lang, FileCatalogRecord, FileRecord,
@@ -49,6 +50,12 @@ pub struct Page {
     pub next_cursor: Option<String>,
     pub facets: Value,
     pub guard: Option<Value>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CodeResultMerge {
+    pub retained: usize,
+    pub retained_parser: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -574,6 +581,213 @@ pub fn page_results(
     )
 }
 
+pub fn page_ranked_code_results(
+    results: Value,
+    opts: &ScanOptions,
+    kind: &str,
+    args: Value,
+    snapshot_id: &str,
+    input: &str,
+    mode: SymbolMatchMode,
+) -> Result<Page> {
+    let Value::Array(mut results) = results else {
+        return Ok(Page {
+            results,
+            truncated: false,
+            next_cursor: None,
+            facets: result_facets(&[]),
+            guard: None,
+        });
+    };
+    rank_code_result_values(&mut results, input, opts, mode);
+    page_results_vec_presorted(
+        results,
+        opts,
+        None,
+        &pagination_scope(kind, args, opts, snapshot_id),
+    )
+}
+
+pub fn rank_code_results(
+    results: &mut Value,
+    input: &str,
+    opts: &ScanOptions,
+    mode: SymbolMatchMode,
+) {
+    if let Value::Array(results) = results {
+        rank_code_result_values(results, input, opts, mode);
+    }
+}
+
+pub fn rank_and_truncate_code_results(
+    results: &mut Value,
+    input: &str,
+    opts: &ScanOptions,
+    mode: SymbolMatchMode,
+) {
+    rank_code_results(results, input, opts, mode);
+    if opts.limit > 0 {
+        if let Value::Array(items) = results {
+            items.truncate(opts.limit);
+        }
+    }
+}
+
+pub fn merge_code_result_supplement(target: &mut Value, extra: Value) -> CodeResultMerge {
+    let Some(target_items) = target.as_array_mut() else {
+        return CodeResultMerge::default();
+    };
+    let Value::Array(extra_items) = extra else {
+        return CodeResultMerge::default();
+    };
+    let mut positions = HashMap::<CodeResultIdentity, usize>::new();
+    for (idx, item) in target_items.iter().enumerate() {
+        positions.insert(code_result_identity(item), idx);
+    }
+
+    let mut outcome = CodeResultMerge::default();
+    for item in extra_items {
+        let key = code_result_identity(&item);
+        if let Some(existing_idx) = positions.get(&key).copied() {
+            if is_precise_code_result(&item) && !is_precise_code_result(&target_items[existing_idx])
+            {
+                target_items[existing_idx] = item;
+            }
+            continue;
+        }
+        if let Some(existing_idx) = target_items
+            .iter()
+            .position(|existing| same_precise_parser_definition(existing, &item))
+        {
+            if is_precise_code_result(&item) && !is_precise_code_result(&target_items[existing_idx])
+            {
+                target_items[existing_idx] = item;
+                positions.insert(key, existing_idx);
+            }
+            continue;
+        }
+        let retained_parser = is_parser_code_result(&item);
+        target_items.push(item);
+        positions.insert(key, target_items.len().saturating_sub(1));
+        outcome.retained += 1;
+        if retained_parser {
+            outcome.retained_parser += 1;
+        }
+    }
+    outcome
+}
+
+pub fn results_contain_parser_fact(results: &Value) -> bool {
+    results
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(is_parser_code_result)
+}
+
+type CodeResultIdentity = (String, String, String, String, u64);
+
+fn code_result_identity(value: &Value) -> CodeResultIdentity {
+    (
+        value
+            .get("language")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        value
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        value
+            .get("symbolName")
+            .or_else(|| value.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        value
+            .get("container")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        value
+            .pointer("/range/start/line")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+    )
+}
+
+fn is_precise_code_result(value: &Value) -> bool {
+    value.get("producer").and_then(Value::as_str) == Some("scip")
+        || value.get("reliability").and_then(Value::as_str) == Some("precise_fact")
+}
+
+fn is_parser_code_result(value: &Value) -> bool {
+    value.get("producer").and_then(Value::as_str) == Some("tree_sitter_parser")
+        || value.get("reliability").and_then(Value::as_str) == Some("parser_fact")
+}
+
+fn same_precise_parser_definition(left: &Value, right: &Value) -> bool {
+    if !(is_precise_code_result(left) && is_parser_code_result(right)
+        || is_parser_code_result(left) && is_precise_code_result(right))
+    {
+        return false;
+    }
+    if !same_string_field(left, right, "language") || !same_string_field(left, right, "path") {
+        return false;
+    }
+    if code_result_display_name(left) != code_result_display_name(right) {
+        return false;
+    }
+    if !containers_compatible_for_dedup(left, right) {
+        return false;
+    }
+    line_ranges_overlap(left, right)
+}
+
+fn same_string_field(left: &Value, right: &Value, field: &str) -> bool {
+    match (
+        left.get(field).and_then(Value::as_str),
+        right.get(field).and_then(Value::as_str),
+    ) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn code_result_display_name(value: &Value) -> &str {
+    value
+        .get("symbolName")
+        .or_else(|| value.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+}
+
+fn containers_compatible_for_dedup(left: &Value, right: &Value) -> bool {
+    let left = left.get("container").and_then(Value::as_str).unwrap_or("");
+    let right = right.get("container").and_then(Value::as_str).unwrap_or("");
+    left.is_empty() || right.is_empty() || left == right
+}
+
+fn line_ranges_overlap(left: &Value, right: &Value) -> bool {
+    let Some((left_start, left_end)) = result_line_range(left) else {
+        return false;
+    };
+    let Some((right_start, right_end)) = result_line_range(right) else {
+        return false;
+    };
+    left_start <= right_end && right_start <= left_end
+}
+
+fn result_line_range(value: &Value) -> Option<(u64, u64)> {
+    let start = value.pointer("/range/start/line").and_then(Value::as_u64)?;
+    let end = value
+        .pointer("/range/end/line")
+        .and_then(Value::as_u64)
+        .unwrap_or(start);
+    Some((start.min(end), start.max(end)))
+}
+
 fn page_results_vec(
     mut results: Vec<Value>,
     opts: &ScanOptions,
@@ -581,6 +795,15 @@ fn page_results_vec(
     scope: &str,
 ) -> Result<Page> {
     sort_results(&mut results);
+    page_results_vec_presorted(results, opts, guard, scope)
+}
+
+fn page_results_vec_presorted(
+    results: Vec<Value>,
+    opts: &ScanOptions,
+    guard: Option<BroadGuard>,
+    scope: &str,
+) -> Result<Page> {
     let result_set_hash = value_hash(&Value::Array(results.clone()));
     let scope = format!("{scope}|resultSet:{result_set_hash}");
     let facets = result_facets(&results);
@@ -983,6 +1206,201 @@ fn scan_stats(candidate_files: usize, searched_files: usize, skipped_files: usiz
 
 fn sort_results(results: &mut [Value]) {
     results.sort_by_key(result_sort_key);
+}
+
+fn rank_code_result_values(
+    results: &mut [Value],
+    input: &str,
+    opts: &ScanOptions,
+    mode: SymbolMatchMode,
+) {
+    results.sort_by_cached_key(|result| code_result_sort_key(result, input, opts, mode));
+}
+
+pub(crate) type CodeResultSortKey = (u8, u8, u8, u8, u8, String, u64, u64, String);
+
+pub(crate) fn code_result_sort_key(
+    value: &Value,
+    input: &str,
+    opts: &ScanOptions,
+    mode: SymbolMatchMode,
+) -> CodeResultSortKey {
+    let plan = InputPlan::new(input, opts.input_mode);
+    let candidates = result_input_candidates(value);
+    let match_rank = candidates
+        .iter()
+        .filter_map(|candidate| {
+            plan.matched_variant(candidate, opts.case_sensitive, mode)
+                .map(|variant| input_variant_rank(variant.kind))
+        })
+        .min()
+        .unwrap_or(9);
+    let qualified_rank = qualified_match_rank(input, opts.case_sensitive, &candidates);
+    let kind_rank = kind_relevance_rank(
+        value
+            .get("kind")
+            .or_else(|| value.get("candidateKind"))
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    );
+    let reliability_rank = reliability_relevance_rank(
+        value
+            .get("reliability")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    );
+    let case_rank = case_relevance_rank(input, &candidates);
+    (
+        match_rank,
+        qualified_rank,
+        kind_rank,
+        reliability_rank,
+        case_rank,
+        value
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        value
+            .pointer("/range/start/line")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        value
+            .pointer("/range/start/column")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        result_display_name(value).to_string(),
+    )
+}
+
+fn result_input_candidates(value: &Value) -> Vec<String> {
+    let mut candidates = Vec::<String>::new();
+    push_candidate_string(
+        &mut candidates,
+        value.get("qualifiedName").and_then(Value::as_str),
+    );
+    if let (Some(container), Some(name)) = (
+        value.get("container").and_then(Value::as_str),
+        value
+            .get("symbolName")
+            .or_else(|| value.get("name"))
+            .and_then(Value::as_str),
+    ) {
+        if !container.is_empty() && !name.is_empty() {
+            push_candidate_string(&mut candidates, Some(&format!("{container}.{name}")));
+        }
+    }
+    push_candidate_string(&mut candidates, value.get("symbol").and_then(Value::as_str));
+    push_candidate_string(
+        &mut candidates,
+        value.get("signature").and_then(Value::as_str),
+    );
+    push_candidate_string(
+        &mut candidates,
+        value.get("symbolName").and_then(Value::as_str),
+    );
+    push_candidate_string(&mut candidates, value.get("name").and_then(Value::as_str));
+    candidates
+}
+
+fn push_candidate_string(candidates: &mut Vec<String>, value: Option<&str>) {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    if !candidates.iter().any(|candidate| candidate == value) {
+        candidates.push(value.to_string());
+    }
+}
+
+fn input_variant_rank(kind: &str) -> u8 {
+    match kind {
+        "raw" | "trimmed" => 0,
+        "signature_base" => 1,
+        "qualified_tail" | "signature_tail" => 3,
+        "style_key" => 4,
+        "case_fold" => 5,
+        _ => 6,
+    }
+}
+
+fn qualified_match_rank(input: &str, case_sensitive: bool, candidates: &[String]) -> u8 {
+    if !input_looks_qualified(input) {
+        return 0;
+    }
+    let input = canonical_match_text(input, case_sensitive);
+    if candidates
+        .iter()
+        .map(|candidate| canonical_match_text(candidate, case_sensitive))
+        .any(|candidate| candidate == input)
+    {
+        return 0;
+    }
+    if candidates
+        .iter()
+        .map(|candidate| canonical_match_text(candidate, case_sensitive))
+        .any(|candidate| candidate.contains(&input) || input.contains(&candidate))
+    {
+        return 1;
+    }
+    4
+}
+
+fn case_relevance_rank(input: &str, candidates: &[String]) -> u8 {
+    let trimmed = input.trim();
+    if candidates.iter().any(|candidate| candidate == trimmed) {
+        0
+    } else {
+        1
+    }
+}
+
+fn input_looks_qualified(input: &str) -> bool {
+    input.contains('.') || input.contains("::") || input.contains('#') || input.contains('$')
+}
+
+fn canonical_match_text(input: &str, case_sensitive: bool) -> String {
+    let mut value = input
+        .trim()
+        .replace("::", ".")
+        .replace('#', ".")
+        .replace('$', ".");
+    if let Some((prefix, _signature)) = value.split_once('(') {
+        value = prefix.to_string();
+    }
+    if !case_sensitive {
+        value = value.to_lowercase();
+    }
+    value
+}
+
+fn kind_relevance_rank(kind: &str) -> u8 {
+    match kind {
+        "struct" | "class" | "trait" | "enum" | "interface" | "type" | "record" | "annotation" => 0,
+        "function" | "method" | "constructor" => 1,
+        "module" => 2,
+        "field" | "property" => 3,
+        "parameter" | "variable" | "import" => 4,
+        _ => 5,
+    }
+}
+
+fn reliability_relevance_rank(reliability: &str) -> u8 {
+    match reliability {
+        "precise_fact" => 0,
+        "parser_fact" => 1,
+        "source_fact" => 2,
+        "inferred_candidate" => 3,
+        _ => 4,
+    }
+}
+
+fn result_display_name(value: &Value) -> &str {
+    value
+        .get("matchText")
+        .or_else(|| value.get("symbolName"))
+        .or_else(|| value.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
 }
 
 fn result_sort_key(value: &Value) -> (String, u64, u64, String) {
