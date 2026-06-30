@@ -1,1 +1,1 @@
-{"name":"@mars167/core-linux-arm64","version":"0.1.7-beta.6","license":"MIT","repository":{"type":"git","url":"https://github.com/mars167/CodeTrail"},"os":["linux"],"cpu":["arm64"],"files":["bin/","package.json"],"publishConfig":{"access":"public","provenance":true}}
+{"name":"@mars167/core-linux-arm64","version":"0.1.7","license":"MIT","repository":{"type":"git","url":"https://github.com/mars167/CodeTrail"},"os":["linux"],"cpu":["arm64"],"files":["bin/","package.json"],"publishConfig":{"access":"public","provenance":true}}
