@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use crate::{
     index, lancedb_store,
     lsp::scip_gen,
+    navigation,
     query_input::{attach_matched_input, InputPlan, InputVariant, SymbolMatchMode},
     scip,
     scip::store::{OccurrenceResult, SymbolResult},
@@ -233,13 +234,7 @@ pub fn refs(
     if let Some(output) = query_native_refs(workspace, opts, identifier)? {
         return Ok(Some(output));
     }
-    query_precise_with_input(
-        workspace,
-        opts,
-        identifier,
-        |record| record.role != "definition",
-        SymbolMatchMode::Exact,
-    )
+    query_precise_refs_with_input(workspace, opts, identifier)
 }
 
 // ---------------------------------------------------------------------------
@@ -259,12 +254,13 @@ fn query_native_defs(
         return Ok(None);
     }
     let plan = InputPlan::new(identifier, opts.input_mode);
-    let candidates = if opts.input_mode == crate::query_input::InputMode::Strict {
-        scip::query_defs(&db_path, identifier)?
-    } else {
-        scip::query_all_defs(&db_path)?
-    };
-    let mut results = matched_occurrence_results(
+    let candidates =
+        if opts.input_mode == crate::query_input::InputMode::Strict && plan.coordinate.is_none() {
+            scip::query_defs(&db_path, identifier)?
+        } else {
+            scip::query_all_defs(&db_path)?
+        };
+    let mut results = matched_occurrence_results_with_fallback(
         candidates,
         &plan,
         opts.case_sensitive,
@@ -292,6 +288,75 @@ fn query_native_defs(
     }))
 }
 
+fn native_reference_to_json(db_path: &Path, result: &OccurrenceResult) -> Result<Value> {
+    let mut value = scip::occurrence_to_json(result);
+    if let Some(object) = value.as_object_mut() {
+        if let Some(definition) = scip::query_defs_by_symbol_key(db_path, &result.symbol_key)?
+            .into_iter()
+            .next()
+        {
+            object.insert(
+                "definition".to_string(),
+                scip::occurrence_to_json(&definition),
+            );
+        }
+    }
+    Ok(value)
+}
+
+fn precise_reference_to_json(
+    record: PreciseOccurrenceRecord,
+    definitions: &HashMap<String, PreciseOccurrenceRecord>,
+) -> Value {
+    let symbol = record.symbol.clone();
+    let mut value = record_to_json(record);
+    if let Some(object) = value.as_object_mut() {
+        if let Some(definition) = definitions.get(&symbol) {
+            object.insert("definition".to_string(), record_to_json(definition.clone()));
+        }
+    }
+    value
+}
+
+fn query_precise_refs_with_input(
+    workspace: &Workspace,
+    opts: &ScanOptions,
+    input: &str,
+) -> Result<Option<PreciseQueryOutput>> {
+    let Some((records, index_meta)) = fresh_records(workspace, opts)? else {
+        return Ok(None);
+    };
+    let plan = InputPlan::new(input, opts.input_mode);
+    let definitions = records
+        .iter()
+        .filter(|record| record.role == "definition")
+        .map(|record| (record.symbol.clone(), record.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut matched_records = matched_precise_records_with_fallback(
+        records
+            .into_iter()
+            .filter(|record| record.role != "definition")
+            .collect(),
+        &plan,
+        opts.case_sensitive,
+        SymbolMatchMode::Exact,
+    );
+    let mut results = Vec::new();
+    for (record, variant) in matched_records.drain(..) {
+        results.push(attach_matched_input(
+            precise_reference_to_json(record, &definitions),
+            &variant,
+        ));
+        if opts.limit > 0 && results.len() >= opts.limit {
+            break;
+        }
+    }
+    Ok(Some(PreciseQueryOutput {
+        results: Value::Array(results),
+        index: index_meta,
+    }))
+}
+
 fn query_native_refs(
     workspace: &Workspace,
     opts: &ScanOptions,
@@ -305,12 +370,13 @@ fn query_native_refs(
         return Ok(None);
     }
     let plan = InputPlan::new(identifier, opts.input_mode);
-    let candidates = if opts.input_mode == crate::query_input::InputMode::Strict {
-        scip::query_refs(&db_path, identifier)?
-    } else {
-        scip::query_all_refs(&db_path)?
-    };
-    let mut results = matched_occurrence_results(
+    let candidates =
+        if opts.input_mode == crate::query_input::InputMode::Strict && plan.coordinate.is_none() {
+            scip::query_refs(&db_path, identifier)?
+        } else {
+            scip::query_all_refs(&db_path)?
+        };
+    let mut results = matched_occurrence_results_with_fallback(
         candidates,
         &plan,
         opts.case_sensitive,
@@ -325,8 +391,13 @@ fn query_native_refs(
     }
     let json_results = results
         .iter()
-        .map(|(result, variant)| attach_matched_input(scip::occurrence_to_json(result), variant))
-        .collect();
+        .map(|(result, variant)| {
+            Ok(attach_matched_input(
+                native_reference_to_json(&db_path, result)?,
+                variant,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
     Ok(Some(PreciseQueryOutput {
         results: Value::Array(json_results),
         index: native_db_index_meta(&db_path, true),
@@ -346,12 +417,13 @@ fn query_native_symbols(
         return Ok(None);
     }
     let plan = InputPlan::new(query, opts.input_mode);
-    let candidates = if opts.input_mode == crate::query_input::InputMode::Strict {
-        scip::query_symbols(&db_path, query)?
-    } else {
-        scip::query_all_symbols(&db_path)?
-    };
-    let mut results = matched_symbol_results(
+    let candidates =
+        if opts.input_mode == crate::query_input::InputMode::Strict && plan.coordinate.is_none() {
+            scip::query_symbols(&db_path, query)?
+        } else {
+            scip::query_all_symbols(&db_path)?
+        };
+    let mut results = matched_symbol_results_with_fallback(
         candidates,
         &plan,
         opts.case_sensitive,
@@ -457,6 +529,24 @@ fn matched_occurrence_results(
         .collect()
 }
 
+fn matched_occurrence_results_with_fallback(
+    candidates: Vec<OccurrenceResult>,
+    plan: &InputPlan,
+    case_sensitive: bool,
+    mode: SymbolMatchMode,
+) -> Vec<(OccurrenceResult, InputVariant)> {
+    if plan.coordinate.is_none() {
+        return matched_occurrence_results(candidates, plan, case_sensitive, mode);
+    }
+    let results = matched_occurrence_results(candidates.clone(), plan, case_sensitive, mode);
+    if !results.is_empty() {
+        return results;
+    }
+    plan.coordinate_fallback_plan()
+        .map(|fallback| matched_occurrence_results(candidates, &fallback, case_sensitive, mode))
+        .unwrap_or(results)
+}
+
 fn matched_symbol_results(
     candidates: Vec<SymbolResult>,
     plan: &InputPlan,
@@ -473,12 +563,46 @@ fn matched_symbol_results(
         .collect()
 }
 
+fn matched_symbol_results_with_fallback(
+    candidates: Vec<SymbolResult>,
+    plan: &InputPlan,
+    case_sensitive: bool,
+    mode: SymbolMatchMode,
+) -> Vec<(SymbolResult, InputVariant)> {
+    if plan.coordinate.is_none() {
+        return matched_symbol_results(candidates, plan, case_sensitive, mode);
+    }
+    let results = matched_symbol_results(candidates.clone(), plan, case_sensitive, mode);
+    if !results.is_empty() {
+        return results;
+    }
+    plan.coordinate_fallback_plan()
+        .map(|fallback| matched_symbol_results(candidates, &fallback, case_sensitive, mode))
+        .unwrap_or(results)
+}
+
 fn occurrence_variant<'a>(
     result: &OccurrenceResult,
     plan: &'a InputPlan,
     case_sensitive: bool,
     mode: SymbolMatchMode,
 ) -> Option<&'a InputVariant> {
+    if let Some(coord) = &plan.coordinate {
+        let names = [
+            result.name.as_str(),
+            result.symbol.as_str(),
+            result.symbol_key.as_str(),
+        ];
+        if !navigation::coordinate_matches_parts(
+            coord,
+            Some(&result.path),
+            Some(u64::from(result.start_line)),
+            Some(u64::from(result.end_line)),
+            &names,
+        ) {
+            return None;
+        }
+    }
     plan.matched_variant(&result.name, case_sensitive, mode)
         .or_else(|| plan.matched_variant(&result.symbol, case_sensitive, mode))
         .or_else(|| plan.matched_variant(&result.symbol_key, case_sensitive, mode))
@@ -490,6 +614,22 @@ fn symbol_variant<'a>(
     case_sensitive: bool,
     mode: SymbolMatchMode,
 ) -> Option<&'a InputVariant> {
+    if let Some(coord) = &plan.coordinate {
+        let names = [
+            result.name.as_str(),
+            result.symbol.as_str(),
+            result.symbol_key.as_str(),
+        ];
+        if !navigation::coordinate_matches_parts(
+            coord,
+            Some(&result.path),
+            Some(u64::from(result.start_line)),
+            Some(u64::from(result.end_line)),
+            &names,
+        ) {
+            return None;
+        }
+    }
     plan.matched_variant(&result.name, case_sensitive, mode)
         .or_else(|| plan.matched_variant(&result.symbol, case_sensitive, mode))
         .or_else(|| plan.matched_variant(&result.symbol_key, case_sensitive, mode))
@@ -506,13 +646,15 @@ fn query_precise_with_input(
         return Ok(None);
     };
     let plan = InputPlan::new(input, opts.input_mode);
+    let matched_records = matched_precise_records_with_fallback(
+        records.into_iter().filter(role_matches).collect(),
+        &plan,
+        opts.case_sensitive,
+        mode,
+    );
     let mut results = Vec::new();
-    for record in records.into_iter().filter(role_matches) {
-        let Some(variant) = precise_record_variant(&record, &plan, opts.case_sensitive, mode)
-        else {
-            continue;
-        };
-        results.push(attach_matched_input(record_to_json(record), variant));
+    for (record, variant) in matched_records {
+        results.push(attach_matched_input(record_to_json(record), &variant));
         if opts.limit > 0 && results.len() >= opts.limit {
             break;
         }
@@ -523,12 +665,58 @@ fn query_precise_with_input(
     }))
 }
 
+fn matched_precise_records_with_fallback(
+    records: Vec<PreciseOccurrenceRecord>,
+    plan: &InputPlan,
+    case_sensitive: bool,
+    mode: SymbolMatchMode,
+) -> Vec<(PreciseOccurrenceRecord, InputVariant)> {
+    if plan.coordinate.is_none() {
+        return matched_precise_records(records, plan, case_sensitive, mode);
+    }
+    let results = matched_precise_records(records.clone(), plan, case_sensitive, mode);
+    if !results.is_empty() {
+        return results;
+    }
+    plan.coordinate_fallback_plan()
+        .map(|fallback| matched_precise_records(records, &fallback, case_sensitive, mode))
+        .unwrap_or(results)
+}
+
+fn matched_precise_records(
+    records: Vec<PreciseOccurrenceRecord>,
+    plan: &InputPlan,
+    case_sensitive: bool,
+    mode: SymbolMatchMode,
+) -> Vec<(PreciseOccurrenceRecord, InputVariant)> {
+    records
+        .into_iter()
+        .filter_map(|record| {
+            precise_record_variant(&record, plan, case_sensitive, mode)
+                .cloned()
+                .map(|variant| (record, variant))
+        })
+        .collect()
+}
+
 fn precise_record_variant<'a>(
     record: &PreciseOccurrenceRecord,
     plan: &'a InputPlan,
     case_sensitive: bool,
     mode: SymbolMatchMode,
 ) -> Option<&'a InputVariant> {
+    if let Some(coord) = &plan.coordinate {
+        let names = [record.name.as_str(), record.symbol.as_str()];
+        if !navigation::coordinate_matches_parts(
+            coord,
+            Some(&record.path),
+            Some(u64::from(record.range.start_line)),
+            Some(u64::from(record.range.end_line)),
+            &names,
+        ) {
+            return None;
+        }
+    }
     plan.matched_variant(&record.name, case_sensitive, mode)
         .or_else(|| plan.matched_variant(&record.symbol, case_sensitive, mode))
 }

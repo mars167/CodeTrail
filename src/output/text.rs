@@ -127,6 +127,12 @@ fn render_text_routes(results: &[Value], out: &mut dyn Write) -> io::Result<()> 
         if let Some(handler) = result.get("handler").and_then(Value::as_str) {
             details.push(format!("handler={handler}"));
         }
+        if let Some(defs) = result
+            .pointer("/handlerTarget/queryInputs/defs")
+            .and_then(Value::as_str)
+        {
+            details.push(format!("defs={defs}"));
+        }
         let suffix = match (location.is_empty(), details.is_empty()) {
             (true, true) => String::new(),
             (false, true) => format!("  {location}"),
@@ -147,7 +153,11 @@ fn render_text_result(result: &Value, out: &mut dyn Write) -> io::Result<()> {
                 .get("kind")
                 .and_then(Value::as_str)
                 .unwrap_or("symbol");
-            writeln!(out, "{kind:<12} {name}  {location}")?;
+            if let Some(defs) = query_defs_input(result) {
+                writeln!(out, "{kind:<12} {name}  {location}  defs={defs}")?;
+            } else {
+                writeln!(out, "{kind:<12} {name}  {location}")?;
+            }
             render_text_source_context(result, out)?;
             render_text_relation_summary(result, out)?;
             return Ok(());
@@ -230,8 +240,13 @@ fn render_text_graph(value: &Value, results: &[Value], out: &mut dyn Write) -> i
         } else {
             format_location(path, result.get("range"))
         };
+        let target = result
+            .pointer("/targetDefinition/queryInputs/defs")
+            .and_then(Value::as_str);
         if location.is_empty() {
             writeln!(out, "{caller} -> {callee}")?;
+        } else if let Some(target) = target {
+            writeln!(out, "{caller} -> {callee}  {location}  target={target}")?;
         } else {
             writeln!(out, "{caller} -> {callee}  {location}")?;
         }
@@ -267,7 +282,11 @@ fn render_text_call_hierarchy(
         let root = result.get("root").unwrap_or(&Value::Null);
         let root_name = item_label(root).unwrap_or_else(|| identifier.to_string());
         let root_path = item_path(root).unwrap_or("");
-        writeln!(out, "{root_name}")?;
+        if let Some(defs) = query_defs_input(root) {
+            writeln!(out, "{root_name}  defs={defs}")?;
+        } else {
+            writeln!(out, "{root_name}")?;
+        }
         let root_location = item_def_location(root);
         if !root_location.is_empty() {
             writeln!(out, "  {root_location}")?;
@@ -322,7 +341,16 @@ fn render_text_hierarchy_edges(
         };
         let location = hierarchy_call_location(call);
         if location.is_empty() {
-            writeln!(out, "{edge_prefix}{branch}{other_name}")?;
+            if let Some(defs) = query_defs_input(item) {
+                writeln!(out, "{edge_prefix}{branch}{other_name}  defs={defs}")?;
+            } else {
+                writeln!(out, "{edge_prefix}{branch}{other_name}")?;
+            }
+        } else if let Some(defs) = query_defs_input(item) {
+            writeln!(
+                out,
+                "{edge_prefix}{branch}{other_name}  {location}  defs={defs}"
+            )?;
         } else {
             writeln!(out, "{edge_prefix}{branch}{other_name}  {location}")?;
         }
@@ -341,6 +369,10 @@ fn result_symbol_label(result: &Value) -> String {
     )
     .map(display_symbol_label)
     .unwrap_or_else(|| "<unknown>".to_string())
+}
+
+fn query_defs_input(value: &Value) -> Option<&str> {
+    value.pointer("/queryInputs/defs").and_then(Value::as_str)
 }
 
 fn display_graph_symbol(symbol: &str) -> String {
@@ -561,12 +593,24 @@ fn relation_names(value: Option<&Value>, prefer_enclosing: bool) -> Vec<String> 
         .filter_map(|relation| {
             let target = relation.get("target").and_then(Value::as_str);
             let enclosing = relation.get("enclosingSymbol").and_then(Value::as_str);
-            if prefer_enclosing {
+            let label = if prefer_enclosing {
                 enclosing.or(target)
             } else {
                 target.or(enclosing)
-            }
-            .map(display_symbol)
+            }?;
+            let coordinate = if prefer_enclosing {
+                relation
+                    .pointer("/enclosingDefinition/queryInputs/defs")
+                    .and_then(Value::as_str)
+            } else {
+                relation
+                    .pointer("/targetDefinition/queryInputs/defs")
+                    .and_then(Value::as_str)
+            };
+            Some(match coordinate {
+                Some(coordinate) => format!("{} -> {coordinate}", display_symbol(label)),
+                None => display_symbol(label),
+            })
         })
         .collect()
 }

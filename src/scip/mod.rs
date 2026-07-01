@@ -4,8 +4,8 @@ pub mod store;
 pub use parser::parse_native_scip;
 pub use store::{
     build_occurrences_db, invalidate_db, occurrence_db_fresh, occurrence_to_json, query_all_defs,
-    query_all_refs, query_all_symbols, query_defs, query_refs, query_refs_by_symbol_key,
-    query_symbols, symbol_to_json,
+    query_all_refs, query_all_symbols, query_defs, query_defs_by_symbol_key, query_refs,
+    query_refs_by_symbol_key, query_symbols, symbol_to_json,
 };
 
 /// Write a minimal SCIP test index (protobuf) to the given path for integration tests.

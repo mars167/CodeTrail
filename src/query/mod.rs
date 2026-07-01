@@ -1326,10 +1326,14 @@ fn compact_explore_result(
     copy_field(result, &mut object, "targetDetail");
     copy_field(result, &mut object, "targetSignature");
     copy_field(result, &mut object, "targetSymbolId");
+    copy_field(result, &mut object, "targetDefinition");
     copy_field(result, &mut object, "enclosingSymbol");
     copy_field(result, &mut object, "enclosingSymbolDetail");
     copy_field(result, &mut object, "enclosingSymbolSignature");
     copy_field(result, &mut object, "enclosingSymbolId");
+    copy_field(result, &mut object, "enclosingDefinition");
+    copy_field(result, &mut object, "queryInputs");
+    copy_field(result, &mut object, "referenceInput");
     let layer = result
         .get("layer")
         .and_then(Value::as_str)
@@ -1457,10 +1461,14 @@ fn take_compact_relations(items: &[Value], remaining: &mut usize) -> Vec<Value> 
         copy_field(item, &mut object, "targetDetail");
         copy_field(item, &mut object, "targetSignature");
         copy_field(item, &mut object, "targetSymbolId");
+        copy_field(item, &mut object, "targetDefinition");
         copy_field(item, &mut object, "enclosingSymbol");
         copy_field(item, &mut object, "enclosingSymbolDetail");
         copy_field(item, &mut object, "enclosingSymbolSignature");
         copy_field(item, &mut object, "enclosingSymbolId");
+        copy_field(item, &mut object, "enclosingDefinition");
+        copy_field(item, &mut object, "queryInputs");
+        copy_field(item, &mut object, "referenceInput");
         copy_field(item, &mut object, "layer");
         output.push(Value::Object(object));
         *remaining -= 1;

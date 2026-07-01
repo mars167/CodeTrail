@@ -41,7 +41,7 @@ use petgraph::visit::EdgeRef;
 use serde_json::{json, Value};
 
 use crate::{
-    index,
+    index, navigation,
     query_input::{matched_variant_value, InputMode, InputPlan, InputVariant, SymbolMatchMode},
     workspace::{ScanOptions, Workspace},
 };
@@ -450,7 +450,11 @@ impl GraphBackend for PetgraphBackend {
         allowed_paths: Option<&HashSet<String>>,
     ) -> Result<Vec<Value>> {
         let mut results = Vec::new();
-        let qualified = qualified_hierarchy_query(&plan.raw);
+        let qualified = plan
+            .coordinate
+            .is_none()
+            .then(|| qualified_hierarchy_query(&plan.raw))
+            .flatten();
         let mut root_indices = self
             .matching_node_indices_for_plan(plan, case_sensitive)
             .into_iter()
@@ -517,6 +521,20 @@ impl GraphBackend for PetgraphBackend {
 
 impl PetgraphBackend {
     fn matching_node_indices_for_plan(
+        &self,
+        plan: &InputPlan,
+        case_sensitive: bool,
+    ) -> Vec<(NodeIndex, InputVariant)> {
+        let matches = self.matching_node_indices_once(plan, case_sensitive);
+        if !matches.is_empty() {
+            return matches;
+        }
+        plan.coordinate_fallback_plan()
+            .map(|fallback| self.matching_node_indices_once(&fallback, case_sensitive))
+            .unwrap_or(matches)
+    }
+
+    fn matching_node_indices_once(
         &self,
         plan: &InputPlan,
         case_sensitive: bool,
@@ -660,6 +678,8 @@ fn edge_to_candidate(meta: &EdgeMetadata, caller: &GraphNode, callee: &GraphNode
             "start": { "line": meta.call_line, "column": meta.call_column },
             "end": { "line": meta.call_line, "column": meta.call_column + 1 }
         }),
+        target_definition: Some(graph_node_item(callee)),
+        enclosing_definition: Some(graph_node_item(caller)),
         file_hash: meta.file_hash.clone(),
         producer: format!("graph:{}", meta.source),
         source: format!("{}", meta.source),
@@ -682,6 +702,8 @@ fn edge_to_caller_candidate(
             "start": { "line": meta.call_line, "column": meta.call_column },
             "end": { "line": meta.call_line, "column": meta.call_column + 1 }
         }),
+        target_definition: Some(graph_node_item(callee)),
+        enclosing_definition: Some(graph_node_item(caller)),
         file_hash: meta.file_hash.clone(),
         producer: format!("graph:{}", meta.source),
         source: format!("{}", meta.source),
@@ -711,6 +733,25 @@ fn matched_node_variant(
     plan: &InputPlan,
     case_sensitive: bool,
 ) -> Option<InputVariant> {
+    if let Some(coord) = &plan.coordinate {
+        let names = [
+            node.id.as_str(),
+            node.display_name.as_str(),
+            last_identifier(&node.id),
+            last_identifier(&node.display_name),
+            method_base_identifier(&node.id),
+            method_base_identifier(&node.display_name),
+        ];
+        if !navigation::coordinate_matches_parts(
+            coord,
+            Some(&node.file_path),
+            Some(u64::from(node.start_line)),
+            Some(u64::from(node.end_line)),
+            &names,
+        ) {
+            return None;
+        }
+    }
     [
         node.id.as_str(),
         node.display_name.as_str(),

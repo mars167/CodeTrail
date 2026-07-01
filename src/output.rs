@@ -4,7 +4,7 @@ use anyhow::Error;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::cli::OutputFormat;
+use crate::{cli::OutputFormat, navigation};
 
 mod caveats;
 mod enrichment;
@@ -179,6 +179,11 @@ pub fn response_with_index(
     let query = normalized_query(query);
     let results = enrich_results(results);
     let mut warnings = warnings;
+    if let Some(warning) = navigation::coordinate_unresolved_warning_for_query(&query, &results) {
+        if !warnings.iter().any(|existing| existing == &warning) {
+            warnings.push(warning);
+        }
+    }
     let no_match_supported = supports_no_match(command, canonical_command);
     if no_match_supported && results.as_array().is_some_and(Vec::is_empty) {
         warnings.push("no_match: query returned zero results; absence is not proven".to_string());

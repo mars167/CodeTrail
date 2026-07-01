@@ -2,6 +2,8 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::navigation::{parse_symbol_coordinate, SymbolCoordinate};
+
 const MAX_COMPATIBLE_VARIANTS: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
@@ -32,6 +34,7 @@ pub struct InputPlan {
     pub mode: InputMode,
     pub variants: Vec<InputVariant>,
     pub truncated: bool,
+    pub coordinate: Option<SymbolCoordinate>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,7 +46,8 @@ pub enum SymbolMatchMode {
 impl InputPlan {
     pub fn new(input: &str, mode: InputMode) -> Self {
         if mode == InputMode::Strict {
-            return Self {
+            let coordinate = parse_symbol_coordinate(input);
+            let mut plan = Self {
                 raw: input.to_string(),
                 mode,
                 variants: vec![InputVariant {
@@ -51,7 +55,12 @@ impl InputPlan {
                     kind: "raw",
                 }],
                 truncated: false,
+                coordinate: coordinate.clone(),
             };
+            if let Some(coordinate) = coordinate {
+                plan.push(coordinate.symbol, "coordinate_symbol");
+            }
+            return plan;
         }
 
         let mut plan = Self {
@@ -59,10 +68,14 @@ impl InputPlan {
             mode,
             variants: Vec::new(),
             truncated: false,
+            coordinate: parse_symbol_coordinate(input),
         };
         plan.push(input.to_string(), "raw");
         let trimmed = input.trim();
         plan.push(trimmed.to_string(), "trimmed");
+        if let Some(coordinate) = plan.coordinate.clone() {
+            plan.push(coordinate.symbol, "coordinate_symbol");
+        }
         let signature_base = remove_signature(trimmed);
         plan.push(signature_base.clone(), "signature_base");
         let tail = qualified_tail(trimmed);
@@ -112,6 +125,18 @@ impl InputPlan {
             "query_input_expanded: compatible input generated {} symbol variants{}",
             self.variants.len(),
             suffix
+        ))
+    }
+
+    pub fn coordinate_fallback_plan(&self) -> Option<Self> {
+        let coordinate = self.coordinate.as_ref()?;
+        Some(Self::new(&coordinate.symbol, InputMode::Compatible))
+    }
+
+    pub fn coordinate_unresolved_warning(&self) -> Option<String> {
+        let coordinate = self.coordinate.as_ref()?;
+        Some(crate::navigation::symbol_coordinate_unresolved_warning(
+            coordinate,
         ))
     }
 

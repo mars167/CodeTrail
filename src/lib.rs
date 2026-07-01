@@ -16,6 +16,7 @@ pub mod java_provider;
 pub mod java_semantic;
 pub mod lancedb_store;
 pub mod lsp;
+pub mod navigation;
 pub mod output;
 mod path_compat;
 pub mod project_graph;
