@@ -154,6 +154,10 @@ pub struct CallCandidate {
     pub target: String,
     pub enclosing_symbol: Option<String>,
     pub range: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_definition: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enclosing_definition: Option<serde_json::Value>,
     pub file_hash: String,
     pub producer: String,
     /// Edge provenance.

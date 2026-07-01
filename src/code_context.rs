@@ -4,7 +4,7 @@ use anyhow::Result;
 use serde_json::{json, Map, Value};
 
 use crate::{
-    graph,
+    graph, navigation,
     query_input::{InputPlan, SymbolMatchMode},
     search, syntax,
     workspace::{ScanOptions, Workspace},
@@ -123,6 +123,7 @@ pub fn enrich_response(
         }
     }
     append_warnings(&mut response, warnings);
+    navigation::attach_navigation_metadata(&mut response);
     Ok(response)
 }
 
@@ -265,12 +266,26 @@ fn source_range_for_result(
     object: &Map<String, Value>,
     options: &CodeContextOptions,
 ) -> Option<(SelectedRange, &'static str)> {
+    if object.get("language").and_then(Value::as_str) == Some("java") {
+        if let (Some((decl_start, _)), Some((_, body_end))) = (
+            object.get("range").and_then(range_lines),
+            object.get("bodyRange").and_then(range_lines),
+        ) {
+            return Some((
+                cap_range(decl_start, body_end, options.code_max_lines, false),
+                "declarationBody",
+            ));
+        }
+    }
     if let Some((start, end)) = object.get("bodyRange").and_then(range_lines) {
         return Some((cap_range(start, end, options.code_max_lines, false), "body"));
     }
 
-    if let Some((start, end)) = parser_body_range_for_result(workspace, scan, object) {
-        return Some((cap_range(start, end, options.code_max_lines, false), "body"));
+    if let Some((start, end, range_kind)) = parser_body_range_for_result(workspace, scan, object) {
+        return Some((
+            cap_range(start, end, options.code_max_lines, false),
+            range_kind,
+        ));
     }
 
     let (start, end) = object.get("range").and_then(range_lines)?;
@@ -309,7 +324,7 @@ fn parser_body_range_for_result(
     workspace: &Workspace,
     scan: &ScanOptions,
     object: &Map<String, Value>,
-) -> Option<(usize, usize)> {
+) -> Option<(usize, usize, &'static str)> {
     let path = object.get("path").and_then(Value::as_str)?;
     let symbol_name = object
         .get("symbolName")
@@ -333,8 +348,17 @@ fn parser_body_range_for_result(
         {
             continue;
         }
-        let Some(body_range) = candidate.get("bodyRange").and_then(range_lines) else {
+        let Some((body_start, body_end)) = candidate.get("bodyRange").and_then(range_lines) else {
             continue;
+        };
+        let body_range = if object.get("language").and_then(Value::as_str) == Some("java") {
+            candidate
+                .get("range")
+                .and_then(range_lines)
+                .map(|(decl_start, _)| (decl_start, body_end, "declarationBody"))
+                .unwrap_or((body_start, body_end, "body"))
+        } else {
+            (body_start, body_end, "body")
         };
         if fallback.is_none() {
             fallback = Some(body_range);
@@ -574,6 +598,8 @@ fn parser_call_candidate(candidate: &syntax::CallCandidate) -> Value {
         "target": candidate.target,
         "kind": "call",
         "enclosingSymbol": candidate.enclosing_symbol,
+        "targetDefinition": candidate.target_definition,
+        "enclosingDefinition": candidate.enclosing_definition,
         "language": candidate.language,
         "rootId": candidate.root_id,
         "range": candidate.range,
@@ -592,6 +618,8 @@ fn public_relation_candidate(candidate: Value) -> Value {
     copy_field(&candidate, &mut object, "range");
     copy_field(&candidate, &mut object, "layer");
     copy_field(&candidate, &mut object, "matchedInputVariant");
+    copy_field(&candidate, &mut object, "targetDefinition");
+    copy_field(&candidate, &mut object, "enclosingDefinition");
     if !object.contains_key("kind") {
         object.insert("kind".to_string(), Value::String("call".to_string()));
     }

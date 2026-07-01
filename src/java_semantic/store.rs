@@ -16,6 +16,7 @@ use crate::{
             SourceRange, SymbolOrigin,
         },
     },
+    navigation,
     query_input::{attach_matched_input, style_key, InputPlan, InputVariant, SymbolMatchMode},
     workspace::{ScanOptions, Workspace},
 };
@@ -399,12 +400,14 @@ impl JavaSemanticStore {
         self.install_matched_symbols(&symbols)?;
         let mut results =
             self.query_call_edges_to_matched_callees(&workspace.snapshot_id, has_scope)?;
-        results.extend(self.query_call_edges_by_target_name(
-            &workspace.snapshot_id,
-            &plan,
-            opts.case_sensitive,
-            has_scope,
-        )?);
+        if plan.coordinate.is_none() {
+            results.extend(self.query_call_edges_by_target_name(
+                &workspace.snapshot_id,
+                &plan,
+                opts.case_sensitive,
+                has_scope,
+            )?);
+        }
         finalize_results(&mut results, opts.limit);
         if results.is_empty() {
             return Ok(None);
@@ -664,6 +667,33 @@ impl JavaSemanticStore {
     }
 
     fn find_symbols(
+        &self,
+        snapshot_id: &str,
+        plan: &InputPlan,
+        case_sensitive: bool,
+        kinds: &[&str],
+        has_scope: bool,
+        limit: usize,
+    ) -> Result<Vec<MatchedSymbol>> {
+        let matched =
+            self.find_symbols_once(snapshot_id, plan, case_sensitive, kinds, has_scope, limit)?;
+        if !matched.is_empty() {
+            return Ok(matched);
+        }
+        if let Some(fallback) = plan.coordinate_fallback_plan() {
+            return self.find_symbols_once(
+                snapshot_id,
+                &fallback,
+                case_sensitive,
+                kinds,
+                has_scope,
+                limit,
+            );
+        }
+        Ok(matched)
+    }
+
+    fn find_symbols_once(
         &self,
         snapshot_id: &str,
         plan: &InputPlan,
@@ -1178,6 +1208,27 @@ fn matched_symbol_variant<'a>(
     plan: &'a InputPlan,
     case_sensitive: bool,
 ) -> Option<&'a InputVariant> {
+    if let Some(coord) = &plan.coordinate {
+        let names = [
+            symbol.symbol_id.as_str(),
+            symbol.name.as_str(),
+            symbol.qualified_name.as_str(),
+            symbol.signature.as_str(),
+        ];
+        let (path, start, end) =
+            if let (Some(path), Some(range)) = (symbol.path.as_deref(), symbol.range.as_ref()) {
+                (
+                    Some(path),
+                    Some(u64::from(range.start_line)),
+                    Some(u64::from(range.end_line)),
+                )
+            } else {
+                (None, None, None)
+            };
+        if !navigation::coordinate_matches_parts(coord, path, start, end, &names) {
+            return None;
+        }
+    }
     [
         symbol.symbol_id.as_str(),
         symbol.name.as_str(),
@@ -1332,11 +1383,13 @@ fn call_candidate_json(edge: &CallEdgeRow) -> Value {
         "targetDetail": edge.callee.as_ref().map(|symbol| symbol.qualified_name.clone()),
         "targetSignature": edge.callee.as_ref().map(|symbol| symbol.signature.clone()),
         "targetSymbolId": edge.callee_symbol,
+        "targetDefinition": edge.callee.as_ref().map(symbol_item_json),
         "kind": "call",
         "enclosingSymbol": edge.caller.as_ref().map(|symbol| symbol.name.clone()),
         "enclosingSymbolDetail": edge.caller.as_ref().map(|symbol| symbol.qualified_name.clone()),
         "enclosingSymbolSignature": edge.caller.as_ref().map(|symbol| symbol.signature.clone()),
         "enclosingSymbolId": edge.caller_symbol,
+        "enclosingDefinition": edge.caller.as_ref().map(symbol_item_json),
         "language": "java",
         "rootId": edge.caller.as_ref().map(|symbol| symbol.root_id.clone()).unwrap_or_else(|| "java:.".to_string()),
         "range": edge.range.to_codetrail_json(),

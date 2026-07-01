@@ -64,22 +64,6 @@ fn public_result(result: &Value) -> Value {
         return result.clone();
     };
     let mut object = object.clone();
-    for field in [
-        "fileHash",
-        "readCommand",
-        "readCommandArgv",
-        "sourceTarget",
-        "producer",
-        "sourceReason",
-        "indexFresh",
-        "reliability",
-        "exact",
-        "knownBlindSpots",
-        "fallbackReason",
-        "previewTruncatedReason",
-    ] {
-        object.remove(field);
-    }
     sanitize_public_object(&mut object);
     Value::Object(object)
 }
@@ -112,6 +96,9 @@ fn keep_public_field(
     is_source_object: bool,
     is_relations_object: bool,
 ) -> bool {
+    if is_internal_public_field(key) {
+        return false;
+    }
     if value.is_null() {
         if is_source_object && key == "truncatedReason" {
             return true;
@@ -135,6 +122,25 @@ fn keep_public_field(
         return false;
     }
     true
+}
+
+fn is_internal_public_field(key: &str) -> bool {
+    matches!(
+        key,
+        "bodyHash"
+            | "fileHash"
+            | "readCommand"
+            | "readCommandArgv"
+            | "sourceTarget"
+            | "symbol_id"
+            | "producer"
+            | "sourceReason"
+            | "indexFresh"
+            | "reliability"
+            | "exact"
+            | "knownBlindSpots"
+            | "previewTruncatedReason"
+    )
 }
 
 fn is_internal_reliability_label(value: &str) -> bool {

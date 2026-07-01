@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use tree_sitter::{Language, Node, Parser};
 
 use crate::{
-    index,
+    index, navigation,
     project_graph::discover_project_graph,
     query_input::{attach_matched_input, InputMode, InputPlan, SymbolMatchMode},
     search::line_range_for_node,
@@ -202,6 +202,8 @@ pub(crate) struct CallCandidate {
     pub target: String,
     pub enclosing_symbol: Option<String>,
     pub range: Value,
+    pub target_definition: Option<Value>,
+    pub enclosing_definition: Option<Value>,
     pub body_hash: Option<String>,
     pub file_hash: String,
     pub producer: String,
@@ -304,27 +306,41 @@ pub fn symbols(
     opts: &ScanOptions,
     query: &str,
 ) -> Result<(Value, Vec<String>)> {
-    let mut results = Vec::new();
     let mut warnings = Vec::new();
     let plan = InputPlan::new(query, opts.input_mode);
     let budget = CandidateBudget::default();
     let (query_limit, budget_limited) = query_budget_limit(budget);
-    let prefilter = (opts.input_mode == InputMode::Strict).then_some(query);
-    for symbol in collect_symbols_prefiltered(workspace, opts, &mut warnings, prefilter)? {
-        if let Some(variant) = matched_symbol_variant(
-            &symbol,
-            &plan,
-            opts.case_sensitive,
-            SymbolMatchMode::Contains,
-        ) {
-            if results.len() >= query_limit {
-                if budget_limited {
+    let prefilter = strict_prefilter(query, &plan);
+    let symbols = collect_symbols_prefiltered(workspace, opts, &mut warnings, prefilter)?;
+    let fallback_symbols = plan.coordinate.is_some().then(|| symbols.clone());
+    let (mut results, capped) = symbol_json_results(
+        symbols,
+        &plan,
+        opts.case_sensitive,
+        SymbolMatchMode::Contains,
+        query_limit,
+    );
+    if results.is_empty() {
+        if let (Some(fallback), Some(symbols)) = (plan.coordinate_fallback_plan(), fallback_symbols)
+        {
+            let fallback_results = symbol_json_results(
+                symbols,
+                &fallback,
+                opts.case_sensitive,
+                SymbolMatchMode::Contains,
+                query_limit,
+            );
+            let fallback_capped = fallback_results.1;
+            results = fallback_results.0;
+            if !results.is_empty() {
+                push_coordinate_unresolved_warning(&mut warnings, &plan);
+                if fallback_capped && budget_limited {
                     push_query_budget_warning(&mut warnings, "symbols", budget.max_per_query);
                 }
-                break;
             }
-            results.push(attach_matched_input(symbol_to_json(symbol), &variant));
         }
+    } else if capped && budget_limited {
+        push_query_budget_warning(&mut warnings, "symbols", budget.max_per_query);
     }
     push_input_plan_warning(&mut warnings, &plan);
     Ok((Value::Array(results), warnings))
@@ -335,24 +351,41 @@ pub fn defs(
     opts: &ScanOptions,
     identifier: &str,
 ) -> Result<(Value, Vec<String>)> {
-    let mut results = Vec::new();
     let mut warnings = Vec::new();
     let plan = InputPlan::new(identifier, opts.input_mode);
     let budget = CandidateBudget::default();
     let (query_limit, budget_limited) = query_budget_limit(budget);
-    let prefilter = (opts.input_mode == InputMode::Strict).then_some(identifier);
-    for symbol in collect_symbols_prefiltered(workspace, opts, &mut warnings, prefilter)? {
-        if let Some(variant) =
-            matched_symbol_variant(&symbol, &plan, opts.case_sensitive, SymbolMatchMode::Exact)
+    let prefilter = strict_prefilter(identifier, &plan);
+    let symbols = collect_symbols_prefiltered(workspace, opts, &mut warnings, prefilter)?;
+    let fallback_symbols = plan.coordinate.is_some().then(|| symbols.clone());
+    let (mut results, capped) = symbol_json_results(
+        symbols,
+        &plan,
+        opts.case_sensitive,
+        SymbolMatchMode::Exact,
+        query_limit,
+    );
+    if results.is_empty() {
+        if let (Some(fallback), Some(symbols)) = (plan.coordinate_fallback_plan(), fallback_symbols)
         {
-            if results.len() >= query_limit {
-                if budget_limited {
+            let fallback_results = symbol_json_results(
+                symbols,
+                &fallback,
+                opts.case_sensitive,
+                SymbolMatchMode::Exact,
+                query_limit,
+            );
+            let fallback_capped = fallback_results.1;
+            results = fallback_results.0;
+            if !results.is_empty() {
+                push_coordinate_unresolved_warning(&mut warnings, &plan);
+                if fallback_capped && budget_limited {
                     push_query_budget_warning(&mut warnings, "defs", budget.max_per_query);
                 }
-                break;
             }
-            results.push(attach_matched_input(symbol_to_json(symbol), &variant));
         }
+    } else if capped && budget_limited {
+        push_query_budget_warning(&mut warnings, "defs", budget.max_per_query);
     }
     push_input_plan_warning(&mut warnings, &plan);
     Ok((Value::Array(results), warnings))
@@ -364,26 +397,39 @@ pub fn calls(
     identifier: &str,
 ) -> Result<(Value, Vec<String>)> {
     let mut warnings = Vec::new();
-    let mut results = Vec::new();
     let plan = InputPlan::new(identifier, opts.input_mode);
     let budget = CandidateBudget::default();
     let (query_limit, budget_limited) = query_result_limit(opts, budget);
-    let prefilter = (opts.input_mode == InputMode::Strict).then_some(identifier);
-    for call in collect_calls_prefiltered(workspace, opts, &mut warnings, prefilter)? {
-        if let Some(enclosing) = call.enclosing_symbol.as_deref() {
-            let Some(variant) =
-                plan.matched_variant(enclosing, opts.case_sensitive, SymbolMatchMode::Exact)
-            else {
-                continue;
-            };
-            if results.len() >= query_limit {
-                if budget_limited {
+    let prefilter = strict_prefilter(identifier, &plan);
+    let calls = collect_calls_prefiltered(workspace, opts, &mut warnings, prefilter)?;
+    let fallback_calls = plan.coordinate.is_some().then(|| calls.clone());
+    let (mut results, capped) = call_json_results(
+        calls,
+        &plan,
+        opts.case_sensitive,
+        query_limit,
+        matched_call_enclosing_variant,
+    );
+    if results.is_empty() {
+        if let (Some(fallback), Some(calls)) = (plan.coordinate_fallback_plan(), fallback_calls) {
+            let fallback_results = call_json_results(
+                calls,
+                &fallback,
+                opts.case_sensitive,
+                query_limit,
+                matched_call_enclosing_variant,
+            );
+            let fallback_capped = fallback_results.1;
+            results = fallback_results.0;
+            if !results.is_empty() {
+                push_coordinate_unresolved_warning(&mut warnings, &plan);
+                if fallback_capped && budget_limited {
                     push_query_budget_warning(&mut warnings, "calls", budget.max_per_query);
                 }
-                break;
             }
-            results.push(attach_matched_input(call_to_json(call), variant));
         }
+    } else if capped && budget_limited {
+        push_query_budget_warning(&mut warnings, "calls", budget.max_per_query);
     }
     push_input_plan_warning(&mut warnings, &plan);
     Ok((Value::Array(results), warnings))
@@ -395,27 +441,84 @@ pub fn callers(
     identifier: &str,
 ) -> Result<(Value, Vec<String>)> {
     let mut warnings = Vec::new();
-    let mut results = Vec::new();
     let plan = InputPlan::new(identifier, opts.input_mode);
     let budget = CandidateBudget::default();
     let (query_limit, budget_limited) = query_result_limit(opts, budget);
-    let prefilter = (opts.input_mode == InputMode::Strict).then_some(identifier);
-    for call in collect_calls_prefiltered(workspace, opts, &mut warnings, prefilter)? {
-        let target = last_identifier(&call.target);
-        if let Some(variant) =
-            plan.matched_variant(&target, opts.case_sensitive, SymbolMatchMode::Exact)
-        {
-            if results.len() >= query_limit {
-                if budget_limited {
+    let prefilter = strict_prefilter(identifier, &plan);
+    let calls = collect_calls_prefiltered(workspace, opts, &mut warnings, prefilter)?;
+    let fallback_calls = plan.coordinate.is_some().then(|| calls.clone());
+    let (mut results, capped) = call_json_results(
+        calls,
+        &plan,
+        opts.case_sensitive,
+        query_limit,
+        matched_call_target_variant,
+    );
+    if results.is_empty() {
+        if let (Some(fallback), Some(calls)) = (plan.coordinate_fallback_plan(), fallback_calls) {
+            let fallback_results = call_json_results(
+                calls,
+                &fallback,
+                opts.case_sensitive,
+                query_limit,
+                matched_call_target_variant,
+            );
+            let fallback_capped = fallback_results.1;
+            results = fallback_results.0;
+            if !results.is_empty() {
+                push_coordinate_unresolved_warning(&mut warnings, &plan);
+                if fallback_capped && budget_limited {
                     push_query_budget_warning(&mut warnings, "callers", budget.max_per_query);
                 }
-                break;
+            }
+        }
+    } else if capped && budget_limited {
+        push_query_budget_warning(&mut warnings, "callers", budget.max_per_query);
+    }
+    push_input_plan_warning(&mut warnings, &plan);
+    Ok((Value::Array(results), warnings))
+}
+
+fn symbol_json_results(
+    symbols: Vec<Symbol>,
+    plan: &InputPlan,
+    case_sensitive: bool,
+    mode: SymbolMatchMode,
+    query_limit: usize,
+) -> (Vec<Value>, bool) {
+    let mut results = Vec::new();
+    for symbol in symbols {
+        if let Some(variant) = matched_symbol_variant(&symbol, plan, case_sensitive, mode) {
+            if results.len() >= query_limit {
+                return (results, true);
+            }
+            results.push(attach_matched_input(symbol_to_json(symbol), &variant));
+        }
+    }
+    (results, false)
+}
+
+fn call_json_results(
+    calls: Vec<CallCandidate>,
+    plan: &InputPlan,
+    case_sensitive: bool,
+    query_limit: usize,
+    matcher: for<'a> fn(
+        &CallCandidate,
+        &'a InputPlan,
+        bool,
+    ) -> Option<&'a crate::query_input::InputVariant>,
+) -> (Vec<Value>, bool) {
+    let mut results = Vec::new();
+    for call in calls {
+        if let Some(variant) = matcher(&call, plan, case_sensitive) {
+            if results.len() >= query_limit {
+                return (results, true);
             }
             results.push(attach_matched_input(call_to_json(call), variant));
         }
     }
-    push_input_plan_warning(&mut warnings, &plan);
-    Ok((Value::Array(results), warnings))
+    (results, false)
 }
 
 fn push_input_plan_warning(warnings: &mut Vec<String>, plan: &InputPlan) {
@@ -424,12 +527,45 @@ fn push_input_plan_warning(warnings: &mut Vec<String>, plan: &InputPlan) {
     }
 }
 
+fn push_coordinate_unresolved_warning(warnings: &mut Vec<String>, plan: &InputPlan) {
+    if let Some(warning) = plan.coordinate_unresolved_warning() {
+        warnings.push(warning);
+    }
+}
+
+fn strict_prefilter<'a>(input: &'a str, plan: &'a InputPlan) -> Option<&'a str> {
+    if plan.mode != InputMode::Strict {
+        return None;
+    }
+    plan.coordinate
+        .as_ref()
+        .map(|coordinate| coordinate.symbol.as_str())
+        .or(Some(input))
+}
+
 fn matched_symbol_variant(
     symbol: &Symbol,
     plan: &InputPlan,
     case_sensitive: bool,
     mode: SymbolMatchMode,
 ) -> Option<crate::query_input::InputVariant> {
+    if let Some(coord) = &plan.coordinate {
+        let scoped = symbol
+            .container
+            .as_ref()
+            .map(|container| format!("{container}.{}", symbol.name));
+        let qualified = qualified_symbol_name(symbol);
+        let names = [
+            symbol.name.as_str(),
+            scoped.as_deref().unwrap_or(""),
+            qualified.as_str(),
+        ];
+        let start = symbol.range.pointer("/start/line").and_then(Value::as_u64);
+        let end = symbol.range.pointer("/end/line").and_then(Value::as_u64);
+        if !navigation::coordinate_matches_parts(coord, Some(&symbol.path), start, end, &names) {
+            return None;
+        }
+    }
     let scoped = symbol
         .container
         .as_ref()
@@ -445,6 +581,61 @@ fn matched_symbol_variant(
             .cloned()
     });
     matched
+}
+
+fn matched_call_enclosing_variant<'a>(
+    call: &CallCandidate,
+    plan: &'a InputPlan,
+    case_sensitive: bool,
+) -> Option<&'a crate::query_input::InputVariant> {
+    if let Some(coord) = &plan.coordinate {
+        let definition = call.enclosing_definition.as_ref()?;
+        if !navigation::coordinate_matches_value(coord, definition) {
+            return None;
+        }
+        return matched_navigation_value_variant(definition, plan, case_sensitive).or_else(|| {
+            plan.variants
+                .iter()
+                .find(|variant| variant.kind == "coordinate_symbol")
+        });
+    }
+    call.enclosing_symbol.as_deref().and_then(|enclosing| {
+        plan.matched_variant(enclosing, case_sensitive, SymbolMatchMode::Exact)
+    })
+}
+
+fn matched_call_target_variant<'a>(
+    call: &CallCandidate,
+    plan: &'a InputPlan,
+    case_sensitive: bool,
+) -> Option<&'a crate::query_input::InputVariant> {
+    if let Some(coord) = &plan.coordinate {
+        let definition = call.target_definition.as_ref()?;
+        if !navigation::coordinate_matches_value(coord, definition) {
+            return None;
+        }
+        return matched_navigation_value_variant(definition, plan, case_sensitive).or_else(|| {
+            plan.variants
+                .iter()
+                .find(|variant| variant.kind == "coordinate_symbol")
+        });
+    }
+    let target = last_identifier(&call.target);
+    plan.matched_variant(target, case_sensitive, SymbolMatchMode::Exact)
+}
+
+fn matched_navigation_value_variant<'a>(
+    value: &Value,
+    plan: &'a InputPlan,
+    case_sensitive: bool,
+) -> Option<&'a crate::query_input::InputVariant> {
+    let object = value.as_object()?;
+    ["symbolName", "name", "qualifiedName", "signature", "detail"]
+        .into_iter()
+        .filter_map(|field| object.get(field).and_then(Value::as_str))
+        .find_map(|candidate| {
+            plan.matched_variant(candidate, case_sensitive, SymbolMatchMode::Exact)
+        })
 }
 
 fn query_result_limit(opts: &ScanOptions, budget: CandidateBudget) -> (usize, bool) {
@@ -499,11 +690,18 @@ fn collect_calls_prefiltered(
     needle: Option<&str>,
 ) -> Result<Vec<CallCandidate>> {
     let candidates = collect_candidates_prefiltered(workspace, opts, warnings, needle)?;
+    let symbols = candidates
+        .iter()
+        .filter(|candidate| is_symbol_candidate(candidate))
+        .cloned()
+        .filter_map(symbol_from_candidate)
+        .collect::<Vec<_>>();
     let mut calls = candidates
         .into_iter()
         .filter(|candidate| candidate.kind == "call")
         .filter_map(call_from_candidate)
         .collect::<Vec<_>>();
+    enrich_call_definitions(&mut calls, &symbols);
     calls.sort_by(|a, b| {
         a.path
             .cmp(&b.path)
@@ -1095,12 +1293,71 @@ fn call_from_candidate(candidate: TreeSitterCandidate) -> Option<CallCandidate> 
         target: candidate.target?,
         enclosing_symbol: candidate.enclosing_symbol,
         range: candidate.call_range.unwrap_or(candidate.range),
+        target_definition: None,
+        enclosing_definition: None,
         body_hash: candidate.body_hash,
         file_hash: candidate.file_hash,
         producer: candidate.producer,
         layer: candidate.layer,
         known_blind_spots: candidate.known_blind_spots,
     })
+}
+
+fn enrich_call_definitions(calls: &mut [CallCandidate], symbols: &[Symbol]) {
+    for call in calls {
+        call.enclosing_definition = call
+            .enclosing_symbol
+            .as_deref()
+            .and_then(|name| matching_enclosing_symbol(call, symbols, name))
+            .map(|symbol| symbol_to_json(symbol.clone()));
+        call.target_definition =
+            matching_target_symbol(call, symbols).map(|symbol| symbol_to_json(symbol.clone()));
+    }
+}
+
+fn matching_enclosing_symbol<'a>(
+    call: &CallCandidate,
+    symbols: &'a [Symbol],
+    name: &str,
+) -> Option<&'a Symbol> {
+    if let Some(body_hash) = call.body_hash.as_deref() {
+        if let Some(symbol) = symbols
+            .iter()
+            .find(|symbol| symbol.path == call.path && symbol.body_hash == body_hash)
+        {
+            return Some(symbol);
+        }
+    }
+    symbols
+        .iter()
+        .find(|symbol| symbol.path == call.path && symbol_name_matches(symbol, name))
+}
+
+fn matching_target_symbol<'a>(call: &CallCandidate, symbols: &'a [Symbol]) -> Option<&'a Symbol> {
+    let target = last_identifier(&call.target);
+    symbols
+        .iter()
+        .find(|symbol| symbol.path == call.path && symbol_name_matches(symbol, target))
+}
+
+fn symbol_name_matches(symbol: &Symbol, needle: &str) -> bool {
+    let qualified = qualified_symbol_name(symbol);
+    let matches = [
+        symbol.name.as_str(),
+        qualified.as_str(),
+        symbol.signature.as_deref().unwrap_or(""),
+    ]
+    .into_iter()
+    .filter(|value| !value.is_empty())
+    .any(|value| {
+        value == needle
+            || last_identifier(value) == needle
+            || value
+                .split_once('(')
+                .map(|(head, _)| head.trim())
+                .is_some_and(|head| head == needle || last_identifier(head) == needle)
+    });
+    matches
 }
 
 fn enforce_root_budget(
@@ -1442,6 +1699,8 @@ fn call_to_json(call: CallCandidate) -> Value {
         "target": call.target,
         "kind": "call",
         "enclosingSymbol": call.enclosing_symbol,
+        "targetDefinition": call.target_definition,
+        "enclosingDefinition": call.enclosing_definition,
         "language": call.language,
         "rootId": call.root_id,
         "range": call.range,

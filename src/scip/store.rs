@@ -292,6 +292,28 @@ pub fn query_refs_by_symbol_key(db_path: &Path, symbol_key: &str) -> Result<Vec<
     Ok(results)
 }
 
+pub fn query_defs_by_symbol_key(db_path: &Path, symbol_key: &str) -> Result<Vec<OccurrenceResult>> {
+    if !db_path.exists() {
+        return Ok(Vec::new());
+    }
+    let conn = Connection::open(db_path)?;
+
+    let mut stmt = conn.prepare(
+        "SELECT s.symbol_key, o.file_path, o.language, o.symbol, s.name, s.kind, o.role, \
+                o.start_line, o.start_column, o.end_line, o.end_column, o.file_hash \
+         FROM occurrences o \
+         JOIN symbols s ON o.symbol_id = s.id \
+         WHERE o.role = 'definition' AND s.symbol_key = ?1 \
+         ORDER BY o.file_path, o.start_line, o.start_column",
+    )?;
+
+    let results = stmt
+        .query_map(params![symbol_key], map_occurrence_row)?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    Ok(results)
+}
+
 pub fn query_all_defs(db_path: &Path) -> Result<Vec<OccurrenceResult>> {
     query_occurrences_by_role(db_path, "definition")
 }

@@ -3,6 +3,7 @@ use std::{fs, path::Path};
 use serde_json::{json, Value};
 
 use super::command::command_string_from_argv;
+use crate::navigation;
 
 pub(in crate::output) fn enrich_results(results: Value) -> Value {
     let Value::Array(values) = results else {
@@ -22,7 +23,9 @@ fn enrich_result(result: Value) -> Value {
             object.insert("sourceTarget".to_string(), Value::String(target));
         }
     }
-    Value::Object(object)
+    let mut value = Value::Object(object);
+    navigation::attach_navigation_metadata(&mut value);
+    value
 }
 
 pub fn with_workspace_root(mut value: Value, root: &Path) -> Value {

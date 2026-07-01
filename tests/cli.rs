@@ -641,6 +641,38 @@ fn precise_scip_results_include_matching_mybatis_xml_config_facts() {
             && result["layer"] == "config_fact"
             && result["reliability"] == "config_fact"
     }));
+    let mapper_statement = defs["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|result| {
+            result["path"] == "src/main/resources/mapper/system/SysUserMapper.xml"
+                && result["kind"] == "mapper_statement"
+        })
+        .expect("mapper statement result");
+    let mapper_defs = mapper_statement["queryInputs"]["defs"]
+        .as_str()
+        .expect("mapper statement defs input");
+    assert!(mapper_defs.starts_with("src/main/resources/mapper/system/SysUserMapper.xml:"));
+    assert!(mapper_defs.ends_with("#com.example.SysUserMapper.selectUserByLoginName"));
+    let mapper_defs_output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", mapper_defs])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let mapper_defs_json: Value = serde_json::from_slice(&mapper_defs_output).unwrap();
+    assert!(mapper_defs_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|result| {
+            result["path"] == "src/main/resources/mapper/system/SysUserMapper.xml"
+                && result["kind"] == "mapper_statement"
+        }));
     assert_eq!(defs["index"]["source"], "scip_native");
     assert_eq!(defs["index"]["configFacts"]["source"], "config_facts");
 
@@ -1743,6 +1775,29 @@ class DemoController {{
 
     assert_eq!(json["results"][0]["routePattern"], "/demo/window");
     assert_eq!(json["results"][0]["reliability"], "parser_fact");
+    let handler_defs = json["results"][0]["handlerTarget"]["queryInputs"]["defs"]
+        .as_str()
+        .expect("handler defs input");
+    assert_eq!(
+        handler_defs,
+        "src/main/java/example/DemoController.java:7#window"
+    );
+
+    let handler_defs_output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", handler_defs])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let handler_defs_json: Value = serde_json::from_slice(&handler_defs_output).unwrap();
+    assert_eq!(handler_defs_json["results"][0]["name"], "window");
+    assert_eq!(
+        handler_defs_json["results"][0]["path"],
+        "src/main/java/example/DemoController.java"
+    );
 }
 
 #[test]
@@ -3487,7 +3542,10 @@ fn text_output_symbols_keep_location_on_result_line() {
     let text = String::from_utf8(output).unwrap();
     let mut lines = text.lines();
 
-    assert_eq!(lines.next(), Some("function     fn beta()  src/lib.rs:1"));
+    assert_eq!(
+        lines.next(),
+        Some("function     fn beta()  src/lib.rs:1  defs=src/lib.rs:1#beta")
+    );
     assert_ne!(lines.next(), Some("  src/lib.rs:1"));
 }
 
@@ -5599,6 +5657,48 @@ fn prebuilt_json_scip_index_drives_precise_defs_refs_and_symbols() {
     assert_eq!(refs_json["results"][0]["role"], "reference");
     assert_eq!(refs_json["results"][0]["range"]["start"]["line"], 2);
     assert_eq!(refs_json["results"][0]["sourceTarget"], "src/lib.rs");
+    assert_eq!(
+        refs_json["results"][0]["referenceInput"],
+        "src/lib.rs:2#needle"
+    );
+    let ref_definition_defs = refs_json["results"][0]["definition"]["queryInputs"]["defs"]
+        .as_str()
+        .unwrap();
+    assert_eq!(ref_definition_defs, "src/lib.rs:1#needle");
+    let chained_defs = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", ref_definition_defs])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let chained_defs_json: Value = serde_json::from_slice(&chained_defs).unwrap();
+    assert_eq!(chained_defs_json["results"].as_array().unwrap().len(), 1);
+    assert_eq!(chained_defs_json["results"][0]["path"], "src/lib.rs");
+    assert_eq!(chained_defs_json["results"][0]["name"], "needle");
+    let stale_coordinate_defs = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", "src/lib.rs:99#needle"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stale_coordinate_defs_json: Value = serde_json::from_slice(&stale_coordinate_defs).unwrap();
+    assert_eq!(
+        stale_coordinate_defs_json["results"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        stale_coordinate_defs_json["results"][0]["queryInputs"]["defs"],
+        "src/lib.rs:1#needle"
+    );
     assert!(source.contains("needle();"));
 
     let symbols = codetrail()
@@ -5909,6 +6009,38 @@ public class SampleService {
     assert_eq!(callers_json["results"][0]["target"], "getName");
     assert_eq!(callers_json["results"][0]["enclosingSymbol"], "start");
 
+    let calls = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["calls", "start"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let calls_json: Value = serde_json::from_slice(&calls).unwrap();
+    let run_call = calls_json["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|result| result["target"] == "run")
+        .unwrap_or_else(|| panic!("missing run call: {calls_json}"));
+    let run_defs = run_call["targetDefinition"]["queryInputs"]["defs"]
+        .as_str()
+        .expect("run target defs input");
+    assert_eq!(run_defs, "src/main/java/example/SampleService.java:13#run");
+    let run_defs_output = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", run_defs])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let run_defs_json: Value = serde_json::from_slice(&run_defs_output).unwrap();
+    assert_eq!(run_defs_json["results"][0]["name"], "run");
+
     let outgoing = codetrail()
         .arg("--path")
         .arg(dir.path())
@@ -5929,9 +6061,21 @@ public class SampleService {
     let outgoing_calls = outgoing_json["results"][0]["outgoingCalls"]
         .as_array()
         .unwrap();
+    assert_eq!(
+        outgoing_json["results"][0]["root"]["queryInputs"]["defs"],
+        "src/main/java/example/SampleService.java:15#start"
+    );
     assert!(outgoing_calls
         .iter()
         .any(|call| call["to"]["name"] == "run"));
+    let hierarchy_run = outgoing_calls
+        .iter()
+        .find(|call| call["to"]["name"] == "run")
+        .expect("hierarchy run call");
+    assert_eq!(
+        hierarchy_run["to"]["queryInputs"]["defs"],
+        "src/main/java/example/SampleService.java:13#run"
+    );
     assert!(outgoing_calls
         .iter()
         .any(|call| call["to"]["name"] == "getName"));
@@ -5993,12 +6137,8 @@ public class SampleService {
     assert!(text.contains("outgoing:"));
     assert!(text.contains("def@src/main/java/example/SampleService.java:"));
     assert!(text.contains("\n  src/main/java/example/SampleService.java\n"));
-    assert_eq!(
-        text.matches("src/main/java/example/SampleService.java:")
-            .count(),
-        1,
-        "call-hierarchy text should keep full file paths in context lines instead of repeating them on every child edge: {text}"
-    );
+    assert!(text.contains("defs=src/main/java/example/SampleService.java:15#start"));
+    assert!(text.contains("defs=src/main/java/example/SampleService.java:13#run"));
     assert!(text.contains("    |- SampleService.run()  call@17"));
     assert!(text.contains("    |- Payload.getName()  (SampleService)  call@18"));
     assert!(text.contains("Payload.builder()  (SampleService)  call@19"));
@@ -6422,6 +6562,30 @@ fn calls_and_callers_do_not_claim_graph_store_before_kuzu_backend_exists() {
         .unwrap_or("");
     assert!(cproducer.starts_with("graph:"));
     assert_eq!(callers_json["results"][0]["enclosingSymbol"], "alpha");
+
+    let stale_calls = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["calls", "src/lib.rs:99#alpha"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stale_calls_json: Value = serde_json::from_slice(&stale_calls).unwrap();
+    assert_eq!(stale_calls_json["results"][0]["target"], "beta");
+
+    let stale_callers = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["callers", "src/lib.rs:99#beta"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stale_callers_json: Value = serde_json::from_slice(&stale_callers).unwrap();
+    assert_eq!(stale_callers_json["results"][0]["enclosingSymbol"], "alpha");
 }
 
 #[test]
@@ -6541,6 +6705,35 @@ fn graph_call_hierarchy_supports_rust_go_typescript_and_python() {
             .as_str()
             .unwrap_or("")
             .contains(fixture.root_signature_fragment));
+        let root_defs = root["queryInputs"]["defs"]
+            .as_str()
+            .expect("graph hierarchy root defs input");
+        assert!(
+            root_defs.starts_with(&format!("{}:", fixture.path)),
+            "unexpected root defs input: {root_defs}"
+        );
+        let (_, root_symbol) = root_defs.rsplit_once('#').unwrap();
+        let stale_root_defs = format!("{}:999#{}", fixture.path, root_symbol);
+        let stale_output = codetrail()
+            .arg("--path")
+            .arg(dir.path())
+            .args([
+                "call-hierarchy",
+                &stale_root_defs,
+                "--direction",
+                "outgoing",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let stale_json: Value = serde_json::from_slice(&stale_output).unwrap();
+        assert_eq!(
+            stale_json["results"][0]["root"]["path"], fixture.path,
+            "stale coordinate should fall back to symbol for {}: {stale_json}",
+            fixture.language
+        );
 
         let outgoing = json["results"][0]["outgoingCalls"].as_array().unwrap();
         let call = outgoing
@@ -6553,6 +6746,13 @@ fn graph_call_hierarchy_supports_rust_go_typescript_and_python() {
             .as_str()
             .unwrap_or("")
             .contains(fixture.callee_signature_fragment));
+        let callee_defs = call["to"]["queryInputs"]["defs"]
+            .as_str()
+            .expect("graph hierarchy callee defs input");
+        assert!(
+            callee_defs.starts_with(&format!("{}:", fixture.path)),
+            "unexpected callee defs input: {callee_defs}"
+        );
         assert!(call["fromRanges"][0]["start"]["line"].as_u64().unwrap() > 0);
     }
 }
@@ -7428,6 +7628,27 @@ fn prebuilt_native_scip_db_drives_precise_defs_refs_and_symbols() {
     assert_eq!(refs_json["results"][0]["role"], "reference");
     assert_eq!(refs_json["results"][0]["range"]["start"]["line"], 2);
     assert_eq!(refs_json["index"]["source"], "scip_native");
+    assert_eq!(
+        refs_json["results"][0]["referenceInput"],
+        "src/lib.rs:2#needle"
+    );
+    let ref_definition_defs = refs_json["results"][0]["definition"]["queryInputs"]["defs"]
+        .as_str()
+        .unwrap();
+    assert_eq!(ref_definition_defs, "src/lib.rs:1#needle");
+    let chained_defs = codetrail()
+        .arg("--path")
+        .arg(dir.path())
+        .args(["defs", ref_definition_defs])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let chained_defs_json: Value = serde_json::from_slice(&chained_defs).unwrap();
+    assert_eq!(chained_defs_json["results"].as_array().unwrap().len(), 1);
+    assert_eq!(chained_defs_json["results"][0]["path"], "src/lib.rs");
+    assert_eq!(chained_defs_json["results"][0]["name"], "needle");
 
     let missing_refs = codetrail()
         .arg("--path")

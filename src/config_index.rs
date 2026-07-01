@@ -51,12 +51,12 @@ pub fn refs(
     Ok(output_from_rows(rows, opts, "reference"))
 }
 
-fn matching_mybatis_facts<'a>(
+fn matching_mybatis_facts(
     workspace: &Workspace,
     opts: &ScanOptions,
-    plan: &'a InputPlan,
+    plan: &InputPlan,
     mode: SymbolMatchMode,
-) -> Result<Vec<(ConfigFactRow, &'a InputVariant)>> {
+) -> Result<Vec<(ConfigFactRow, InputVariant)>> {
     let store = match LanceDbStore::open_or_create(&workspace.root) {
         Ok(store) => store,
         Err(_) => return Ok(Vec::new()),
@@ -66,6 +66,29 @@ fn matching_mybatis_facts<'a>(
         Err(_) => return Ok(Vec::new()),
     };
     let allowed_paths = allowed_scan_paths(workspace, opts)?;
+    let fallback_rows = plan.coordinate.is_some().then(|| rows.clone());
+    let mut matches = collect_matching_rows(rows, &allowed_paths, plan, opts, mode);
+    if matches.is_empty() && plan.coordinate.is_some() {
+        if let (Some(fallback), Some(rows)) = (plan.coordinate_fallback_plan(), fallback_rows) {
+            matches = collect_matching_rows(rows, &allowed_paths, &fallback, opts, mode);
+        }
+    }
+    matches.sort_by(|(left, _), (right, _)| {
+        left.file_path
+            .cmp(&right.file_path)
+            .then(left.range_start_line.cmp(&right.range_start_line))
+            .then(left.name.cmp(&right.name))
+    });
+    Ok(matches)
+}
+
+fn collect_matching_rows(
+    rows: Vec<ConfigFactRow>,
+    allowed_paths: &HashSet<String>,
+    plan: &InputPlan,
+    opts: &ScanOptions,
+    mode: SymbolMatchMode,
+) -> Vec<(ConfigFactRow, InputVariant)> {
     let mut matches = Vec::new();
     let mut seen = HashSet::new();
     for row in rows {
@@ -86,20 +109,14 @@ fn matching_mybatis_facts<'a>(
             if !seen.insert(key) {
                 continue;
             }
-            matches.push((row, variant));
+            matches.push((row, variant.clone()));
         }
     }
-    matches.sort_by(|(left, _), (right, _)| {
-        left.file_path
-            .cmp(&right.file_path)
-            .then(left.range_start_line.cmp(&right.range_start_line))
-            .then(left.name.cmp(&right.name))
-    });
-    Ok(matches)
+    matches
 }
 
 fn output_from_rows(
-    mut rows: Vec<(ConfigFactRow, &InputVariant)>,
+    mut rows: Vec<(ConfigFactRow, InputVariant)>,
     opts: &ScanOptions,
     role: &str,
 ) -> Option<ConfigQueryOutput> {
@@ -111,7 +128,7 @@ fn output_from_rows(
     }
     let results = rows
         .into_iter()
-        .map(|(row, variant)| attach_matched_input(row_to_json(row, role), variant))
+        .map(|(row, variant)| attach_matched_input(row_to_json(row, role), &variant))
         .collect::<Vec<_>>();
     Some(ConfigQueryOutput {
         results: Value::Array(results),
@@ -162,6 +179,20 @@ fn matched_variant<'a>(
     case_sensitive: bool,
     mode: SymbolMatchMode,
 ) -> Option<&'a InputVariant> {
+    if let Some(coord) = &plan.coordinate {
+        let name = row.name.as_deref().unwrap_or("");
+        let key_path = row.key_path.as_deref().unwrap_or("");
+        let name_tail = simple_name(name).unwrap_or("");
+        let key_tail = simple_name(key_path).unwrap_or("");
+        let names = [name, key_path, name_tail, key_tail];
+        if coord.path != row.file_path
+            || !names.iter().any(|name| {
+                *name == coord.symbol || name.rsplit('.').next().unwrap_or(name) == coord.symbol
+            })
+        {
+            return None;
+        }
+    }
     row.name
         .as_deref()
         .into_iter()

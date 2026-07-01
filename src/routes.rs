@@ -175,6 +175,10 @@ fn push_route(
     if !filter.accepts(file, &route) {
         return;
     }
+    let handler_target = route
+        .handler
+        .as_deref()
+        .and_then(|handler| route_handler_target(file, content, handler));
     results.push(json!({
         "path": file.path,
         "range": byte_range(content, route.start, route.end),
@@ -183,12 +187,35 @@ fn push_route(
         "method": route.method,
         "routePattern": route.path,
         "handler": route.handler,
+        "handlerTarget": handler_target,
         "handlerKind": route.handler_kind,
         "fileHash": file.hash,
         "producer": PRODUCER,
         "reliability": PARSER_FACT,
         "layer": PARSER_FACT
     }));
+}
+
+fn route_handler_target(file: &FileRecord, content: &str, handler: &str) -> Option<Value> {
+    if file.language != "java" || handler == "<inline>" || handler.contains('#') {
+        return None;
+    }
+    let escaped = regex::escape(handler);
+    let pattern = Regex::new(&format!(
+        r"\b(?:public|private|protected)\s+(?:static\s+)?[^;{{=]*?\s+({escaped})\s*\("
+    ))
+    .ok()?;
+    let found = pattern.captures(content)?;
+    let name = found.get(1)?;
+    Some(json!({
+        "name": handler,
+        "symbolName": handler,
+        "kind": "method",
+        "language": file.language,
+        "path": file.path,
+        "range": byte_range(content, name.start(), name.end()),
+        "semanticRole": "controller_handler"
+    }))
 }
 
 struct RouteMatch<'a> {
@@ -822,7 +849,7 @@ fn request_method(args: &str) -> Option<String> {
 }
 
 fn method_name_after(content: &str, start: usize) -> Option<String> {
-    let tail = utf8_window(content, start, 700)?;
+    let tail = utf8_window(content, start, 4096)?;
     let method = Regex::new(
         r"\b(?:public|private|protected)\s+(?:static\s+)?[^;{=]*?\s+([A-Za-z_]\w*)\s*\(",
     )
